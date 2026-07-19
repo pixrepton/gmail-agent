@@ -1,0 +1,53 @@
+{
+  "preclassification_lane": "intake_llm",
+  "intake": {
+    "business_area": "service",
+    "case_family": "platform_service_security",
+    "primary_signal_code": "urgent_service",
+    "primary_signal_name": "Urgent service",
+    "decision_action": "review",
+    "action_rationale": "Urgent service outage should be reviewed by an operator immediately.",
+    "priority": "critical",
+    "reason": "High-urgency service signal requires review-first handling.",
+    "review_required": true,
+    "review_flags": ["insufficient_thread_context"],
+    "confidence": {
+      "signal_confidence": 0.9,
+      "case_link_confidence": 0.08,
+      "decision_confidence": 0.76,
+      "extraction_confidence": 0.8
+    },
+    "state_detected": "urgent_service",
+    "is_new_case": false
+  },
+  "expected_case_link": {
+    "decision": "no_link",
+    "selected_case_key": ""
+  },
+  "business_reasoning": {
+    "business_interpretation": "Urgent service complaint with a same-day callback expectation.",
+    "business_area": "service",
+    "customer_state_guess": "active_case",
+    "recommended_next_action": "escalate_review",
+    "recommended_action_reason": "Urgent service needs explicit operator triage and dispatch judgment.",
+    "missing_information": ["service history"],
+    "risks": ["high_urgency_service"],
+    "urgency": "high",
+    "operator_note": "Escalate to operator review and confirm callback ownership.",
+    "confidence": {
+      "business_confidence": 0.88,
+      "action_confidence": 0.84
+    }
+  },
+  "reply_draft": {
+    "draft_enabled": false,
+    "drafts": [],
+    "do_not_send_reasons": ["review_required_first"],
+    "confidence": 0.0
+  },
+  "action_plan": {
+    "primary_action": "create_review",
+    "daszek_projection_mode": "review",
+    "safe_for_live_push": false
+  }
+}

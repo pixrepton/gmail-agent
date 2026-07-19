@@ -1,0 +1,8 @@
+# Bounded live backfill cohort — one Gmail message id per line.
+# Copy to e.g. tools/gmail_audit/.tmp-mailbox-memory-cohort.txt (gitignored) and fill with real ids.
+#
+# Aim for: several threads, several message classes, PDF + Office + ZIP attachment coverage.
+#
+# Example (placeholders — replace before running):
+# 19d7e0f5cc3cf29f
+# 19d77b687d34fd30

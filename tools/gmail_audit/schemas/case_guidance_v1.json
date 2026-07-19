@@ -1,0 +1,85 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "operational_status",
+    "waiting_for",
+    "reason_summary_pl",
+    "blocker_summary_pl",
+    "momentum",
+    "stagnation_flag",
+    "stagnation_reason_pl",
+    "business_readiness",
+    "operator_attention_class",
+    "next_step_hint_pl",
+    "confidence"
+  ],
+  "properties": {
+    "operational_status": {
+      "type": "string",
+      "enum": [
+        "active_review",
+        "waiting",
+        "blocked",
+        "follow_up_needed",
+        "ready",
+        "stagnating",
+        "watching"
+      ]
+    },
+    "waiting_for": {
+      "type": "string",
+      "enum": [
+        "none",
+        "client",
+        "operator",
+        "supplier",
+        "document",
+        "quote",
+        "schedule",
+        "payment",
+        "unknown"
+      ]
+    },
+    "reason_summary_pl": { "type": "string" },
+    "blocker_summary_pl": { "type": "string" },
+    "momentum": {
+      "type": "string",
+      "enum": ["growing", "steady", "slowing", "stalled"]
+    },
+    "stagnation_flag": { "type": "boolean" },
+    "stagnation_reason_pl": { "type": "string" },
+    "business_readiness": {
+      "type": "string",
+      "enum": [
+        "not_ready",
+        "needs_data",
+        "ready_for_offer",
+        "ready_for_followup",
+        "ready_for_close"
+      ]
+    },
+    "operator_attention_class": {
+      "type": "string",
+      "enum": ["watch", "keep_visible", "act_soon", "act_now", "case_only_ok"]
+    },
+    "next_step_hint_pl": { "type": "string" },
+    "confidence": { "type": "number" },
+    "evidence_refs": {
+      "type": "array",
+      "items": { "type": "object", "additionalProperties": true }
+    },
+    "assumptions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "unsupported_claims": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "conflict_refs": {
+      "type": "array",
+      "items": { "type": "object", "additionalProperties": true }
+    }
+  }
+}

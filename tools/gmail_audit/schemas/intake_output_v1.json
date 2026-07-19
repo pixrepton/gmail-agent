@@ -1,0 +1,299 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://topinstal.local/schemas/intake-output-v1.json",
+  "title": "Gmail Intake Output V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source",
+    "message",
+    "thread",
+    "business_area",
+    "primary_signal",
+    "secondary_signals",
+    "case_assessment",
+    "decision",
+    "priority",
+    "confidence",
+    "review",
+    "reason",
+    "extracted_data"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["channel", "mailbox", "observed_at"],
+      "properties": {
+        "channel": { "type": "string", "const": "gmail" },
+        "mailbox": { "type": "string" },
+        "observed_at": { "type": "string" }
+      }
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["message_id", "date", "sender", "to", "subject", "has_attachments"],
+      "properties": {
+        "message_id": { "type": "string" },
+        "date": { "type": "string" },
+        "sender": { "type": "string" },
+        "to": { "type": "array", "items": { "type": "string" } },
+        "cc": { "type": "array", "items": { "type": "string" } },
+        "subject": { "type": "string" },
+        "snippet": { "type": "string" },
+        "has_attachments": { "type": "boolean" },
+        "labels": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "thread": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["thread_id", "thread_position", "is_reply_or_forward", "thread_summary"],
+      "properties": {
+        "thread_id": { "type": "string" },
+        "thread_position": {
+          "type": "string",
+          "enum": ["new_thread", "reply", "forward", "unknown"]
+        },
+        "is_reply_or_forward": { "type": "boolean" },
+        "thread_summary": { "type": "string" },
+        "linked_case_candidates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["case_key", "case_type", "match_confidence"],
+            "properties": {
+              "case_key": { "type": "string" },
+              "case_type": { "type": "string" },
+              "match_confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+            }
+          }
+        }
+      }
+    },
+    "business_area": {
+      "type": "string",
+      "enum": [
+        "sales",
+        "finance",
+        "procurement",
+        "logistics",
+        "operations",
+        "service",
+        "security",
+        "supplier_commercial",
+        "marketing_growth",
+        "compliance_legal",
+        "internal_coordination",
+        "general_admin"
+      ]
+    },
+    "primary_signal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "name", "description", "business_significance"],
+      "properties": {
+        "code": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "business_significance": { "type": "string" }
+      }
+    },
+    "secondary_signals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "name"],
+        "properties": {
+          "code": { "type": "string" },
+          "name": { "type": "string" }
+        }
+      }
+    },
+    "case_assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["case_family", "is_new_case", "state_detected", "state_change"],
+      "properties": {
+        "case_family": {
+          "type": "string",
+          "enum": [
+            "lead_opportunity",
+            "finance_settlement",
+            "procurement_delivery",
+            "supplier_commercial_review",
+            "platform_service_security",
+            "compliance_legal_review",
+            "marketing_performance_review",
+            "internal_coordination",
+            "unknown"
+          ]
+        },
+        "is_new_case": { "type": "boolean" },
+        "state_detected": { "type": "string" },
+        "state_change": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["detected"],
+          "properties": {
+            "detected": { "type": "boolean" },
+            "from_state": { "type": "string" },
+            "to_state": { "type": "string" }
+          }
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "action_rationale"],
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "create_case",
+            "append_to_existing_case",
+            "update_case_state",
+            "create_task",
+            "create_case_and_task",
+            "mark_reference",
+            "mark_watchlist",
+            "review",
+            "ignore"
+          ]
+        },
+        "action_rationale": { "type": "string" },
+        "suggested_owner": { "type": "string" },
+        "sla_hint": { "type": "string" }
+      }
+    },
+    "priority": {
+      "type": "string",
+      "enum": ["critical", "high", "medium", "low"]
+    },
+    "confidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "signal_confidence",
+        "case_link_confidence",
+        "decision_confidence",
+        "extraction_confidence"
+      ],
+      "properties": {
+        "signal_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "case_link_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "decision_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "extraction_confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "flags"],
+      "properties": {
+        "required": { "type": "boolean" },
+        "flags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "ambiguous_signal",
+              "multiple_competing_signals",
+              "possible_existing_case_but_no_match",
+              "deadline_found_without_owner",
+              "financial_document_without_payable_context",
+              "supplier_mail_may_be_noise_or_opportunity",
+              "self_forward_requires_meaning_inference",
+              "legal_or_compliance_risk",
+              "security_or_platform_risk",
+              "insufficient_thread_context"
+            ]
+          }
+        }
+      }
+    },
+    "reason": { "type": "string" },
+    "extracted_data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entities", "dates", "amounts", "references", "deadlines"],
+      "properties": {
+        "entities": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "people": { "type": "array", "items": { "type": "string" } },
+            "organizations": { "type": "array", "items": { "type": "string" } },
+            "locations": { "type": "array", "items": { "type": "string" } },
+            "products": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "dates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["value", "kind"],
+            "properties": {
+              "value": { "type": "string" },
+              "kind": { "type": "string" }
+            }
+          }
+        },
+        "amounts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["value", "currency", "kind"],
+            "properties": {
+              "value": { "type": "number" },
+              "currency": { "type": "string" },
+              "kind": { "type": "string" }
+            }
+          }
+        },
+        "references": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "invoice_numbers": { "type": "array", "items": { "type": "string" } },
+            "shipment_numbers": { "type": "array", "items": { "type": "string" } },
+            "order_numbers": { "type": "array", "items": { "type": "string" } },
+            "transaction_numbers": { "type": "array", "items": { "type": "string" } },
+            "case_ids": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "deadlines": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["date", "reason"],
+            "properties": {
+              "date": { "type": "string" },
+              "reason": { "type": "string" }
+            }
+          }
+        },
+        "lead_details": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "property_type": { "type": "string" },
+            "floor_area_m2": { "type": "number" },
+            "city": { "type": "string" },
+            "county": { "type": "string" },
+            "inquiry_source": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

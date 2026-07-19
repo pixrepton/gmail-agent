@@ -1,0 +1,179 @@
+# VPS stack for gmail-agent runtime.
+#
+# Ownership:
+# - Postgres + pgvector is the canonical mailbox-memory source of truth.
+# - Ollama provides the local OpenAI-compatible embeddings endpoint for pgvector.
+# - Neo4j is a bounded projection-only pilot.
+# - Python gmail-agent worker owns ingestion, memory, policy, proposals, and bridge draining.
+# - WordPress/Daszek remains projection-only and is not part of this compose file.
+#
+# Usage on VPS:
+#   cp .env.vps.example .env.vps
+#   Production secrets: /etc/topinstal/gmail-agent.env (see deploy/migrate-gmail-agent-env.sh)
+#   # edit both files; do not commit secrets
+#   docker compose --env-file .env.vps -f docker-compose.vps.yml up -d mailbox-memory-db neo4j ollama
+#   docker compose --env-file .env.vps -f docker-compose.vps.yml run --rm ollama-pull
+#   docker compose --env-file .env.vps -f docker-compose.vps.yml run --rm gmail-agent-worker
+#   docker compose --env-file .env.vps -f docker-compose.vps.yml --profile worker up -d gmail-agent-worker
+#   docker compose --env-file .env.vps -f docker-compose.vps.yml --profile api up -d gmail-agent-nodeb-api
+
+name: ${COMPOSE_PROJECT_NAME:-gmail-agent-vps}
+
+services:
+  mailbox-memory-db:
+    image: pgvector/pgvector:pg16
+    container_name: ${MAILBOX_MEMORY_CONTAINER_NAME:-gmail-agent-mailbox-memory}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${MAILBOX_MEMORY_POSTGRES_DB:-mailbox_memory}
+      POSTGRES_USER: ${MAILBOX_MEMORY_POSTGRES_USER:-mailbox_memory}
+      POSTGRES_PASSWORD: ${MAILBOX_MEMORY_POSTGRES_PASSWORD:?MAILBOX_MEMORY_POSTGRES_PASSWORD must be set in .env.vps}
+    ports:
+      - "127.0.0.1:${MAILBOX_MEMORY_PG_PORT:-54329}:5432"
+    volumes:
+      - mailbox-memory-pgdata:/var/lib/postgresql/data
+      - ./scripts/init-mailbox-memory-pgvector.sql:/docker-entrypoint-initdb.d/01-pgvector.sql:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${MAILBOX_MEMORY_POSTGRES_USER:-mailbox_memory} -d ${MAILBOX_MEMORY_POSTGRES_DB:-mailbox_memory}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  neo4j:
+    image: neo4j:5-community
+    container_name: gmail-agent-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set in .env.vps}
+      NEO4J_dbms_security_auth__minimum__password__length: "12"
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512m
+    ports:
+      - "127.0.0.1:${NEO4J_HTTP_PORT:-7474}:7474"
+      - "127.0.0.1:${NEO4J_BOLT_PORT:-7687}:7687"
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    healthcheck:
+      test: [ "CMD-SHELL", "bash -ec ':</dev/tcp/127.0.0.1/7687'" ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 45s
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: gmail-agent-ollama
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${OLLAMA_HTTP_PORT:-11434}:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: [ "CMD-SHELL", "ollama list >/dev/null 2>&1" ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    profiles: [ "setup" ]
+    restart: "no"
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    command: [ "pull", "${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}" ]
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+  gmail-agent-nodeb-api:
+    image: gmail-agent-runtime:local
+    container_name: gmail-agent-nodeb-api
+    restart: unless-stopped
+    profiles: [ "api" ]
+    env_file:
+      - /etc/topinstal/gmail-agent.env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      GMAIL_AGENT_ENV_FILE: /etc/topinstal/gmail-agent.env
+      CIEPLO_WORKFLOW_CONTEXT_BASE_URL: http://host.docker.internal:8000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    working_dir: /app/tools/gmail_audit
+    command: [ "python", "-m", "uvicorn", "api_app:app", "--host", "0.0.0.0", "--port", "8765" ]
+    ports:
+      - "127.0.0.1:8765:8765"
+    depends_on:
+      mailbox-memory-db:
+        condition: service_healthy
+    volumes:
+      - /etc/topinstal/gmail-agent.env:/etc/topinstal/gmail-agent.env:ro
+      - /etc/topinstal/company_context.md:/etc/topinstal/company_context.md:ro
+
+  gmail-agent-worker:
+    build:
+      context: .
+      dockerfile: docker/gmail-audit.Dockerfile
+      args:
+        INSTALL_DOCLING: ${GMAIL_AGENT_INSTALL_DOCLING:-0}
+    image: gmail-agent-runtime:local
+    restart: unless-stopped
+    profiles: [ "worker" ]
+    env_file:
+      - /etc/topinstal/gmail-agent.env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      GMAIL_AGENT_ENV_FILE: /etc/topinstal/gmail-agent.env
+    command: ${GMAIL_AGENT_WORKER_COMMAND:-python tools/gmail_audit/gmail_intake.py doctor --skip-gmail --verbose}
+    depends_on:
+      mailbox-memory-db:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    volumes:
+      - /etc/topinstal/company_context.md:/etc/topinstal/company_context.md:ro
+      - /etc/topinstal/gmail-agent.env:/etc/topinstal/gmail-agent.env:ro
+      - gmail-agent-runs:/app/tools/gmail_audit/runs
+      - gmail-agent-blobs:/app/tools/gmail_audit/data/mailbox_memory/blobs
+      - gmail-agent-signal-runtime:/app/tools/gmail_audit/data/mailbox_memory/signal_runtime
+  gmail-agent-worker-test:
+    build:
+      context: .
+      dockerfile: docker/gmail-audit.Dockerfile
+      args:
+        INSTALL_DOCLING: ${GMAIL_AGENT_TEST_INSTALL_DOCLING:-0}
+        INSTALL_PHP: ${GMAIL_AGENT_TEST_INSTALL_PHP:-1}
+    image: gmail-agent-runtime-test:local
+    restart: "no"
+    profiles: [ "test" ]
+    environment:
+      PYTHONUNBUFFERED: "1"
+    command: python -m pytest tools/gmail_audit/tests -q
+    depends_on:
+      mailbox-memory-db:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+
+volumes:
+  mailbox-memory-pgdata:
+    name: gmail-agent-mailbox-memory-pgdata
+  neo4j-data:
+    name: gmail-agent-neo4j-data
+  neo4j-logs:
+    name: gmail-agent-neo4j-logs
+  ollama-data:
+    name: gmail-agent-ollama-data
+  gmail-agent-runs:
+    name: gmail-agent-runs
+  gmail-agent-blobs:
+    name: gmail-agent-blobs
+  gmail-agent-signal-runtime:
+    name: gmail-agent-signal-runtime

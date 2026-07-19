@@ -1,0 +1,9 @@
+{
+  "new_lead": "No reliable existing case link and the sender looks like a fresh customer inquiry.",
+  "active_case": "The message appears to continue an already active operational case.",
+  "post_offer": "The customer seems to be reacting after an offer, quote, or proposal.",
+  "waiting_for_data": "The thread is active but still missing core qualification or execution data.",
+  "supplier_thread": "The thread is primarily about supplier coordination or procurement.",
+  "finance_flow": "The mail belongs to a finance or settlement workflow.",
+  "unclear": "The business state is still too weak to infer safely."
+}

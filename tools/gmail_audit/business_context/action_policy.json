@@ -1,0 +1,15 @@
+{
+  "global_rules": [
+    "Do not recommend a confident live action when review is already required.",
+    "Do not recommend a hard case update when the case link is weak or competing.",
+    "Prefer collect_data or prepare_reply when the message is actionable but core information is still missing."
+  ],
+  "service_rules": [
+    "High-urgency service messages should bias toward review or explicit operator escalation.",
+    "Service reply drafts should focus on contact details, symptoms, and availability."
+  ],
+  "finance_rules": [
+    "Finance flows should not auto-ignore if invoice or payment references are present.",
+    "When payable context is incomplete, escalate to review."
+  ]
+}

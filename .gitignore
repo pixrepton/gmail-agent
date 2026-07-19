@@ -1,0 +1,124 @@
+# Cursor / local tooling
+.cursor/worktrees.json
+# Cursor plan dumps are local noise; keep policy + archived snapshots versioned.
+.cursor/plans/**
+!.cursor/plans/README.md
+!.cursor/plans/archive/
+!.cursor/plans/archive/**
+
+# Mailbox Memory Postgres (Docker) - copy from .env.mailbox-memory.example
+.env.mailbox-memory
+.env.vps
+
+# Root-only env / credentials (never commit); keep *.example tracked
+/.env
+/.env.*
+!/.env.example
+!/.env.*.example
+deploy/.env.daszek-local
+/id_ed25519
+/id_rsa
+/*_ed25519
+/*_rsa
+/*.pem
+/*.key
+/*.ppk
+/credentials.json
+/token.json
+/*credentials*
+/*token*.json
+
+# Root scratch / local notes (not product sources)
+/Untitled
+/best-ai-os-ever.md
+/elementy.md
+/wizja.md
+
+# Python runtime
+.venv/
+venv/
+.coverage
+.coverage.*
+coverage/
+htmlcov/
+tools/gmail_audit/.env
+tools/gmail_audit/.env.backup*
+tools/gmail_audit/.env.local
+tools/gmail_audit/.venv/
+tools/gmail_audit/runs/
+tools/gmail_audit/debug/
+tools/gmail_audit/__pycache__/
+tools/gmail_audit/.cache/
+tools/gmail_audit/.pytest_cache/
+.mypy_cache/
+.pytest_cache/
+**/__pycache__/
+*.pyc
+*.pyo
+*.db
+*.db-shm
+*.db-wal
+*.sqlite3
+
+# Operator-local secrets / VPS notes (never commit)
+chrupki/
+klucze/
+
+# Local hardening / artifacts
+.agent-tooling-cache/
+.playwright-mcp/
+.tmp-gmail-hardening/
+.tmp-*/
+.tmp-*.json
+test-results/
+.gitnexus/
+
+# Understand Anything — local graph cache (never commit)
+.understand-anything/
+**/.understand-anything/
+.understandignore
+
+# Mailbox memory attachment blobs (runtime data, never commit)
+tools/gmail_audit/data/mailbox_memory/blobs/
+
+runs/
+*.log
+
+# Serena MCP (oraios) — local only; do not commit
+.serena/
+
+# graphify local artifacts (cache + generated HTML/report); regenerate with `graphify update .`
+graphify-out/
+
+*.tmp
+*.bak
+*.lnk
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+
+# Daszek runtime data moved to ../daszek/ — see daszek/.gitignore if present
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+.env.
+.env
+
+# ML model cache (downloads, never commit)
+tools/gmail_audit/backend/model_cache/
+
+# macOS junk
+**/__MACOSX
+
+# Auto-generated hash files (constitution integrity check)
+*.sha256
+
+# Docker auto-created runtime files
+etc/topinstal/

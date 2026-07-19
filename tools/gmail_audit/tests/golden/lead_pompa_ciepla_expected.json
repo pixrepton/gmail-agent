@@ -1,0 +1,63 @@
+{
+  "schema_version": "1.0",
+  "source": {
+    "channel": "gmail",
+    "mailbox": "inbox",
+    "observed_at": "2026-07-01T09:00:00+00:00"
+  },
+  "message": {
+    "message_id": "golden-lead-001",
+    "date": "2026-07-01T09:00:00+00:00",
+    "sender": "klient@przyklad.pl",
+    "to": [
+      "sales@topinstal.pl"
+    ],
+    "subject": "Pompa ciepla 12kW",
+    "has_attachments": false
+  },
+  "thread": {
+    "thread_id": "t-golden-001",
+    "thread_position": "new_thread",
+    "is_reply_or_forward": false,
+    "thread_summary": "Nowe zapytanie o pompe ciepla"
+  },
+  "business_area": "sales",
+  "primary_signal": {
+    "code": "lead_inquiry",
+    "name": "Zapytanie ofertowe",
+    "description": "Klient prosi o wycene pompy ciepla",
+    "business_significance": "Nowy lead — potencjalna sprzedaz"
+  },
+  "secondary_signals": [],
+  "case_assessment": {
+    "case_family": "lead_opportunity",
+    "is_new_case": true,
+    "state_detected": "new",
+    "state_change": {
+      "detected": false
+    }
+  },
+  "decision": {
+    "action": "create_case",
+    "action_rationale": "Nowy lead HVAC wymaga utworzenia sprawy"
+  },
+  "priority": "medium",
+  "confidence": {
+    "signal_confidence": 0.85,
+    "case_link_confidence": 0.0,
+    "decision_confidence": 0.75,
+    "extraction_confidence": 0.6
+  },
+  "review": {
+    "required": false,
+    "flags": []
+  },
+  "reason": "Klient prosi o wycene pompy ciepla 12kW",
+  "extracted_data": {
+    "entities": {},
+    "dates": [],
+    "amounts": [],
+    "references": {},
+    "deadlines": []
+  }
+}

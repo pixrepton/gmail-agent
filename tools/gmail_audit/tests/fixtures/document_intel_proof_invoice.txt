@@ -1,0 +1,4 @@
+Faktura VAT nr FV/PROOF/2026
+NIP: 1234567890
+Data wystawienia: 2026-04-20
+Razem do zapłaty: 1500,00 PLN

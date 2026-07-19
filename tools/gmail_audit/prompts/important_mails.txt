@@ -1,0 +1,27 @@
+Przeanalizuj skrzynkę Gmail w trybie read-only przy użyciu oficjalnego Gmail connectora Groq i znajdź wiadomości godne uwagi z ostatnich {{LOOKBACK_DAYS}} dni.
+
+Wymagania operacyjne:
+- Użyj connectora Gmail do pobrania wiadomości z ostatnich {{LOOKBACK_DAYS}} dni przez sensowne wyszukiwania, najnowsze wiadomości i odczyt konkretnych maili.
+- Skup się na wiadomościach ważnych biznesowo lub operacyjnie.
+- Odrzuć oczywisty szum, newslettery, promocje i maile niskiej wartości.
+- Jeśli wiadomość jest niejednoznaczna, pomiń ją zamiast zgadywać.
+- Nie modyfikuj skrzynki i nie uruchamiaj żadnych dalszych automatyzacji.
+
+Zwróć WYŁĄCZNIE poprawny JSON array.
+Bez markdownu.
+Bez komentarzy.
+Bez dodatkowego tekstu przed lub po JSON.
+
+Każdy element tablicy ma być obiektem z polami:
+- "title" - string
+- "summary" - string
+- "category" - string
+- "priority" - string: jedna z wartości "low", "medium", "high"
+- "why_important" - string
+
+Opcjonalnie możesz dodać tylko:
+- "sender" - string
+- "subject" - string
+- "date" - string
+
+Nie dodawaj żadnych innych pól.

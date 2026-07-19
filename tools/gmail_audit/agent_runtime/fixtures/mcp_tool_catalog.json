@@ -1,0 +1,54 @@
+{
+  "schema_version": "agent_runtime_mcp.v1",
+  "server_name": "gmail-agent-runtime",
+  "transport": "stdio",
+  "tools": [
+    {
+      "name": "get_engagement_snapshot",
+      "required_args": [],
+      "optional_args": [
+        "engagement_id",
+        "case_id",
+        "include_full"
+      ]
+    },
+    {
+      "name": "list_active_engagements",
+      "optional_args": [
+        "status",
+        "blocking_gaps_only",
+        "hitl_required_only",
+        "limit"
+      ]
+    },
+    {
+      "name": "trigger_agent_run",
+      "required_args": [
+        "engagement_id"
+      ],
+      "optional_args": [
+        "signal",
+        "allow_when_disabled"
+      ]
+    },
+    {
+      "name": "approve_hitl_action",
+      "required_args": [
+        "engagement_id",
+        "action_id"
+      ],
+      "optional_args": [
+        "operator_id"
+      ]
+    },
+    {
+      "name": "get_agent_turns",
+      "required_args": [
+        "engagement_id"
+      ],
+      "optional_args": [
+        "limit"
+      ]
+    }
+  ]
+}

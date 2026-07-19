@@ -1,0 +1,27 @@
+{
+  "mailbox": "ops@topinstal.local",
+  "source_message": {
+    "message_id": "fixture-weak-link-001",
+    "thread_id": "weak-thread-002",
+    "date": "2026-04-01T16:10:00+02:00",
+    "from": "jan@example.com",
+    "to": ["ops@topinstal.local"],
+    "subject": "Re: Montaz w Legionowie",
+    "snippet": "Czy mamy juz termin?",
+    "body": "Czy mamy juz termin montazu w Legionowie? Dajcie znac prosze.",
+    "labels": ["INBOX"]
+  },
+  "context_messages": [
+    {
+      "message_id": "fixture-weak-link-context-001",
+      "thread_id": "legacy-weak-001",
+      "date": "2026-03-28T12:00:00+02:00",
+      "from": "ops@topinstal.local",
+      "to": ["jan@example.com"],
+      "subject": "Montaz w Legionowie",
+      "snippet": "Wracamy z ustaleniami.",
+      "body": "Wracamy z ustaleniami dotyczacymi montazu w Legionowie.",
+      "labels": ["SENT"]
+    }
+  ]
+}

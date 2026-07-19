@@ -1,0 +1,63 @@
+{
+  "schema_version": "1.0",
+  "source": {
+    "channel": "gmail",
+    "mailbox": "inbox",
+    "observed_at": "2026-07-02T10:00:00+00:00"
+  },
+  "message": {
+    "message_id": "golden-inv-001",
+    "date": "2026-07-02T10:00:00+00:00",
+    "sender": "ksiegowosc@dostawca.pl",
+    "to": [
+      "finance@topinstal.pl"
+    ],
+    "subject": "FV 123/2026",
+    "has_attachments": true
+  },
+  "thread": {
+    "thread_id": "t-golden-003",
+    "thread_position": "new_thread",
+    "is_reply_or_forward": false,
+    "thread_summary": "Faktura zakupowa"
+  },
+  "business_area": "finance",
+  "primary_signal": {
+    "code": "invoice_incoming",
+    "name": "Faktura zakupowa",
+    "description": "Faktura od dostawcy",
+    "business_significance": "Zobowiazanie finansowe do ksiegowania"
+  },
+  "secondary_signals": [],
+  "case_assessment": {
+    "case_family": "finance_settlement",
+    "is_new_case": true,
+    "state_detected": "new",
+    "state_change": {
+      "detected": false
+    }
+  },
+  "decision": {
+    "action": "forward_to_department",
+    "action_rationale": "Faktura zakupowa — przekazac do ksiegowosci"
+  },
+  "priority": "low",
+  "confidence": {
+    "signal_confidence": 0.95,
+    "case_link_confidence": 0.0,
+    "decision_confidence": 0.9,
+    "extraction_confidence": 0.8
+  },
+  "review": {
+    "required": false,
+    "flags": []
+  },
+  "reason": "Faktura zakupowa do ksiegowania",
+  "extracted_data": {
+    "entities": {},
+    "dates": [],
+    "amounts": [],
+    "references": {},
+    "deadlines": []
+  }
+}

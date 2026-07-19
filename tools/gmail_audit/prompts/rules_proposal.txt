@@ -1,0 +1,18 @@
+Na podstawie read-only rozpoznania skrzynki Gmail z użyciem oficjalnego Gmail connectora Groq zaproponuj praktyczne reguły klasyfikacji wiadomości.
+
+Wymagania operacyjne:
+- Użyj connectora Gmail do pobrania reprezentatywnych wiadomości i kategorii, zanim zaproponujesz reguły.
+- Korzystaj z odczytu skrzynki w rozsądnych partiach i przez wyszukiwanie, a nie z jednego przykładu.
+- Nie modyfikuj niczego w skrzynce i nie sugeruj działań wykraczających poza audyt i klasyfikację.
+- Nie wymyślaj reguł bez pokrycia w realnych wiadomościach.
+- Przy słabych sygnałach zaznacz poziom ostrożności.
+
+Przygotuj praktyczny raport po polsku, który zawiera:
+1. Proponowane reguły: co uznawać za ważne
+2. Proponowane reguły: co uznawać za szum
+3. Co powinno trafiać do systemu zadań
+4. Co powinno trafiać do ręcznego przeglądu
+5. Przykładowe kategorie i ich sygnały
+6. Progi ostrożności oraz przypadki graniczne
+
+Reguły mają być opisane operacyjnie, tak aby dało się je później przełożyć na prostą automatyzację lub checklistę.

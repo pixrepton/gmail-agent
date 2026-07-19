@@ -1,0 +1,53 @@
+{
+  "preclassification_lane": "reference_only",
+  "intake": {
+    "business_area": "general_admin",
+    "case_family": "unknown",
+    "primary_signal_code": "reference_information",
+    "primary_signal_name": "Reference information",
+    "decision_action": "mark_reference",
+    "action_rationale": "Informational delivery confirmation should stay visible without active work.",
+    "priority": "low",
+    "reason": "Delivery confirmation is reference-only.",
+    "review_required": false,
+    "review_flags": [],
+    "confidence": {
+      "signal_confidence": 0.82,
+      "case_link_confidence": 0.0,
+      "decision_confidence": 0.82,
+      "extraction_confidence": 0.66
+    },
+    "state_detected": "reference_only",
+    "is_new_case": false
+  },
+  "expected_case_link": {
+    "decision": "no_link",
+    "selected_case_key": ""
+  },
+  "business_reasoning": {
+    "business_interpretation": "Informational delivery confirmation with no clear active ask.",
+    "business_area": "admin",
+    "customer_state_guess": "unclear",
+    "recommended_next_action": "wait",
+    "recommended_action_reason": "Keep the evidence visible as reference only.",
+    "missing_information": [],
+    "risks": [],
+    "urgency": "low",
+    "operator_note": "No reply needed unless someone asks for follow-up.",
+    "confidence": {
+      "business_confidence": 0.71,
+      "action_confidence": 0.7
+    }
+  },
+  "reply_draft": {
+    "draft_enabled": false,
+    "drafts": [],
+    "do_not_send_reasons": ["reference_only"],
+    "confidence": 0.0
+  },
+  "action_plan": {
+    "primary_action": "hold",
+    "daszek_projection_mode": "reference",
+    "safe_for_live_push": false
+  }
+}

@@ -1,0 +1,1672 @@
+[
+    {
+        "id":  "lead_p1_1",
+        "subject":  "Prosba o wycene pompy ciepla 1",
+        "sender":  "lead1@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_2",
+        "subject":  "Prosba o wycene pompy ciepla 2",
+        "sender":  "lead2@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_3",
+        "subject":  "Prosba o wycene pompy ciepla 3",
+        "sender":  "lead3@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_4",
+        "subject":  "Prosba o wycene pompy ciepla 4",
+        "sender":  "lead4@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_5",
+        "subject":  "Prosba o wycene pompy ciepla 5",
+        "sender":  "lead5@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_6",
+        "subject":  "Prosba o wycene pompy ciepla 6",
+        "sender":  "lead6@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_7",
+        "subject":  "Prosba o wycene pompy ciepla 7",
+        "sender":  "lead7@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_8",
+        "subject":  "Prosba o wycene pompy ciepla 8",
+        "sender":  "lead8@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_9",
+        "subject":  "Prosba o wycene pompy ciepla 9",
+        "sender":  "lead9@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_10",
+        "subject":  "Prosba o wycene pompy ciepla 10",
+        "sender":  "lead10@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_11",
+        "subject":  "Prosba o wycene pompy ciepla 11",
+        "sender":  "lead11@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_12",
+        "subject":  "Prosba o wycene pompy ciepla 12",
+        "sender":  "lead12@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_13",
+        "subject":  "Prosba o wycene pompy ciepla 13",
+        "sender":  "lead13@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_14",
+        "subject":  "Prosba o wycene pompy ciepla 14",
+        "sender":  "lead14@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_15",
+        "subject":  "Prosba o wycene pompy ciepla 15",
+        "sender":  "lead15@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_16",
+        "subject":  "Prosba o wycene pompy ciepla 16",
+        "sender":  "lead16@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_17",
+        "subject":  "Prosba o wycene pompy ciepla 17",
+        "sender":  "lead17@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_18",
+        "subject":  "Prosba o wycene pompy ciepla 18",
+        "sender":  "lead18@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_19",
+        "subject":  "Prosba o wycene pompy ciepla 19",
+        "sender":  "lead19@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_20",
+        "subject":  "Prosba o wycene pompy ciepla 20",
+        "sender":  "lead20@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_21",
+        "subject":  "Prosba o wycene pompy ciepla 21",
+        "sender":  "lead21@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_22",
+        "subject":  "Prosba o wycene pompy ciepla 22",
+        "sender":  "lead22@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_23",
+        "subject":  "Prosba o wycene pompy ciepla 23",
+        "sender":  "lead23@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_24",
+        "subject":  "Prosba o wycene pompy ciepla 24",
+        "sender":  "lead24@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_25",
+        "subject":  "Prosba o wycene pompy ciepla 25",
+        "sender":  "lead25@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_26",
+        "subject":  "Prosba o wycene pompy ciepla 26",
+        "sender":  "lead26@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_27",
+        "subject":  "Prosba o wycene pompy ciepla 27",
+        "sender":  "lead27@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_28",
+        "subject":  "Prosba o wycene pompy ciepla 28",
+        "sender":  "lead28@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_29",
+        "subject":  "Prosba o wycene pompy ciepla 29",
+        "sender":  "lead29@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_30",
+        "subject":  "Prosba o wycene pompy ciepla 30",
+        "sender":  "lead30@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_31",
+        "subject":  "Prosba o wycene pompy ciepla 31",
+        "sender":  "lead31@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_32",
+        "subject":  "Prosba o wycene pompy ciepla 32",
+        "sender":  "lead32@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_33",
+        "subject":  "Prosba o wycene pompy ciepla 33",
+        "sender":  "lead33@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_34",
+        "subject":  "Prosba o wycene pompy ciepla 34",
+        "sender":  "lead34@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_35",
+        "subject":  "Prosba o wycene pompy ciepla 35",
+        "sender":  "lead35@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_36",
+        "subject":  "Prosba o wycene pompy ciepla 36",
+        "sender":  "lead36@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_37",
+        "subject":  "Prosba o wycene pompy ciepla 37",
+        "sender":  "lead37@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_38",
+        "subject":  "Prosba o wycene pompy ciepla 38",
+        "sender":  "lead38@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_39",
+        "subject":  "Prosba o wycene pompy ciepla 39",
+        "sender":  "lead39@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_40",
+        "subject":  "Prosba o wycene pompy ciepla 40",
+        "sender":  "lead40@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_41",
+        "subject":  "Prosba o wycene pompy ciepla 41",
+        "sender":  "lead41@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_42",
+        "subject":  "Prosba o wycene pompy ciepla 42",
+        "sender":  "lead42@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_43",
+        "subject":  "Prosba o wycene pompy ciepla 43",
+        "sender":  "lead43@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_44",
+        "subject":  "Prosba o wycene pompy ciepla 44",
+        "sender":  "lead44@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "lead_p1_45",
+        "subject":  "Prosba o wycene pompy ciepla 45",
+        "sender":  "lead45@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny lead: dom jednorodzinny, ogrzewanie, prosba o oferte.",
+        "has_attachment":  false,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "accounting_p2_1",
+        "subject":  "ZUS i podatki 1",
+        "sender":  "accounting1@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny komunikat ksiegowy: ZUS, PIT, termin platnosci.",
+        "has_attachment":  false,
+        "expected_case_type":  "ksiegowosc_podatki",
+        "expected_case_family":  "accounting",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "accounting_p2_2",
+        "subject":  "ZUS i podatki 2",
+        "sender":  "accounting2@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny komunikat ksiegowy: ZUS, PIT, termin platnosci.",
+        "has_attachment":  false,
+        "expected_case_type":  "ksiegowosc_podatki",
+        "expected_case_family":  "accounting",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "accounting_p2_3",
+        "subject":  "ZUS i podatki 3",
+        "sender":  "accounting3@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny komunikat ksiegowy: ZUS, PIT, termin platnosci.",
+        "has_attachment":  false,
+        "expected_case_type":  "ksiegowosc_podatki",
+        "expected_case_family":  "accounting",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "accounting_p2_4",
+        "subject":  "ZUS i podatki 4",
+        "sender":  "accounting4@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny komunikat ksiegowy: ZUS, PIT, termin platnosci.",
+        "has_attachment":  false,
+        "expected_case_type":  "ksiegowosc_podatki",
+        "expected_case_family":  "accounting",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "accounting_p2_5",
+        "subject":  "ZUS i podatki 5",
+        "sender":  "accounting5@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny komunikat ksiegowy: ZUS, PIT, termin platnosci.",
+        "has_attachment":  false,
+        "expected_case_type":  "ksiegowosc_podatki",
+        "expected_case_family":  "accounting",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "accounting_p2_6",
+        "subject":  "ZUS i podatki 6",
+        "sender":  "accounting6@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny komunikat ksiegowy: ZUS, PIT, termin platnosci.",
+        "has_attachment":  false,
+        "expected_case_type":  "ksiegowosc_podatki",
+        "expected_case_family":  "accounting",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "accounting_p2_7",
+        "subject":  "ZUS i podatki 7",
+        "sender":  "accounting7@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny komunikat ksiegowy: ZUS, PIT, termin platnosci.",
+        "has_attachment":  false,
+        "expected_case_type":  "ksiegowosc_podatki",
+        "expected_case_family":  "accounting",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "accounting_p2_8",
+        "subject":  "ZUS i podatki 8",
+        "sender":  "accounting8@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny komunikat ksiegowy: ZUS, PIT, termin platnosci.",
+        "has_attachment":  false,
+        "expected_case_type":  "ksiegowosc_podatki",
+        "expected_case_family":  "accounting",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "accounting_p2_9",
+        "subject":  "ZUS i podatki 9",
+        "sender":  "accounting9@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny komunikat ksiegowy: ZUS, PIT, termin platnosci.",
+        "has_attachment":  false,
+        "expected_case_type":  "ksiegowosc_podatki",
+        "expected_case_family":  "accounting",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "accounting_p2_10",
+        "subject":  "ZUS i podatki 10",
+        "sender":  "accounting10@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny komunikat ksiegowy: ZUS, PIT, termin platnosci.",
+        "has_attachment":  false,
+        "expected_case_type":  "ksiegowosc_podatki",
+        "expected_case_family":  "accounting",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "accounting_p2_11",
+        "subject":  "ZUS i podatki 11",
+        "sender":  "accounting11@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny komunikat ksiegowy: ZUS, PIT, termin platnosci.",
+        "has_attachment":  false,
+        "expected_case_type":  "ksiegowosc_podatki",
+        "expected_case_family":  "accounting",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "accounting_p2_12",
+        "subject":  "ZUS i podatki 12",
+        "sender":  "accounting12@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny komunikat ksiegowy: ZUS, PIT, termin platnosci.",
+        "has_attachment":  false,
+        "expected_case_type":  "ksiegowosc_podatki",
+        "expected_case_family":  "accounting",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "accounting_p2_13",
+        "subject":  "ZUS i podatki 13",
+        "sender":  "accounting13@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny komunikat ksiegowy: ZUS, PIT, termin platnosci.",
+        "has_attachment":  false,
+        "expected_case_type":  "ksiegowosc_podatki",
+        "expected_case_family":  "accounting",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "accounting_p2_14",
+        "subject":  "ZUS i podatki 14",
+        "sender":  "accounting14@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny komunikat ksiegowy: ZUS, PIT, termin platnosci.",
+        "has_attachment":  false,
+        "expected_case_type":  "ksiegowosc_podatki",
+        "expected_case_family":  "accounting",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "accounting_p2_15",
+        "subject":  "ZUS i podatki 15",
+        "sender":  "accounting15@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny komunikat ksiegowy: ZUS, PIT, termin platnosci.",
+        "has_attachment":  false,
+        "expected_case_type":  "ksiegowosc_podatki",
+        "expected_case_family":  "accounting",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "accounting_p2_16",
+        "subject":  "ZUS i podatki 16",
+        "sender":  "accounting16@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny komunikat ksiegowy: ZUS, PIT, termin platnosci.",
+        "has_attachment":  false,
+        "expected_case_type":  "ksiegowosc_podatki",
+        "expected_case_family":  "accounting",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "accounting_p2_17",
+        "subject":  "ZUS i podatki 17",
+        "sender":  "accounting17@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny komunikat ksiegowy: ZUS, PIT, termin platnosci.",
+        "has_attachment":  false,
+        "expected_case_type":  "ksiegowosc_podatki",
+        "expected_case_family":  "accounting",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "accounting_p2_18",
+        "subject":  "ZUS i podatki 18",
+        "sender":  "accounting18@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny komunikat ksiegowy: ZUS, PIT, termin platnosci.",
+        "has_attachment":  false,
+        "expected_case_type":  "ksiegowosc_podatki",
+        "expected_case_family":  "accounting",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "accounting_p2_19",
+        "subject":  "ZUS i podatki 19",
+        "sender":  "accounting19@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny komunikat ksiegowy: ZUS, PIT, termin platnosci.",
+        "has_attachment":  false,
+        "expected_case_type":  "ksiegowosc_podatki",
+        "expected_case_family":  "accounting",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "accounting_p2_20",
+        "subject":  "ZUS i podatki 20",
+        "sender":  "accounting20@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny komunikat ksiegowy: ZUS, PIT, termin platnosci.",
+        "has_attachment":  false,
+        "expected_case_type":  "ksiegowosc_podatki",
+        "expected_case_family":  "accounting",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "supplier_p2_1",
+        "subject":  "Oferta hurtowni dla instalatora 1",
+        "sender":  "supplier1@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna oferta dostawcy: rabat, cennik, pompy ciepla.",
+        "has_attachment":  true,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "supplier_p2_2",
+        "subject":  "Oferta hurtowni dla instalatora 2",
+        "sender":  "supplier2@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna oferta dostawcy: rabat, cennik, pompy ciepla.",
+        "has_attachment":  true,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "supplier_p2_3",
+        "subject":  "Oferta hurtowni dla instalatora 3",
+        "sender":  "supplier3@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna oferta dostawcy: rabat, cennik, pompy ciepla.",
+        "has_attachment":  true,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "supplier_p2_4",
+        "subject":  "Oferta hurtowni dla instalatora 4",
+        "sender":  "supplier4@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna oferta dostawcy: rabat, cennik, pompy ciepla.",
+        "has_attachment":  true,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "supplier_p2_5",
+        "subject":  "Oferta hurtowni dla instalatora 5",
+        "sender":  "supplier5@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna oferta dostawcy: rabat, cennik, pompy ciepla.",
+        "has_attachment":  true,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "supplier_p2_6",
+        "subject":  "Oferta hurtowni dla instalatora 6",
+        "sender":  "supplier6@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna oferta dostawcy: rabat, cennik, pompy ciepla.",
+        "has_attachment":  true,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "supplier_p2_7",
+        "subject":  "Oferta hurtowni dla instalatora 7",
+        "sender":  "supplier7@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna oferta dostawcy: rabat, cennik, pompy ciepla.",
+        "has_attachment":  true,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "supplier_p2_8",
+        "subject":  "Oferta hurtowni dla instalatora 8",
+        "sender":  "supplier8@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna oferta dostawcy: rabat, cennik, pompy ciepla.",
+        "has_attachment":  true,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "supplier_p2_9",
+        "subject":  "Oferta hurtowni dla instalatora 9",
+        "sender":  "supplier9@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna oferta dostawcy: rabat, cennik, pompy ciepla.",
+        "has_attachment":  true,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "supplier_p2_10",
+        "subject":  "Oferta hurtowni dla instalatora 10",
+        "sender":  "supplier10@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna oferta dostawcy: rabat, cennik, pompy ciepla.",
+        "has_attachment":  true,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "supplier_p2_11",
+        "subject":  "Oferta hurtowni dla instalatora 11",
+        "sender":  "supplier11@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna oferta dostawcy: rabat, cennik, pompy ciepla.",
+        "has_attachment":  true,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "supplier_p2_12",
+        "subject":  "Oferta hurtowni dla instalatora 12",
+        "sender":  "supplier12@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna oferta dostawcy: rabat, cennik, pompy ciepla.",
+        "has_attachment":  true,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "supplier_p2_13",
+        "subject":  "Oferta hurtowni dla instalatora 13",
+        "sender":  "supplier13@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna oferta dostawcy: rabat, cennik, pompy ciepla.",
+        "has_attachment":  true,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "supplier_p2_14",
+        "subject":  "Oferta hurtowni dla instalatora 14",
+        "sender":  "supplier14@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna oferta dostawcy: rabat, cennik, pompy ciepla.",
+        "has_attachment":  true,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "supplier_p2_15",
+        "subject":  "Oferta hurtowni dla instalatora 15",
+        "sender":  "supplier15@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna oferta dostawcy: rabat, cennik, pompy ciepla.",
+        "has_attachment":  true,
+        "expected_case_type":  "lead_oferta",
+        "expected_case_family":  "lead_opportunity",
+        "expected_requires_action":  true,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  true
+    },
+    {
+        "id":  "newsletter_1",
+        "subject":  "Newsletter promocyjny 1",
+        "sender":  "newsletter1@example.test",
+        "labels":  [
+                       "CATEGORY_PROMOTIONS",
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny newsletter marketingowy, unsubscribe, promocja.",
+        "has_attachment":  false,
+        "expected_case_type":  "noise",
+        "expected_case_family":  "",
+        "expected_requires_action":  false,
+        "expected_upsert":  false,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "newsletter_2",
+        "subject":  "Newsletter promocyjny 2",
+        "sender":  "newsletter2@example.test",
+        "labels":  [
+                       "CATEGORY_PROMOTIONS",
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny newsletter marketingowy, unsubscribe, promocja.",
+        "has_attachment":  false,
+        "expected_case_type":  "noise",
+        "expected_case_family":  "",
+        "expected_requires_action":  false,
+        "expected_upsert":  false,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "newsletter_3",
+        "subject":  "Newsletter promocyjny 3",
+        "sender":  "newsletter3@example.test",
+        "labels":  [
+                       "CATEGORY_PROMOTIONS",
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny newsletter marketingowy, unsubscribe, promocja.",
+        "has_attachment":  false,
+        "expected_case_type":  "noise",
+        "expected_case_family":  "",
+        "expected_requires_action":  false,
+        "expected_upsert":  false,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "newsletter_4",
+        "subject":  "Newsletter promocyjny 4",
+        "sender":  "newsletter4@example.test",
+        "labels":  [
+                       "CATEGORY_PROMOTIONS",
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny newsletter marketingowy, unsubscribe, promocja.",
+        "has_attachment":  false,
+        "expected_case_type":  "noise",
+        "expected_case_family":  "",
+        "expected_requires_action":  false,
+        "expected_upsert":  false,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "newsletter_5",
+        "subject":  "Newsletter promocyjny 5",
+        "sender":  "newsletter5@example.test",
+        "labels":  [
+                       "CATEGORY_PROMOTIONS",
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny newsletter marketingowy, unsubscribe, promocja.",
+        "has_attachment":  false,
+        "expected_case_type":  "noise",
+        "expected_case_family":  "",
+        "expected_requires_action":  false,
+        "expected_upsert":  false,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "newsletter_6",
+        "subject":  "Newsletter promocyjny 6",
+        "sender":  "newsletter6@example.test",
+        "labels":  [
+                       "CATEGORY_PROMOTIONS",
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny newsletter marketingowy, unsubscribe, promocja.",
+        "has_attachment":  false,
+        "expected_case_type":  "noise",
+        "expected_case_family":  "",
+        "expected_requires_action":  false,
+        "expected_upsert":  false,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "newsletter_7",
+        "subject":  "Newsletter promocyjny 7",
+        "sender":  "newsletter7@example.test",
+        "labels":  [
+                       "CATEGORY_PROMOTIONS",
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny newsletter marketingowy, unsubscribe, promocja.",
+        "has_attachment":  false,
+        "expected_case_type":  "noise",
+        "expected_case_family":  "",
+        "expected_requires_action":  false,
+        "expected_upsert":  false,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "newsletter_8",
+        "subject":  "Newsletter promocyjny 8",
+        "sender":  "newsletter8@example.test",
+        "labels":  [
+                       "CATEGORY_PROMOTIONS",
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny newsletter marketingowy, unsubscribe, promocja.",
+        "has_attachment":  false,
+        "expected_case_type":  "noise",
+        "expected_case_family":  "",
+        "expected_requires_action":  false,
+        "expected_upsert":  false,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "newsletter_9",
+        "subject":  "Newsletter promocyjny 9",
+        "sender":  "newsletter9@example.test",
+        "labels":  [
+                       "CATEGORY_PROMOTIONS",
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny newsletter marketingowy, unsubscribe, promocja.",
+        "has_attachment":  false,
+        "expected_case_type":  "noise",
+        "expected_case_family":  "",
+        "expected_requires_action":  false,
+        "expected_upsert":  false,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "newsletter_10",
+        "subject":  "Newsletter promocyjny 10",
+        "sender":  "newsletter10@example.test",
+        "labels":  [
+                       "CATEGORY_PROMOTIONS",
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny newsletter marketingowy, unsubscribe, promocja.",
+        "has_attachment":  false,
+        "expected_case_type":  "noise",
+        "expected_case_family":  "",
+        "expected_requires_action":  false,
+        "expected_upsert":  false,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "newsletter_11",
+        "subject":  "Newsletter promocyjny 11",
+        "sender":  "newsletter11@example.test",
+        "labels":  [
+                       "CATEGORY_PROMOTIONS",
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny newsletter marketingowy, unsubscribe, promocja.",
+        "has_attachment":  false,
+        "expected_case_type":  "noise",
+        "expected_case_family":  "",
+        "expected_requires_action":  false,
+        "expected_upsert":  false,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "newsletter_12",
+        "subject":  "Newsletter promocyjny 12",
+        "sender":  "newsletter12@example.test",
+        "labels":  [
+                       "CATEGORY_PROMOTIONS",
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny newsletter marketingowy, unsubscribe, promocja.",
+        "has_attachment":  false,
+        "expected_case_type":  "noise",
+        "expected_case_family":  "",
+        "expected_requires_action":  false,
+        "expected_upsert":  false,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "newsletter_13",
+        "subject":  "Newsletter promocyjny 13",
+        "sender":  "newsletter13@example.test",
+        "labels":  [
+                       "CATEGORY_PROMOTIONS",
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny newsletter marketingowy, unsubscribe, promocja.",
+        "has_attachment":  false,
+        "expected_case_type":  "noise",
+        "expected_case_family":  "",
+        "expected_requires_action":  false,
+        "expected_upsert":  false,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "newsletter_14",
+        "subject":  "Newsletter promocyjny 14",
+        "sender":  "newsletter14@example.test",
+        "labels":  [
+                       "CATEGORY_PROMOTIONS",
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny newsletter marketingowy, unsubscribe, promocja.",
+        "has_attachment":  false,
+        "expected_case_type":  "noise",
+        "expected_case_family":  "",
+        "expected_requires_action":  false,
+        "expected_upsert":  false,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "newsletter_15",
+        "subject":  "Newsletter promocyjny 15",
+        "sender":  "newsletter15@example.test",
+        "labels":  [
+                       "CATEGORY_PROMOTIONS",
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny newsletter marketingowy, unsubscribe, promocja.",
+        "has_attachment":  false,
+        "expected_case_type":  "noise",
+        "expected_case_family":  "",
+        "expected_requires_action":  false,
+        "expected_upsert":  false,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "newsletter_16",
+        "subject":  "Newsletter promocyjny 16",
+        "sender":  "newsletter16@example.test",
+        "labels":  [
+                       "CATEGORY_PROMOTIONS",
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny newsletter marketingowy, unsubscribe, promocja.",
+        "has_attachment":  false,
+        "expected_case_type":  "noise",
+        "expected_case_family":  "",
+        "expected_requires_action":  false,
+        "expected_upsert":  false,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "newsletter_17",
+        "subject":  "Newsletter promocyjny 17",
+        "sender":  "newsletter17@example.test",
+        "labels":  [
+                       "CATEGORY_PROMOTIONS",
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny newsletter marketingowy, unsubscribe, promocja.",
+        "has_attachment":  false,
+        "expected_case_type":  "noise",
+        "expected_case_family":  "",
+        "expected_requires_action":  false,
+        "expected_upsert":  false,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "newsletter_18",
+        "subject":  "Newsletter promocyjny 18",
+        "sender":  "newsletter18@example.test",
+        "labels":  [
+                       "CATEGORY_PROMOTIONS",
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny newsletter marketingowy, unsubscribe, promocja.",
+        "has_attachment":  false,
+        "expected_case_type":  "noise",
+        "expected_case_family":  "",
+        "expected_requires_action":  false,
+        "expected_upsert":  false,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "newsletter_19",
+        "subject":  "Newsletter promocyjny 19",
+        "sender":  "newsletter19@example.test",
+        "labels":  [
+                       "CATEGORY_PROMOTIONS",
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny newsletter marketingowy, unsubscribe, promocja.",
+        "has_attachment":  false,
+        "expected_case_type":  "noise",
+        "expected_case_family":  "",
+        "expected_requires_action":  false,
+        "expected_upsert":  false,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "newsletter_20",
+        "subject":  "Newsletter promocyjny 20",
+        "sender":  "newsletter20@example.test",
+        "labels":  [
+                       "CATEGORY_PROMOTIONS",
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczny newsletter marketingowy, unsubscribe, promocja.",
+        "has_attachment":  false,
+        "expected_case_type":  "noise",
+        "expected_case_family":  "",
+        "expected_requires_action":  false,
+        "expected_upsert":  false,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "reference_1",
+        "subject":  "Informacja techniczna 1",
+        "sender":  "info1@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna informacja bez zadania do wykonania.",
+        "has_attachment":  false,
+        "expected_case_type":  "unknown_low_value",
+        "expected_case_family":  "reference_only",
+        "expected_requires_action":  false,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "reference_2",
+        "subject":  "Informacja techniczna 2",
+        "sender":  "info2@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna informacja bez zadania do wykonania.",
+        "has_attachment":  false,
+        "expected_case_type":  "unknown_low_value",
+        "expected_case_family":  "reference_only",
+        "expected_requires_action":  false,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "reference_3",
+        "subject":  "Informacja techniczna 3",
+        "sender":  "info3@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna informacja bez zadania do wykonania.",
+        "has_attachment":  false,
+        "expected_case_type":  "unknown_low_value",
+        "expected_case_family":  "reference_only",
+        "expected_requires_action":  false,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "reference_4",
+        "subject":  "Informacja techniczna 4",
+        "sender":  "info4@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna informacja bez zadania do wykonania.",
+        "has_attachment":  false,
+        "expected_case_type":  "unknown_low_value",
+        "expected_case_family":  "reference_only",
+        "expected_requires_action":  false,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "reference_5",
+        "subject":  "Informacja techniczna 5",
+        "sender":  "info5@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna informacja bez zadania do wykonania.",
+        "has_attachment":  false,
+        "expected_case_type":  "unknown_low_value",
+        "expected_case_family":  "reference_only",
+        "expected_requires_action":  false,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "reference_6",
+        "subject":  "Informacja techniczna 6",
+        "sender":  "info6@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna informacja bez zadania do wykonania.",
+        "has_attachment":  false,
+        "expected_case_type":  "unknown_low_value",
+        "expected_case_family":  "reference_only",
+        "expected_requires_action":  false,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "reference_7",
+        "subject":  "Informacja techniczna 7",
+        "sender":  "info7@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna informacja bez zadania do wykonania.",
+        "has_attachment":  false,
+        "expected_case_type":  "unknown_low_value",
+        "expected_case_family":  "reference_only",
+        "expected_requires_action":  false,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "reference_8",
+        "subject":  "Informacja techniczna 8",
+        "sender":  "info8@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna informacja bez zadania do wykonania.",
+        "has_attachment":  false,
+        "expected_case_type":  "unknown_low_value",
+        "expected_case_family":  "reference_only",
+        "expected_requires_action":  false,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "reference_9",
+        "subject":  "Informacja techniczna 9",
+        "sender":  "info9@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna informacja bez zadania do wykonania.",
+        "has_attachment":  false,
+        "expected_case_type":  "unknown_low_value",
+        "expected_case_family":  "reference_only",
+        "expected_requires_action":  false,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  false
+    },
+    {
+        "id":  "reference_10",
+        "subject":  "Informacja techniczna 10",
+        "sender":  "info10@example.test",
+        "labels":  [
+                       "INBOX"
+                   ],
+        "body":  "Syntetyczna informacja bez zadania do wykonania.",
+        "has_attachment":  false,
+        "expected_case_type":  "unknown_low_value",
+        "expected_case_family":  "reference_only",
+        "expected_requires_action":  false,
+        "expected_upsert":  true,
+        "expected_desk_eligible":  false
+    }
+]

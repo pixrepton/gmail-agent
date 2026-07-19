@@ -1,0 +1,21 @@
+{
+  "plugins": {
+    "context7-plugin": {
+      "enabled": true
+    },
+    "cursor-team-kit": {
+      "enabled": true
+    },
+    "superpowers": {
+      "enabled": true
+    },
+    "elastic-docs": {
+      "enabled": true
+    },
+    "understand-anything/understand-anything": {
+      "enabled": true,
+      "gitUrl": "https://github.com/Lum1104/Understand-Anything",
+      "gitRef": "main"
+    }
+  }
+}

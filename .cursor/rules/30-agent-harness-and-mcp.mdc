@@ -1,0 +1,67 @@
+---
+description: "Use for Cursor/Codex agent harness work: MCP repo-assistant, slash commands, hooks, verify-pack, doctor JSON, agent_harness_audit, context discipline, handover, or live-proof workflow setup. Not for ordinary local edits."
+alwaysApply: false
+globs:
+  - ".cursor/**"
+  - "docs/dev/**"
+  - "tools/scripts/agent_harness_audit.py"
+  - "memory-bank/**"
+---
+
+# Agent Harness and MCP
+
+Use this rule only for agent harness, MCP, slash commands, verification loops, context discipline, or handover workflows.
+
+## Prefer Skills First
+
+- `knowledge/agent-os/skills/cursor-codex-harness/SKILL.md` - implementation prompts, read order, Definition of Done, anti-drift.
+- `knowledge/agent-os/skills/context-budget-audit/SKILL.md` - rules/skills/token/context-bloat audits.
+- `agent-skill-quality-gate` - creating or editing skills (`.agents/skills/agent-skill-quality-gate/SKILL.md`).
+- `knowledge/agent-os/skills/gitnexus-static-repo-intel/SKILL.md` - GitNexus MCP/CLI static repo intelligence, dev-only.
+- `release-gate-proof-pack` - final evidence reports.
+- `gmail-agent-proof-run` - gmail-agent runtime verification.
+
+## MCP and Tooling
+
+- Prefer MCP `gmail-agent-repo-assistant` for orientation when available, but verify with file reads before editing.
+- Use slash commands from `.cursor/commands/` when they match the task.
+- Use GitNexus for code graph, impact, and call-chain questions. It is not runtime, mailbox, or Gate B truth.
+- If GitNexus is stale or unavailable, fall back to targeted reads and LSP/symbol/call hierarchy before broad grep.
+- Use Context7/FreshDocs/OpenAI Docs MCP for current external documentation only, not TOP-INSTAL project truth.
+
+## Navigation and Governance
+
+- **Git:** read-oriented `git` (status, diff, log) is fine when useful; write operations follow operator intent — see always-on `.cursor/rules/00-topinstal-core-router.mdc` (**Git i repo**).
+- Before MCP changes: read `docs/dev/MCP_OPERATING_MODEL.md`.
+- Before skill changes: read `.agents/SKILL_ROUTER.md`.
+- Long work: leave handoff via `docs/dev/AGENT_HANDOVER_LEDGER.md`.
+- Full harness map: `docs/dev/AGENT_DEVELOPMENT_HARNESS.md`.
+- Agent OS hubs: `docs/dev/AGENT_DEVELOPMENT_HARNESS.md`, `docs/dev/MCP_OPERATING_MODEL.md`, `docs/dev/AGENT_CONTEXT_BUDGET_POLICY.md`, `docs/dev/AGENT_SIDE_TOOLING.md`.
+
+## Proof and Boundaries
+
+- On ambiguous infra failures, contrast hypotheses and falsify with evidence before closing.
+- Before substantive code done: run minimal checks from `AGENTS.md` and selected skills.
+- Never claim fresh live Gmail/Daszek success or Gate B passed from this harness alone.
+- Respect Node A vs Node B: bridge/API, not shared filesystem.
+
+## `.cursor/rules` Markdown link hygiene
+
+- In `.cursor/rules/*.mdc`, a markdown link of the form “text in square brackets immediately followed by path in parentheses” resolves **relative to that file’s directory** (`.cursor/rules/`), not the repo root.
+- Targets under `docs/`, `tools/`, `memory-bank/`, root files like `AGENTS.md`, etc. must use the correct `../` prefix (e.g. `../../docs/dev/MCP_OPERATING_MODEL.md`). A “root-style” link like `docs/dev/foo.md` points at `.cursor/rules/docs/dev/foo.md` and will **fail** `python support/context_pack_audit.py --root .` with `unresolved_missing`.
+- After adding or editing such links, run that audit from the repo root before merge.
+
+## Future-proofing (mandatory after class fixes)
+
+- When you fix a **recurring** failure class (harness audit FAIL, `context_pack_audit` missing links, `just`/parser errors, CI checks, structural WARNs that encode a real invariant), do **not** stop at the minimal patch: add or update **durable guidance** in-repo (this ruleset, `docs/dev/AGENT_DEVELOPMENT_HARNESS.md`, `docs/core/PACKAGE_VALIDATION.md`, `docs/core/LOCAL_VS_EXTERNAL_REFERENCES.md`, or `tools/scripts/agent_harness_audit.py`) so the next session hits the constraint in docs, not only in chat history.
+- That obligation applies to the situation you are reading now: if you discover such a gap, **write it down** before treating the task as closed.
+- When documenting how markdown links work inside scanned surfaces, follow the note at the top of `support/context_pack_audit.py` so examples do not trip the link regex.
+
+## Verification
+
+After harness-related doc or rule changes:
+
+```bash
+python support/context_pack_audit.py --root .
+python tools/scripts/agent_harness_audit.py
+```

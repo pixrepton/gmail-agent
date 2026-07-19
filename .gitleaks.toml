@@ -1,0 +1,21 @@
+# Gitleaks — extend default rules; tune allowlist if new false positives appear in CI.
+# Docs: https://github.com/gitleaks/gitleaks
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Fixtures, templates, local trees; noisy JSON; local-only env (must stay gitignored)"
+paths = [
+  '''(?i)tools/gmail_audit/tests/''',
+  '''(?i)tools/gmail_audit/fixtures/''',
+  '''(?i)tools/gmail_audit/examples/''',
+  '''(?i)tools/gmail_audit/runs/''',
+  '''(?i)tools/gmail_audit/debug/''',
+  '''(?i)tools/gmail_audit/data/''',
+  '''(?i)tools/gmail_audit/google_drive_memory_review/''',
+  '''(?i)test-results/''',
+  '''(?i)tools/gmail_audit/\.env$''',
+  '''(?i)\.env\.example$''',
+  '''(?i)\.env\.mailbox-memory\.example$''',
+]

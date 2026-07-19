@@ -1,0 +1,83 @@
+{
+  "case_snapshot_hot_state_example": {
+    "schema_version": "case_snapshot_hot_state.v1",
+    "snapshot_id": "casesnap_example00000000000001",
+    "trace_id": "run-example-001",
+    "case": {
+      "case_id": "case_example",
+      "case_key": "example-key",
+      "case_family": "operations",
+      "lifecycle_status": "open",
+      "operational_status": "awaiting_review",
+      "waiting_for": "operator",
+      "business_readiness": "needs_data",
+      "operator_attention_class": "act_soon",
+      "priority": "high",
+      "summary_text": "Operational: awaiting_review. Latest signal: Invoice received. Next: review."
+    },
+    "participants": [{ "role": "customer", "name": "Jan K.", "email": "jan@example.com" }],
+    "entities": [],
+    "key_facts": [
+      {
+        "fact_key": "invoice_number",
+        "entity_scope": "case",
+        "value": "FV-100",
+        "confidence": 0.93,
+        "source_ref": "obs-example-1",
+        "provenance": { "kind": "signal", "ref": "obs-example-1" }
+      }
+    ],
+    "open_loops": [{ "loop_id": "ol_0", "description": "Confirm totals.", "kind": "review" }],
+    "deadlines": [],
+    "blockers": [],
+    "active_conflicts": [],
+    "documents_summary": [],
+    "latest_activity": {
+      "signal_id": "sig_example",
+      "signal_kind": "drive_document_added",
+      "observed_at": "2026-04-16T12:00:00+02:00",
+      "source_kind": "drive"
+    },
+    "recommended_next_step": "review",
+    "cold_evidence_pointers": {
+      "signal_ids": ["sig_example"],
+      "raw_observation_ids": ["obs-example-1"],
+      "document_ids": [],
+      "source_refs": []
+    },
+    "snapshot_meta": {
+      "version": 1,
+      "source_signal_id": "sig_example",
+      "confidence": 0.9,
+      "created_at": "2026-04-16T12:00:01+02:00"
+    }
+  },
+  "feedback_event_example": {
+    "event_class": "FeedbackEvent",
+    "schema_version": "feedback_event.v1",
+    "event_id": "fb_examplecalibration00001",
+    "occurred_at": "2026-04-16T12:05:00+02:00",
+    "case_id": "case_example",
+    "trace_id": "run-example-001",
+    "calibration_category": "wrong_draft_tone",
+    "detail": "Reply was too formal for this customer.",
+    "target_refs": { "desk_note_id": "note_1" },
+    "source_surface": "daszek",
+    "operator_id": "op_1",
+    "payload": {}
+  },
+  "adjudication_event_example": {
+    "event_class": "AdjudicationEvent",
+    "schema_version": "adjudication_event.v1",
+    "event_id": "adj_exampletruth0000000001",
+    "occurred_at": "2026-04-16T12:06:00+02:00",
+    "case_id": "case_example",
+    "adjudication_kind": "confirm_same_case",
+    "trace_id": "run-example-001",
+    "detail": "Operator confirms this thread belongs to case_example.",
+    "target_refs": { "message_id": "msg_1", "thread_id": "thr_1" },
+    "source_surface": "daszek",
+    "operator_id": "op_1",
+    "payload": {}
+  }
+}

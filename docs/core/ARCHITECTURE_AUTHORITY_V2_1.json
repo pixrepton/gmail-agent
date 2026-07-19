@@ -1,0 +1,51 @@
+{
+  "architecture_version": "v2.1",
+  "status": "authoritative",
+  "reviewed_on": "2026-07-13",
+  "authoritative_docs": [
+    "docs/core/CONSTITUTION_V2_1.md",
+    "docs/core/ARCHITECTURE_PRECEDENCE.md",
+    "docs/core/PHYSICAL_TOPOLOGY.md"
+  ],
+  "active_code_grounded_docs": [
+    "docs/core/PROJECT_README.md",
+    "docs/core/EVENT_CATALOG.md",
+    "docs/core/AGENT_RUNTIME_ARCHITECTURE.md",
+    "docs/runbooks/MAILBOX_MEMORY_POSTGRES.md"
+  ],
+  "runtime_proof_authority": "docs/runbooks/LAST_PROVEN_STATE.md",
+  "proof_metrics_policy": "volatile test counts and runtime claims belong only in LAST_PROVEN_STATE.md",
+  "hard_invariants": [
+    "append_only_first",
+    "raw_observation_before_canonical_signal",
+    "state_first",
+    "hot_state_default_cold_evidence_on_demand",
+    "evidence_backed_facts_and_explicit_conflicts",
+    "postgres_node_b_operational_truth",
+    "atomic_case_mutation_for_concurrent_writers",
+    "policy_before_action",
+    "external_mutations_default_deny",
+    "stable_decision_identity",
+    "accepted_is_not_executed",
+    "durable_execution_result_before_completion_projection",
+    "no_automatic_retry_after_outcome_unknown",
+    "final_ui_success_after_node_b_convergence",
+    "daszek_projection_only",
+    "feedback_split_calibration_vs_adjudication",
+    "node_a_node_b_physical_boundary"
+  ],
+  "forbidden_patterns": [
+    "mail_first_truth",
+    "raw_event_direct_to_heavy_reasoning",
+    "full_history_prompt_by_default",
+    "policy_or_auth_only_in_ui",
+    "write_route_open_when_token_missing",
+    "daszek_semantic_or_execution_owner",
+    "node_a_node_b_shared_filesystem_assumption",
+    "silent_conflict_flattening",
+    "action_without_policy_and_stable_decision_key",
+    "retry_external_effect_after_unknown_outcome",
+    "ui_final_success_from_http_accepted_only",
+    "mixed_feedback_modes"
+  ]
+}

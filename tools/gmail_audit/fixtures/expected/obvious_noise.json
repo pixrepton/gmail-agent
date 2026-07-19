@@ -1,0 +1,53 @@
+{
+  "preclassification_lane": "skip",
+  "intake": {
+    "business_area": "general_admin",
+    "case_family": "unknown",
+    "primary_signal_code": "system_noise",
+    "primary_signal_name": "System noise",
+    "decision_action": "ignore",
+    "action_rationale": "Deterministic preclassifier marked this mail as noise.",
+    "priority": "low",
+    "reason": "Promotional newsletter should be ignored safely.",
+    "review_required": false,
+    "review_flags": [],
+    "confidence": {
+      "signal_confidence": 0.97,
+      "case_link_confidence": 0.0,
+      "decision_confidence": 0.97,
+      "extraction_confidence": 0.6
+    },
+    "state_detected": "noise",
+    "is_new_case": false
+  },
+  "expected_case_link": {
+    "decision": "no_link",
+    "selected_case_key": ""
+  },
+  "business_reasoning": {
+    "business_interpretation": "Promotional noise with no operational relevance.",
+    "business_area": "unknown",
+    "customer_state_guess": "unclear",
+    "recommended_next_action": "ignore",
+    "recommended_action_reason": "No business action is needed.",
+    "missing_information": [],
+    "risks": [],
+    "urgency": "low",
+    "operator_note": "Keep ignored.",
+    "confidence": {
+      "business_confidence": 0.2,
+      "action_confidence": 0.2
+    }
+  },
+  "reply_draft": {
+    "draft_enabled": false,
+    "drafts": [],
+    "do_not_send_reasons": ["ignore_lane"],
+    "confidence": 0.0
+  },
+  "action_plan": {
+    "primary_action": "ignore",
+    "daszek_projection_mode": "ignore",
+    "safe_for_live_push": false
+  }
+}

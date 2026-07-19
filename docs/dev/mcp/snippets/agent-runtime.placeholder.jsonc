@@ -1,0 +1,16 @@
+// Operator-profile MCP — agent runtime (PR-G). Not in repo-contract allowlist until promoted.
+// Requires: pip install -r gmail-agent/tools/gmail_audit/requirements.txt (includes `mcp`)
+// Env: same as gmail_audit (.env) — MAILBOX_MEMORY_DATABASE_URL, AGENT_RUNTIME_*.
+{
+  "gmail-agent-runtime": {
+    "command": "python",
+    "args": [
+      "-m",
+      "agent_runtime.mcp_server"
+    ],
+    "cwd": "${workspaceFolder}/gmail-agent/tools/gmail_audit",
+    "env": {
+      "PYTHONPATH": "${workspaceFolder}/gmail-agent/tools/gmail_audit"
+    }
+  }
+}

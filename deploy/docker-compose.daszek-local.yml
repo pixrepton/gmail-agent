@@ -1,0 +1,87 @@
+# Local Daszek sandbox (Node A) — http://localhost:8090
+# Plugin: ../../daszek (relative to this file — not inside the plugin mount).
+# Node B: gmail-agent API on host :8766 (GMAIL_AGENT_NODEB_PORT in .env.vps; Cursor may use :8765).
+#
+# From workspace root:
+#   copy gmail-agent/deploy/.env.daszek-local.example gmail-agent/deploy/.env.daszek-local
+#   docker compose -f gmail-agent/deploy/docker-compose.daszek-local.yml up -d
+#
+# First-time WP (after DB healthy):
+#   docker compose -f gmail-agent/deploy/docker-compose.daszek-local.yml --profile cli run --rm wp-cli wp core install ...
+#
+# Port :8090 conflicts with kalk-top PHP built-in — do not run both.
+
+name: daszek-local
+
+services:
+  wordpress:
+    image: wordpress:6.7-php8.2-apache
+    container_name: daszek-local-wordpress
+    restart: unless-stopped
+    ports:
+      - "8090:80"
+    environment:
+      WORDPRESS_DB_HOST: daszek-db
+      WORDPRESS_DB_NAME: daszek
+      WORDPRESS_DB_USER: daszek
+      WORDPRESS_DB_PASSWORD: daszek_local
+      WORDPRESS_CONFIG_EXTRA: |
+        define('DASZEK_NODE_B_API_BASE', 'http://host.docker.internal:8766');
+        if (getenv('DASZEK_NODE_B_API_TOKEN')) {
+          define('DASZEK_NODE_B_API_TOKEN', getenv('DASZEK_NODE_B_API_TOKEN'));
+        }
+        if (getenv('DASZEK_BRIDGE_TOKEN')) {
+          define('DASZEK_BRIDGE_TOKEN', getenv('DASZEK_BRIDGE_TOKEN'));
+        }
+        if (getenv('DASZEK_NODE_B_SERVICE_TOKEN')) {
+          define('DASZEK_NODE_B_SERVICE_TOKEN', getenv('DASZEK_NODE_B_SERVICE_TOKEN'));
+        }
+    env_file:
+      - path: .env.daszek-local
+        required: false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - daszek-wp-html:/var/www/html
+      - ../../daszek:/var/www/html/wp-content/plugins/Daszek:ro
+    depends_on:
+      daszek-db:
+        condition: service_healthy
+
+  daszek-db:
+    image: mysql:8.0
+    container_name: daszek-local-db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: daszek
+      MYSQL_USER: daszek
+      MYSQL_PASSWORD: daszek_local
+      MYSQL_ROOT_PASSWORD: root_local
+    volumes:
+      - daszek-db-data:/var/lib/mysql
+    healthcheck:
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-udaszek", "-pdaszek_local" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  wp-cli:
+    profiles: [ cli ]
+    image: wordpress:cli-2.11-php8.2
+    user: "33:33"
+    depends_on:
+      daszek-db:
+        condition: service_healthy
+    environment:
+      WORDPRESS_DB_HOST: daszek-db
+      WORDPRESS_DB_NAME: daszek
+      WORDPRESS_DB_USER: daszek
+      WORDPRESS_DB_PASSWORD: daszek_local
+    volumes:
+      - daszek-wp-html:/var/www/html
+      - ../../daszek:/var/www/html/wp-content/plugins/Daszek:ro
+
+volumes:
+  daszek-wp-html:
+  daszek-db-data:

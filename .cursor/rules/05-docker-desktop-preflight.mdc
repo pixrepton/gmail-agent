@@ -1,0 +1,19 @@
+---
+description: "Docker Desktop preflight: always verify Engine is up before docker compose."
+alwaysApply: false
+globs:
+  - "**/docker-compose*.yml"
+  - "deploy/**"
+  - "tools/**/Dockerfile"
+---
+
+# Docker Desktop preflight (Windows)
+
+Before any local-vps bring-up or “VPS-like” deploy using Docker / Compose, always run:
+
+```powershell
+docker version
+docker compose version
+```
+
+If either command fails (e.g. cannot connect to `dockerDesktopLinuxEngine`), treat the work as **blocked** and instruct the operator to start Docker Desktop. Resume only after `docker version` shows a Server section (Context `desktop-linux`).

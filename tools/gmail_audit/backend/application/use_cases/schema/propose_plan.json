@@ -1,0 +1,6 @@
+# Tool schema definition for propose_plan (JSON Structure)
+#
+# This defines the expected request/response structure for the new propose_plan tool.
+# Requests will be JSON objects with these fields: {
+  "tool_schemas": "/api/v1/specs/tools.json"
+}

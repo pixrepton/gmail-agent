@@ -1,0 +1,12 @@
+[Unit]
+Description=Run TOP-INSTAL event spine processor every 5 minutes (shadow soak)
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=5min
+AccuracySec=1s
+Persistent=true
+Unit=topinstal-event-processor.service
+
+[Install]
+WantedBy=timers.target

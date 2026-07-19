@@ -1,0 +1,15 @@
+{
+  "mailbox": "ops@topinstal.local",
+  "source_message": {
+    "message_id": "fixture-finance-001",
+    "thread_id": "finance-thread-001",
+    "date": "2026-04-01T14:10:00+02:00",
+    "from": "faktury@partner-finance.pl",
+    "to": ["ops@topinstal.local"],
+    "subject": "Faktura FV/2026/04/118 - potwierdzenie platnosci",
+    "snippet": "Potwierdzamy otrzymanie platnosci.",
+    "body": "Potwierdzamy otrzymanie platnosci do faktury FV/2026/04/118. Dokument wysylamy w zalaczeniu do archiwum.",
+    "labels": ["INBOX"]
+  },
+  "context_messages": []
+}

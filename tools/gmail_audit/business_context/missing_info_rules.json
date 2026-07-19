@@ -1,0 +1,7 @@
+{
+  "lead": ["phone", "installation address", "property size", "scope of work"],
+  "installation": ["site readiness", "confirmed date", "access constraints"],
+  "service": ["fault description", "location", "callback number", "urgency confirmation"],
+  "finance": ["invoice number", "amount", "counterparty confirmation"],
+  "supplier": ["order reference", "delivery timing", "material list"]
+}

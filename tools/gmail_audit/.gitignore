@@ -1,0 +1,14 @@
+.env
+.env.local
+.env.*
+!.env.example
+runs/
+debug/
+__pycache__/
+.cache/
+.pytest_cache/
+*.pyc
+*.pyo
+*.tmp
+*.log
+*.bak

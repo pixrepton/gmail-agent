@@ -1,0 +1,60 @@
+{
+  "preclassification_lane": "intake_llm",
+  "intake": {
+    "business_area": "sales",
+    "case_family": "lead_opportunity",
+    "primary_signal_code": "new_lead",
+    "primary_signal_name": "New lead",
+    "decision_action": "create_case_and_task",
+    "action_rationale": "New lead requires case creation and follow-up.",
+    "priority": "medium",
+    "reason": "Customer asks about a new heat pump installation.",
+    "review_required": false,
+    "review_flags": [],
+    "confidence": {
+      "signal_confidence": 0.88,
+      "case_link_confidence": 0.12,
+      "decision_confidence": 0.82,
+      "extraction_confidence": 0.74
+    },
+    "state_detected": "new_inquiry",
+    "is_new_case": true
+  },
+  "expected_case_link": {
+    "decision": "no_link",
+    "selected_case_key": ""
+  },
+  "business_reasoning": {
+    "business_interpretation": "New lead asking for a heat pump installation quote.",
+    "business_area": "lead",
+    "customer_state_guess": "new_lead",
+    "recommended_next_action": "collect_data",
+    "recommended_action_reason": "Need missing qualification details before a confident handoff.",
+    "missing_information": ["installation address", "phone"],
+    "risks": ["scope_not_fully_defined"],
+    "urgency": "normal",
+    "operator_note": "Reply with a short qualification request and keep the case visible.",
+    "confidence": {
+      "business_confidence": 0.86,
+      "action_confidence": 0.81
+    }
+  },
+  "reply_draft": {
+    "draft_enabled": true,
+    "drafts": [
+      {
+        "variant": "short_operational",
+        "subject_suggestion": "Re: Zapytanie o pompe ciepla",
+        "body": "Dzien dobry, dziekujemy za wiadomosc. Aby przygotowac kolejny krok, prosimy o adres inwestycji oraz numer telefonu kontaktowego.",
+        "goal": "collect_missing_data"
+      }
+    ],
+    "do_not_send_reasons": [],
+    "confidence": 0.78
+  },
+  "action_plan": {
+    "primary_action": "prepare_reply",
+    "daszek_projection_mode": "task",
+    "safe_for_live_push": false
+  }
+}

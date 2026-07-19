@@ -1,0 +1,53 @@
+{
+  "preclassification_lane": "reference_only",
+  "intake": {
+    "business_area": "finance",
+    "case_family": "finance_settlement",
+    "primary_signal_code": "payment_confirmation",
+    "primary_signal_name": "Payment confirmation",
+    "decision_action": "mark_reference",
+    "action_rationale": "Finance confirmation should stay visible as reference without forcing task creation.",
+    "priority": "low",
+    "reason": "Finance/admin flow is informative and archivable.",
+    "review_required": false,
+    "review_flags": [],
+    "confidence": {
+      "signal_confidence": 0.84,
+      "case_link_confidence": 0.12,
+      "decision_confidence": 0.76,
+      "extraction_confidence": 0.8
+    },
+    "state_detected": "payment_confirmed",
+    "is_new_case": false
+  },
+  "expected_case_link": {
+    "decision": "no_link",
+    "selected_case_key": ""
+  },
+  "business_reasoning": {
+    "business_interpretation": "Finance confirmation that should remain available for reference.",
+    "business_area": "finance",
+    "customer_state_guess": "finance_flow",
+    "recommended_next_action": "wait",
+    "recommended_action_reason": "No immediate operator action is required beyond keeping the evidence visible.",
+    "missing_information": [],
+    "risks": [],
+    "urgency": "low",
+    "operator_note": "Keep as reference unless the finance owner asks for follow-up.",
+    "confidence": {
+      "business_confidence": 0.77,
+      "action_confidence": 0.73
+    }
+  },
+  "reply_draft": {
+    "draft_enabled": false,
+    "drafts": [],
+    "do_not_send_reasons": ["no_reply_needed"],
+    "confidence": 0.0
+  },
+  "action_plan": {
+    "primary_action": "hold",
+    "daszek_projection_mode": "reference",
+    "safe_for_live_push": false
+  }
+}

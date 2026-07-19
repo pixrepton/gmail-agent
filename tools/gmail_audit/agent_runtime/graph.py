@@ -1,0 +1,518 @@
+﻿
+"""Agent graph engine â€” Python owns state; planner picks tools."""
+
+from __future__ import annotations
+
+from log_config import get_logger
+import threading
+from dataclasses import dataclass, field
+
+from agent_runtime.constitution import AgentConstitution
+from agent_runtime.metrics import record_agent_turn
+from agent_runtime.planner import ToolPlanner
+from agent_runtime.snapshot_delta import apply_snapshot_delta, decrement_steps
+from agent_runtime.tool_context import ToolExecutionContext
+from agent_runtime.sub_agents import select_sub_agent, sub_agent_handoff_note, tools_for_sub_agent
+from agent_runtime.tool_result import ToolCallPlan, ToolResult
+from agent_runtime.tools_registry import AgentToolRegistry, MockToolRegistry, ToolRegistry
+from agent_runtime.turn_journal import AgentTurnJournal
+from llm_contracts.engagement_snapshot_v2 import (
+    EngagementSnapshotV2,
+    HitlGate,
+    ReasoningTraceItem,
+    ToolCallItem,
+)
+
+_LOOP_TERMINAL_CODES = frozenset({"pending_operator", "node_a_error"})
+
+# Globalny timeout na jednÄ… turÄ™ agenta (sekundy).
+# JeĹ›li LLM lub narzÄ™dzie zablokuje siÄ™ na dĹ‚uĹĽej, tura zostaje przerwana.
+# Kolejna tura (jeĹ›li sÄ… kroki) dziaĹ‚a normalnie â€” nie zabija caĹ‚ego runu.
+AGENT_TURN_TIMEOUT_SECONDS = 45
+
+# Maksymalna liczba tool calls na jednÄ… turÄ™.
+# Chroni przed zapÄ™tleniem agenta (LLM wywoĹ‚uje to samo narzÄ™dzie wielokrotnie).
+MAX_TOOL_CALLS_PER_TURN = 8
+
+_READ_ONCE_AFTER_OK_TOOLS = frozenset({"search_gmail_thread"})
+
+logger = get_logger(__name__)
+
+
+@dataclass
+class AgentTurnRecord:
+    tool_name: str
+    tool_status: str
+    turn_summary_pl: str
+    snapshot_version: int
+
+
+@dataclass
+class AgentGraphRunResult:
+    snapshot: EngagementSnapshotV2
+    turns: list[AgentTurnRecord] = field(default_factory=list)
+
+
+class AgentGraphEngine:
+    def __init__(
+        self,
+        *,
+        planner: ToolPlanner,
+        constitution: AgentConstitution,
+        tool_registry: ToolRegistry | None = None,
+        turn_journal: AgentTurnJournal | None = None,
+        checkpoint_store: Any | None = None,
+        run_id: str = "",
+    ) -> None:
+        self._planner = planner
+        self._constitution = constitution
+        self._tools: ToolRegistry = tool_registry or AgentToolRegistry()
+        self._turn_journal: AgentTurnJournal | None = turn_journal
+        self._checkpoint_store = checkpoint_store
+        self._run_id = str(run_id or "").strip()
+        # #21: WspĂłĹ‚dzielony ThreadPoolExecutor â€” zamiast tworzyÄ‡ nowy na kaĹĽde narzÄ™dzie
+        self._timeout_pool: Any | None = None
+        # Faza 5a: Concurrency control â€” max 1 agent run na ten engine
+        self._concurrency_semaphore = threading.Semaphore(1)
+        # Krok 8: Agent checkpoint â€” licznik tur dla checkpointow
+        self._checkpoint_turn_count: int = 0
+
+    def run(
+        self,
+        snapshot: EngagementSnapshotV2,
+        *,
+        context: ToolExecutionContext | None = None,
+        turn_journal: AgentTurnJournal | None = None,
+        start_turn_idx: int = 0,
+        operator_scope: str = "",
+    ) -> AgentGraphRunResult:
+        # Faza 5a: Concurrency control â€” tylko 1 agent run na ten engine
+        acquired = self._concurrency_semaphore.acquire(blocking=False)
+        if not acquired:
+            from agent_runtime.exceptions import AgentConcurrencyError
+            raise AgentConcurrencyError(
+                f"Agent run already in progress for engagement {snapshot.engagement_id}"
+            )
+        try:
+            return self._run(snapshot, context=context, turn_journal=turn_journal,
+                             start_turn_idx=start_turn_idx, operator_scope=operator_scope)
+        finally:
+            self._concurrency_semaphore.release()
+
+    def _run(
+        self,
+        snapshot: EngagementSnapshotV2,
+        *,
+        context: ToolExecutionContext | None = None,
+        turn_journal: AgentTurnJournal | None = None,
+        start_turn_idx: int = 0,
+        operator_scope: str = "",
+    ) -> AgentGraphRunResult:
+        ctx = context or ToolExecutionContext.from_snapshot(snapshot)
+        if ctx.constitution is None:
+            ctx.constitution = self._constitution
+        ctx.snapshot = snapshot
+        journal = turn_journal or self._turn_journal
+        current = _ground_current_signal(snapshot, ctx.signal_payload)
+        turns: list[AgentTurnRecord] = []
+        turn_idx = int(start_turn_idx)
+        tool_call_count = 0
+        completed_read_once_tools: set[str] = set()
+        while int(current.operational_status.steps_remaining) > 0:
+            if _is_loop_terminal(current):
+                break
+            # Limit liczby tool calls na turÄ™ (chroni przed zapÄ™tleniem LLM)
+            if tool_call_count >= MAX_TOOL_CALLS_PER_TURN:
+                logger.warning(
+                    "agent_turn_limit engagement=%s calls=%d",
+                    current.engagement_id,
+                    tool_call_count,
+                )
+                current = _apply_snapshot_delta_blocking(
+                    current,
+                    "Przekroczono limit narzÄ™dzi w tej turze. Operatorze, doprecyzuj.",
+                )
+                break
+            ctx.snapshot = current
+            sub_agent = select_sub_agent(tool_name="", snapshot=current)
+            scoped_tools = tools_for_sub_agent(sub_agent, self._constitution.tool_allowlist)
+            available_tools = _filter_completed_read_once_tools(
+                scoped_tools or list(self._constitution.tool_allowlist),
+                completed_read_once_tools,
+            )
+            try:
+                plan = self._planner.plan_next_tool(
+                    snapshot=current,
+                    available_tools=available_tools,
+                    constitution=self._constitution,
+                )
+            except Exception as exc:
+                # Failure convergence (DELIVERY-1): a planner-call exception (ghost-tool
+                # schema mismatch, network error, any provider-side bug) must never silently
+                # unwind the whole run with zero recorded turn and zero hitl_gate change â€”
+                # that is exactly how DEC-01-class must-escalate cases were lost (RC-2).
+                # Converge to the same safe, escalated terminal state report_gaps_and_stop
+                # already produces, through the SAME post-processing every other turn uses.
+                logger.error(
+                    "agent_planner_call_failed engagement=%s exc_type=%s exc=%s",
+                    current.engagement_id,
+                    type(exc).__name__,
+                    exc,
+                )
+                plan = ToolCallPlan(tool_name="planner_error", arguments={})
+                result = ToolResult(
+                    status="error",
+                    turn_summary_pl=f"BĹ‚Ä…d planera ({type(exc).__name__}) â€” zatrzymano, wymaga operatora.",
+                    snapshot_delta={
+                        "operational_status": {"code": "pending_operator", "blocking": True},
+                        "hitl_gate": {"required": True, "reason": f"planner_error:{type(exc).__name__}"},
+                    },
+                )
+                sub_agent = "general"
+            else:
+                if plan.tool_name not in available_tools:
+                    result = ToolResult(
+                        status="error",
+                        turn_summary_pl=f"NarzÄ™dzie {plan.tool_name} nie byĹ‚o dostÄ™pne w tej turze.",
+                        snapshot_delta={
+                            "operational_status": {"code": "pending_operator", "blocking": True},
+                            "hitl_gate": {"required": True, "reason": f"tool_not_offered:{plan.tool_name}"},
+                        },
+                    )
+                    sub_agent = "general"
+                else:
+                    sub_agent = select_sub_agent(tool_name=plan.tool_name, snapshot=current)
+                    logger.info(
+                        "agent_tool_shadow engagement=%s tool=%s sub_agent=%s",
+                        current.engagement_id,
+                        plan.tool_name,
+                        sub_agent,
+                    )
+                    result = self._execute_tool_with_timeout(
+                        plan, ctx, sub_agent=sub_agent, operator_scope=operator_scope
+                    )
+            tool_call_count += 1
+            if result.status == "ok" and plan.tool_name in _READ_ONCE_AFTER_OK_TOOLS:
+                completed_read_once_tools.add(plan.tool_name)
+            # P7: Event Spine â€” agent.tool.invoked
+            _db_url = str(getattr(ctx.settings, "mailbox_database_url", "") or "").strip()
+            if _db_url:
+                try:
+                    from event_spine.emitter import publish_os_event
+                    publish_os_event(
+                        database_url=_db_url,
+                        event_type="agent.tool.invoked",
+                        engagement_id=current.engagement_id,
+                        source_repo="gmail-agent",
+                        severity="error" if result.status == "error" else "info",
+                        success=result.status == "ok",
+                        payload={"tool_name": plan.tool_name, "sub_agent": sub_agent, "status": result.status},
+                    )
+                except Exception as exc:
+                    logger.warning("graph: sub_agent event publish failed tool=%s sub_agent=%s exc=%s", plan.tool_name, sub_agent, exc)
+            if result.status == "ok" and sub_agent != "general":
+                handoff = sub_agent_handoff_note(sub_agent, plan.tool_name)
+                delta = dict(result.snapshot_delta or {})
+                memory = dict(delta.get("agent_memory") or {})
+                trace = list(memory.get("reasoning_trace") or [])
+                trace.append({"turn": len(trace), "summary_pl": handoff})
+                memory["reasoning_trace"] = trace
+                delta["agent_memory"] = memory
+                result = result.model_copy(update={"snapshot_delta": delta})
+            current = _apply_tool_result(current, plan, result)
+            current = decrement_steps(current)
+            turns.append(
+                AgentTurnRecord(
+                    tool_name=plan.tool_name,
+                    tool_status=result.status,
+                    turn_summary_pl=result.turn_summary_pl,
+                    snapshot_version=current.version,
+                )
+            )
+            # #43: Metryki
+            record_agent_turn(engagement_id=current.engagement_id, tool=plan.tool_name)
+            if journal is not None:
+                journal.append_turn(
+                    engagement_id=current.engagement_id,
+                    snapshot_version=current.version,
+                    trace_id=current.trace_id,
+                    plan=plan,
+                    result=result,
+                )
+            if self._checkpoint_store is not None and self._run_id:
+                self._checkpoint_store.save_checkpoint(
+                    run_id=self._run_id,
+                    engagement_id=current.engagement_id,
+                    turn_idx=turn_idx,
+                    snapshot=current,
+                    planner_state={"last_tool": plan.tool_name},
+                    status="running",
+                )
+                turn_idx += 1
+            if current.hitl_gate.required or _is_loop_terminal(current):
+                break
+        if (
+            int(current.operational_status.steps_remaining) <= 0
+            and not current.hitl_gate.required
+            and not _is_loop_terminal(current)
+        ):
+            current = apply_snapshot_delta(
+                current,
+                {
+                    "operational_status": {
+                        "code": "pending_operator",
+                        "blocking": True,
+                    },
+                },
+            )
+            current = current.model_copy(
+                update={
+                    "hitl_gate": HitlGate(required=True, reason="budget_exhausted"),
+                }
+            )
+        return AgentGraphRunResult(snapshot=current, turns=turns)
+
+    def _planner_tokens(self) -> int:
+        tokens = getattr(self._planner, "last_tokens_used", 0)
+        try:
+            return int(tokens or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _execute_tool(
+        self,
+        plan: ToolCallPlan,
+        ctx: ToolExecutionContext,
+        *,
+        sub_agent: str = "general",
+        planner_tokens: int = 0,
+        operator_scope: str = "",
+    ) -> ToolResult:
+        # Runtime scope check (Fix #13): verify tool is allowed for this sub-agent
+        allowed = tools_for_sub_agent(sub_agent, self._constitution.tool_allowlist)
+        if plan.tool_name not in allowed:
+            return ToolResult(
+                status="error",
+                turn_summary_pl=f"NarzÄ™dzie {plan.tool_name} niedozwolone dla sub-agenta {sub_agent}.",
+            )
+        # Runtime Authorization Gate (PR-4D): check operator permissions
+        if operator_scope:
+            from agent_runtime.authz import guard_tool_authz
+
+            operation = ""
+            if plan.arguments:
+                operation = str(plan.arguments.get("operation") or "")
+            authz_error = guard_tool_authz(plan.tool_name, scope=operator_scope, operation=operation or None)
+            if authz_error is not None:
+                return ToolResult(
+                    status="error",
+                    turn_summary_pl=authz_error,
+                )
+        if isinstance(self._tools, MockToolRegistry):
+            result = self._tools.execute(plan, context=ctx)
+        else:
+            result = self._tools.execute(plan, context=ctx)
+        if planner_tokens and not result.tokens_used:
+            return result.model_copy(update={"tokens_used": planner_tokens})
+        return result
+
+    def _execute_tool_with_timeout(
+        self,
+        plan: ToolCallPlan,
+        ctx: ToolExecutionContext,
+        *,
+        sub_agent: str = "general",
+        operator_scope: str = "",
+    ) -> ToolResult:
+        """Execute tool with global timeout. Uses shared thread pool."""
+        try:
+            import concurrent.futures
+
+            pool = self._get_timeout_pool()
+            future = pool.submit(
+                self._execute_tool,
+                plan,
+                ctx,
+                sub_agent=sub_agent,
+                planner_tokens=self._planner_tokens(),
+                operator_scope=operator_scope,
+            )
+            try:
+                return future.result(timeout=AGENT_TURN_TIMEOUT_SECONDS)
+            except concurrent.futures.TimeoutError:
+                logger.error(
+                    "agent_turn_timeout engagement=%s tool=%s timeout=%ss",
+                    ctx.snapshot.engagement_id,
+                    plan.tool_name,
+                    AGENT_TURN_TIMEOUT_SECONDS,
+                )
+                return ToolResult(
+                    status="error",
+                    turn_summary_pl=(
+                        f"Przekroczono limit czasu ({AGENT_TURN_TIMEOUT_SECONDS}s) "
+                        f"dla narzÄ™dzia {plan.tool_name}. SprĂłbuj ponownie."
+                    ),
+                )
+        except ImportError:
+            return self._execute_tool(
+                plan,
+                ctx,
+                sub_agent=sub_agent,
+                planner_tokens=self._planner_tokens(),
+                operator_scope=operator_scope,
+            )
+
+    def _get_timeout_pool(self) -> Any:
+        """Lazy-init wspĂłĹ‚dzielonego ThreadPoolExecutor."""
+        if self._timeout_pool is None:
+            import concurrent.futures
+            self._timeout_pool = concurrent.futures.ThreadPoolExecutor(
+                max_workers=4,
+                thread_name_prefix="agent_timeout",
+            )
+        return self._timeout_pool
+
+    def _checkpoint(self, turn_number: int) -> None:
+        """Zapisuje checkpoint po kazdej turze â€” wznowienie po crashu."""
+        if self._checkpoint_store is None or not self._run_id:
+            return
+        try:
+            self._checkpoint_store.save_checkpoint(
+                run_id=self._run_id,
+                engagement_id="",
+                turn_idx=turn_number,
+                snapshot=None,
+                planner_state={},
+                status="running",
+            )
+            logger.info("AGENT_CHECKPOINT turn=%d run_id=%s", turn_number, self._run_id)
+        except Exception as exc:
+            logger.warning("AGENT_CHECKPOINT_FAILED turn=%d: %s", turn_number, exc)
+
+    def shutdown(self) -> None:
+        """Zwolnij zasoby puli watkow."""
+        if self._timeout_pool is not None:
+            self._timeout_pool.shutdown(wait=False)
+            self._timeout_pool = None
+
+
+def _ground_current_signal(
+    snapshot: EngagementSnapshotV2,
+    signal_payload: dict,
+) -> EngagementSnapshotV2:
+    """Fold the real current-turn signal (and any already-computed case
+    understanding) into agent_memory.reasoning_trace â€” the same existing seam
+    already used for tool-handoff notes (see sub_agent_handoff_note usage
+    above), which _compact_view already surfaces to the planner's LLM prompt
+    as `recent_steps`. Without this, a follow-up turn's planner call only sees
+    stale case-level state (hvac_profile/gaps/case_kind) and has no way to
+    know what the customer's new message actually says.
+
+    A1: also sets/clears the structured `case_understanding` field consumed
+    by the operator-facing feed (daszek_engagement_feed). This runs exactly
+    once per external signal (start of `_run`), so `case_understanding` is
+    always either the freshly-correlated projection for THIS turn's signal or
+    None â€” never a stale one from an earlier turn silently carried forward.
+    """
+    subject = str(signal_payload.get("subject") or "").strip()
+    essence = str(signal_payload.get("snippet") or "").strip() or str(signal_payload.get("body_text") or "").strip()
+    understanding = str(signal_payload.get("understanding_brief_pl") or "").strip()
+    projection = signal_payload.get("case_understanding_projection")
+    delta: dict[str, Any] = {}
+    if subject or essence or understanding:
+        parts = []
+        if subject or essence:
+            line = f'Biezaca wiadomosc: "{subject}"' if subject else "Biezaca wiadomosc:"
+            if essence:
+                line = f"{line} â€” {essence[:280]}"
+            parts.append(line)
+        if understanding:
+            parts.append(f"Zrozumienie sprawy: {understanding[:400]}")
+        trace = [item.model_dump(mode="python") for item in snapshot.agent_memory.reasoning_trace]
+        trace.append({"turn": len(trace), "summary_pl": " ".join(parts)})
+        delta["agent_memory"] = {"reasoning_trace": trace}
+    if isinstance(projection, dict) and projection:
+        delta["case_understanding"] = projection
+    elif snapshot.case_understanding is not None:
+        # No fresh, correlated Understanding for THIS turn's signal â€” never
+        # let a previous turn's Understanding keep looking current.
+        delta["case_understanding"] = None
+    if not delta:
+        return snapshot
+    return apply_snapshot_delta(snapshot, delta)
+
+
+def _filter_completed_read_once_tools(
+    available_tools: list[str] | tuple[str, ...],
+    completed_read_once_tools: set[str],
+) -> tuple[str, ...]:
+    return tuple(
+        tool
+        for tool in available_tools
+        if not (tool in _READ_ONCE_AFTER_OK_TOOLS and tool in completed_read_once_tools)
+    )
+
+
+def _apply_snapshot_delta_blocking(
+    snapshot: EngagementSnapshotV2,
+    reason: str,
+) -> EngagementSnapshotV2:
+    """Apply a blocking snapshot delta with pending_operator status."""
+    updated = apply_snapshot_delta(
+        snapshot,
+        {
+            "operational_status": {
+                "code": "pending_operator",
+                "blocking": True,
+            },
+        },
+    )
+    return updated.model_copy(
+        update={
+            "hitl_gate": HitlGate(required=True, reason=reason),
+        }
+    )
+
+
+def _is_loop_terminal(snapshot: EngagementSnapshotV2) -> bool:
+    """Graph loop stops on HITL or hard terminal codes (not ready_for_quote alone)."""
+    if snapshot.hitl_gate.required:
+        return True
+    return snapshot.operational_status.code in _LOOP_TERMINAL_CODES
+
+
+def _apply_tool_result(
+    snapshot: EngagementSnapshotV2,
+    plan: ToolCallPlan,
+    result: ToolResult,
+) -> EngagementSnapshotV2:
+    if result.status == "node_a_error":
+        updated = apply_snapshot_delta(
+            snapshot,
+            {"operational_status": {"code": "node_a_error"}},
+        )
+        return updated.model_copy(
+            update={"hitl_gate": HitlGate(required=True, reason="node_a_error")}
+        )
+    try:
+        updated = apply_snapshot_delta(snapshot, result.snapshot_delta)
+    except Exception as exc:  # noqa: BLE001 â€” niespĂłjna delta narzÄ™dzia nie moĹĽe wywaliÄ‡ caĹ‚ego runu
+        logger.warning("apply_snapshot_delta_rejected tool=%s: %s", plan.tool_name, exc)
+        updated = snapshot
+        result = result.model_copy(
+            update={
+                "status": "error",
+                "turn_summary_pl": f"Odrzucono niespĂłjnÄ… zmianÄ™ stanu narzÄ™dzia {plan.tool_name}.",
+            }
+        )
+    trace = list(updated.agent_memory.reasoning_trace)
+    if result.turn_summary_pl:
+        trace.append(
+            ReasoningTraceItem(turn=len(trace) + 1, summary_pl=result.turn_summary_pl)
+        )
+    calls = list(updated.agent_memory.tool_calls)
+    calls.append(ToolCallItem(tool=plan.tool_name, status=result.status))
+    memory = updated.agent_memory.model_copy(
+        update={"reasoning_trace": trace, "tool_calls": calls},
+    )
+    return updated.model_copy(update={"agent_memory": memory})

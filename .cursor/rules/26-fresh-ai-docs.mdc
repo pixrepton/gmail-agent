@@ -1,0 +1,27 @@
+---
+description: "Use when current OpenAI, Cursor, Codex, MCP, hooks, rules, skills, model, pricing, API, or third-party library documentation is required. Not for TOP-INSTAL business logic."
+alwaysApply: false
+---
+
+# Fresh AI Docs
+
+Use current documentation instead of model memory for:
+
+- OpenAI API / Developers / Agents / Responses / Codex / model behavior,
+- Cursor rules / skills / hooks / MCP behavior,
+- MCP configuration,
+- current CLI options,
+- current model availability or pricing,
+- third-party library/framework APIs.
+
+Preferred sources are **allowed-manual** documentation MCPs (or equivalents). They are **not** necessarily enabled in this repo’s `.cursor/mcp.json` — confirm availability in the active Cursor session; if missing, use official web docs only when the task needs a current external surface.
+
+- `openaiDeveloperDocs` — OpenAI/Codex/API.
+- `freshDocs` — Cursor product docs.
+- `Context7` — third-party libraries/frameworks.
+
+External docs are never TOP-INSTAL project truth or runtime/Gate proof.
+
+Do not use this rule for TOP-INSTAL business logic, architecture ownership, mailbox memory, Daszek, kalk-top, OfferDTO, or proof claims.
+
+If current docs and local repo behavior disagree, state the conflict and verify locally before changing code.

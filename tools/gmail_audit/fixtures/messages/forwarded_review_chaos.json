@@ -1,0 +1,15 @@
+{
+  "mailbox": "ops@topinstal.local",
+  "source_message": {
+    "message_id": "fixture-forward-review-001",
+    "thread_id": "forward-thread-001",
+    "date": "2026-04-01T15:25:00+02:00",
+    "from": "ops@topinstal.local",
+    "to": ["ops@topinstal.local"],
+    "subject": "Fwd: prosba klienta",
+    "snippet": "Forwarded message",
+    "body": "Forwarded message\n\nFrom: klient@example.com\nSubject: prosba klienta\n\nCzy to mozemy ogarnac?",
+    "labels": ["INBOX"]
+  },
+  "context_messages": []
+}

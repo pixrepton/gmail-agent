@@ -1,0 +1,15 @@
+{
+  "mailbox": "ops@topinstal.local",
+  "source_message": {
+    "message_id": "fixture-noise-001",
+    "thread_id": "noise-thread-001",
+    "date": "2026-04-01T15:00:00+02:00",
+    "from": "no-reply@vendor-news.com",
+    "to": ["ops@topinstal.local"],
+    "subject": "Newsletter April updates",
+    "snippet": "Read our monthly newsletter.",
+    "body": "Newsletter April updates. Read our monthly newsletter and unsubscribe anytime.",
+    "labels": ["INBOX", "CATEGORY_PROMOTIONS"]
+  },
+  "context_messages": []
+}

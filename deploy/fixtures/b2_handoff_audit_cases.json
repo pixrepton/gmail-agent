@@ -1,0 +1,10 @@
+{
+  "mode": "handoff_bounded",
+  "description": "Gate B production handoff — must exist in feed with feedback_eligible.",
+  "case_ids": [
+    "case_062a7aa4ed7b"
+  ],
+  "optional_case_ids": [
+    "case_d93ebe601f0f"
+  ]
+}

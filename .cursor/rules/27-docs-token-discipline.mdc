@@ -1,0 +1,12 @@
+---
+description: "When editing docs under docs/: keep agent replies compact; avoid walls of narrative; prefer pointers and file links. Does not apply to proof or safety-critical wording."
+alwaysApply: false
+globs:
+  - "docs/**/*.md"
+---
+
+# Docs work — token discipline
+
+- Answers about documentation changes: concise bullets; link to paths; avoid repeating large excerpts already in the repo.
+- Do not paste **large raw JSON or tool dumps** into chat when a file path, summary, or narrow excerpt is enough (MCP/tool hygiene).
+- Do not shorten safety warnings, irreversible actions, or Gate proof wording; those stay explicit per `AGENTS.md`.

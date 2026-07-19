@@ -1,0 +1,15 @@
+// Canonical Serena block now lives in workspace root [.cursor/mcp.json](../../../../.cursor/mcp.json).
+// This file is a reference copy only. Official CLI: `uv tool install -p 3.13 serena-agent`.
+// Do not commit `.serena/cache/`; see root `.gitignore`.
+{
+  "serena": {
+    "command": "serena",
+    "args": [
+      "start-mcp-server",
+      "--context",
+      "ide",
+      "--project",
+      "${workspaceFolder}"
+    ]
+  }
+}

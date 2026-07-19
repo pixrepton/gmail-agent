@@ -1,0 +1,350 @@
+{
+  "schema_version": "entity_link_regression_corpus.v2",
+  "status": "synthetic_harness_v2_b1",
+  "description": "Synthetic cases mirrored from tools/gmail_audit/tests/test_entity_linker.py plus bounded conflict/tie rows (B1). Not production-proven — add anonymized cohort separately; see docs/archive/runbooks/ENTITY_LINK_THRESHOLDS_AND_COHORTS.md.",
+  "thresholds": {
+    "min_confidence_fuzzy": 0.85,
+    "min_confidence_deterministic": 1.0,
+    "entity_link_threshold_code_ref": "tools/gmail_audit/entity_linker.py ENTITY_LINK_THRESHOLD=0.85, FUZZY_MIN_SCORE=0.55, CONFLICT_SCORE_DELTA=0.05"
+  },
+  "quality_gates": {
+    "cohort_update_procedure": "Add or revise anonymized cohort rows only after operator review and evidence-backed misses.",
+    "production_acceptance": "Synthetic pass is necessary; Gate A entity-link row still requires production-shaped anonymized cohort + accepted thresholds."
+  },
+  "cases": [
+    {
+      "id": "synthetic_deterministic_nip",
+      "cohort": "ambiguous",
+      "harness_kind": "entity_link",
+      "store_fixture": {
+        "cases": [
+          {
+            "case_id": "case-nip-1",
+            "case_key": "TOP-1001",
+            "metadata": {
+              "nip": "5252440985"
+            },
+            "facts": []
+          }
+        ]
+      },
+      "signal_payload": {
+        "signal_kind": "gmail_message_observed",
+        "source_kind": "gmail",
+        "source_ref": {
+          "message_id": "m1"
+        },
+        "observed_at": "2026-04-16T10:00:00+02:00",
+        "effective_at": null,
+        "case_key_hint": null,
+        "thread_key_hint": null,
+        "business_lane": "intake_llm",
+        "signal_summary_pl": "Test",
+        "payload": {
+          "snapshot": {},
+          "intake_result_final": {
+            "extracted_data": {
+              "references": {}
+            }
+          },
+          "case_hints": {
+            "nip": "5252440985"
+          }
+        },
+        "artifacts": {},
+        "revision_marker": "m1",
+        "created_by_runtime": "test"
+      },
+      "expect": {
+        "link_status": "VERIFIED",
+        "phase": "deterministic",
+        "case_id": "case-nip-1",
+        "case_key": "TOP-1001",
+        "min_confidence": 1.0
+      }
+    },
+    {
+      "id": "synthetic_fuzzy_address",
+      "cohort": "ambiguous",
+      "harness_kind": "entity_link",
+      "store_fixture": {
+        "cases": [
+          {
+            "case_id": "case-addr-1",
+            "case_key": "TOP-2002",
+            "metadata": {},
+            "facts": [
+              {
+                "fact_id": "f1",
+                "case_id": "case-addr-1",
+                "message_id": "",
+                "document_id": "",
+                "entity_scope": "location",
+                "fact_key": "address",
+                "normalized_value": "ul. kwiatowa 12, 00-001 warszawa",
+                "raw_value": "ul. kwiatowa 12, 00-001 warszawa",
+                "confidence": 0.9,
+                "observed_at": null,
+                "source_type": "test",
+                "source_ref": "",
+                "status": "active",
+                "metadata": {}
+              }
+            ]
+          }
+        ]
+      },
+      "signal_payload": {
+        "signal_kind": "gmail_message_observed",
+        "source_kind": "gmail",
+        "source_ref": {
+          "message_id": "m2"
+        },
+        "observed_at": "2026-04-16T10:00:00+02:00",
+        "effective_at": null,
+        "case_key_hint": null,
+        "thread_key_hint": null,
+        "business_lane": "intake_llm",
+        "signal_summary_pl": "Lead",
+        "payload": {
+          "snapshot": {},
+          "intake_result_final": {
+            "extracted_data": {
+              "entities": {
+                "locations": [
+                  "ul. kwiatowa 12, 00-001 warszawa"
+                ]
+              },
+              "references": {},
+              "dates": [],
+              "amounts": [],
+              "deadlines": []
+            }
+          }
+        },
+        "artifacts": {},
+        "revision_marker": "m2",
+        "created_by_runtime": "test"
+      },
+      "expect": {
+        "link_status": "VERIFIED",
+        "phase": "fuzzy",
+        "case_id": "case-addr-1",
+        "min_confidence": 0.85
+      }
+    },
+    {
+      "id": "synthetic_new_case_proposal",
+      "cohort": "wrong_link",
+      "harness_kind": "entity_link",
+      "store_fixture": {
+        "cases": []
+      },
+      "signal_payload": {
+        "signal_kind": "gmail_message_observed",
+        "source_kind": "gmail",
+        "source_ref": {
+          "message_id": "m3"
+        },
+        "observed_at": "2026-04-16T10:00:00+02:00",
+        "effective_at": null,
+        "case_key_hint": null,
+        "thread_key_hint": null,
+        "business_lane": "intake_llm",
+        "signal_summary_pl": "Nowy lead",
+        "payload": {
+          "snapshot": {},
+          "intake_result_final": {
+            "extracted_data": {
+              "entities": {
+                "organizations": [
+                  "Nieznana Firma XYZ"
+                ]
+              },
+              "references": {},
+              "dates": [],
+              "amounts": [],
+              "deadlines": []
+            }
+          }
+        },
+        "artifacts": {},
+        "revision_marker": "m3",
+        "created_by_runtime": "test"
+      },
+      "expect": {
+        "link_status": "CASE_PROPOSAL",
+        "phase": "fuzzy",
+        "case_proposal_kind": "new_case"
+      }
+    },
+    {
+      "id": "synthetic_identity_hints_invoice",
+      "cohort": "media_only",
+      "harness_kind": "identity_hints",
+      "payload_for_hints": {
+        "intake_result_final": {
+          "extracted_data": {
+            "references": {
+              "invoice_numbers": [
+                "FV/2026/01"
+              ]
+            }
+          }
+        }
+      },
+      "expect": {
+        "invoice_id_contains": "FV/2026/01"
+      }
+    },
+    {
+      "id": "synthetic_deterministic_nip_duplicate_cases",
+      "cohort": "ambiguous",
+      "harness_kind": "entity_link",
+      "store_fixture": {
+        "cases": [
+          {
+            "case_id": "case-nip-dup-a",
+            "case_key": "TOP-DUP-A",
+            "metadata": {
+              "nip": "5252440985"
+            },
+            "facts": []
+          },
+          {
+            "case_id": "case-nip-dup-b",
+            "case_key": "TOP-DUP-B",
+            "metadata": {
+              "nip": "5252440985"
+            },
+            "facts": []
+          }
+        ]
+      },
+      "signal_payload": {
+        "signal_kind": "gmail_message_observed",
+        "source_kind": "gmail",
+        "source_ref": {
+          "message_id": "m-dup-nip"
+        },
+        "observed_at": "2026-04-16T10:00:00+02:00",
+        "effective_at": null,
+        "case_key_hint": null,
+        "thread_key_hint": null,
+        "business_lane": "intake_llm",
+        "signal_summary_pl": "Dup NIP",
+        "payload": {
+          "snapshot": {},
+          "intake_result_final": {
+            "extracted_data": {
+              "references": {}
+            }
+          },
+          "case_hints": {
+            "nip": "5252440985"
+          }
+        },
+        "artifacts": {},
+        "revision_marker": "m-dup-nip",
+        "created_by_runtime": "test"
+      },
+      "expect": {
+        "link_status": "LINK_CONFLICT",
+        "phase": "deterministic",
+        "min_confidence": 1.0
+      }
+    },
+    {
+      "id": "synthetic_fuzzy_address_tie_conflict",
+      "cohort": "ambiguous",
+      "harness_kind": "entity_link",
+      "store_fixture": {
+        "cases": [
+          {
+            "case_id": "case-mirka-a",
+            "case_key": "TOP-MIR-A",
+            "metadata": {},
+            "facts": [
+              {
+                "fact_id": "fa",
+                "case_id": "case-mirka-a",
+                "message_id": "",
+                "document_id": "",
+                "entity_scope": "location",
+                "fact_key": "address",
+                "normalized_value": "ul. mirka 1a warszawa",
+                "raw_value": "ul. mirka 1a warszawa",
+                "confidence": 0.9,
+                "observed_at": null,
+                "source_type": "test",
+                "source_ref": "",
+                "status": "active",
+                "metadata": {}
+              }
+            ]
+          },
+          {
+            "case_id": "case-mirka-b",
+            "case_key": "TOP-MIR-B",
+            "metadata": {},
+            "facts": [
+              {
+                "fact_id": "fb",
+                "case_id": "case-mirka-b",
+                "message_id": "",
+                "document_id": "",
+                "entity_scope": "location",
+                "fact_key": "address",
+                "normalized_value": "ul. mirka 1b warszawa",
+                "raw_value": "ul. mirka 1b warszawa",
+                "confidence": 0.9,
+                "observed_at": null,
+                "source_type": "test",
+                "source_ref": "",
+                "status": "active",
+                "metadata": {}
+              }
+            ]
+          }
+        ]
+      },
+      "signal_payload": {
+        "signal_kind": "gmail_message_observed",
+        "source_kind": "gmail",
+        "source_ref": {
+          "message_id": "m-mirka"
+        },
+        "observed_at": "2026-04-16T10:00:00+02:00",
+        "effective_at": null,
+        "case_key_hint": null,
+        "thread_key_hint": null,
+        "business_lane": "intake_llm",
+        "signal_summary_pl": "Mirka",
+        "payload": {
+          "snapshot": {},
+          "intake_result_final": {
+            "extracted_data": {
+              "entities": {
+                "locations": [
+                  "ul. mirka 1 warszawa"
+                ]
+              },
+              "references": {},
+              "dates": [],
+              "amounts": [],
+              "deadlines": []
+            }
+          }
+        },
+        "artifacts": {},
+        "revision_marker": "m-mirka",
+        "created_by_runtime": "test"
+      },
+      "expect": {
+        "link_status": "LINK_CONFLICT",
+        "phase": "fuzzy",
+        "min_confidence": 0.75
+      }
+    }
+  ]
+}

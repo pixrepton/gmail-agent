@@ -1,0 +1,53 @@
+{
+  "preclassification_lane": "review_direct",
+  "intake": {
+    "business_area": "internal_coordination",
+    "case_family": "internal_coordination",
+    "primary_signal_code": "manual_review_required",
+    "primary_signal_name": "Manual review required",
+    "decision_action": "review",
+    "action_rationale": "Forwarded low-signal content should go directly to review.",
+    "priority": "medium",
+    "reason": "Forwarded message lacks enough direct evidence for confident automation.",
+    "review_required": true,
+    "review_flags": ["insufficient_thread_context", "self_forward_requires_meaning_inference"],
+    "confidence": {
+      "signal_confidence": 0.84,
+      "case_link_confidence": 0.0,
+      "decision_confidence": 0.84,
+      "extraction_confidence": 0.55
+    },
+    "state_detected": "forwarded_review",
+    "is_new_case": false
+  },
+  "expected_case_link": {
+    "decision": "no_link",
+    "selected_case_key": ""
+  },
+  "business_reasoning": {
+    "business_interpretation": "Owner-forwarded message that needs manual interpretation.",
+    "business_area": "internal",
+    "customer_state_guess": "unclear",
+    "recommended_next_action": "escalate_review",
+    "recommended_action_reason": "The ask is too implicit to automate safely.",
+    "missing_information": ["explicit operator instruction"],
+    "risks": ["owner_forward_ambiguity"],
+    "urgency": "normal",
+    "operator_note": "Review the forwarded thread and identify the concrete ask before acting.",
+    "confidence": {
+      "business_confidence": 0.68,
+      "action_confidence": 0.66
+    }
+  },
+  "reply_draft": {
+    "draft_enabled": false,
+    "drafts": [],
+    "do_not_send_reasons": ["manual_review_first"],
+    "confidence": 0.0
+  },
+  "action_plan": {
+    "primary_action": "create_review",
+    "daszek_projection_mode": "review",
+    "safe_for_live_push": false
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "mailbox": "ops@topinstal.local",
+  "source_message": {
+    "message_id": "fixture-post-offer-001",
+    "thread_id": "offer-thread-001",
+    "date": "2026-04-01T11:30:00+02:00",
+    "from": "biuro@klient-dom.pl",
+    "to": ["ops@topinstal.local"],
+    "subject": "Pytanie po ofercie na pompe ciepla",
+    "snippet": "Czy w ofercie jest bufor i kiedy mozemy ruszyc dalej?",
+    "body": "Mam pytanie po ofercie na pompe ciepla. Czy w wycenie jest uwzgledniony bufor i kiedy mozemy ruszyc dalej, jesli zdecydujemy sie w tym tygodniu?",
+    "labels": ["INBOX"]
+  },
+  "context_messages": [
+    {
+      "message_id": "fixture-post-offer-context-001",
+      "thread_id": "offer-thread-000",
+      "date": "2026-03-29T15:00:00+02:00",
+      "from": "ops@topinstal.local",
+      "to": ["biuro@klient-dom.pl"],
+      "subject": "Oferta na pompe ciepla",
+      "snippet": "Przesylamy oferte.",
+      "body": "Przesylamy oferte na pompe ciepla do domu jednorodzinnego.",
+      "labels": ["SENT"]
+    }
+  ]
+}

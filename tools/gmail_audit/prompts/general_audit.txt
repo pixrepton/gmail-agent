@@ -1,0 +1,29 @@
+Przeprowadź read-only audyt skrzynki Gmail z użyciem oficjalnego Gmail connectora Groq.
+
+Wymagania operacyjne:
+- Użyj connectora Gmail i jego narzędzi do bezpiecznego odczytu skrzynki.
+- Zacznij od rozpoznania profilu i najnowszych wiadomości, a następnie użyj sensownych wyszukiwań i reprezentatywnych próbek.
+- Przeglądaj skrzynkę partiami lub przez wyszukiwanie, zamiast opierać się na jednej próbce.
+- Nie modyfikuj niczego w skrzynce. To ma być wyłącznie audyt read-only.
+- Nie uruchamiaj żadnych downstream automatyzacji i nie proponuj wykonywania akcji poza klasyfikacją.
+- Nie halucynuj kategorii, liczb ani reguł bez podstawy w zaobserwowanych wiadomościach.
+- Przy niejednoznacznych wiadomościach zaznacz niepewność zamiast zgadywać.
+
+Cel analizy:
+- Zidentyfikuj główne typy wiadomości, które realnie wpadają do skrzynki.
+- Rozpoznaj między innymi:
+  - leady sprzedażowe,
+  - wiadomości serwisowe,
+  - partnerów i dostawców,
+  - wiadomości administracyjne,
+  - newslettery, promocje i szum.
+- Opisz dominujące wzorce nadawców, tematów, tonu i częstotliwości.
+- Zaproponuj praktyczną taksonomię skrzynki.
+- Wskaż, które typy wiadomości wydają się najcenniejsze biznesowo lub operacyjnie.
+
+Zwróć odpowiedź po polsku w czytelnym raporcie tekstowym z sekcjami:
+1. Zakres i sposób rozpoznania
+2. Główne kategorie wiadomości
+3. Dominujące wzorce i sygnały
+4. Najcenniejsze typy wiadomości
+5. Ryzyka i niejednoznaczności

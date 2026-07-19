@@ -1,0 +1,15 @@
+{
+  "status": "PASS",
+  "source_files": 29,
+  "changed": 18,
+  "unchanged": 11,
+  "json_files": 5,
+  "json_errors": 0,
+  "markdown_files": 23,
+  "markdown_errors": 0,
+  "missing_links": 0,
+  "mojibake_files": 0,
+  "checksum_ok": true,
+  "stale_reference_hits": 0,
+  "route_manifest_unchanged": true
+}

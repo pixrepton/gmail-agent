@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://topinstal.local/schemas/intake-second-pass-v1.json",
+  "title": "Gmail Intake Second Pass Supplement V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "supplement_notes_pl",
+    "suggested_review_escalation",
+    "additional_review_flags",
+    "evidence_assessment_pl"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "supplement_notes_pl": { "type": "string" },
+    "suggested_review_escalation": { "type": "boolean" },
+    "additional_review_flags": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "evidence_assessment_pl": { "type": "string" }
+  }
+}

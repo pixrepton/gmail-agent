@@ -1,0 +1,3138 @@
+--- a/daszek/docs/core/PROJECT_README.md
++++ b/daszek/docs/core/PROJECT_README.md
+@@ -1,86 +1,81 @@
+-# Daszek / TOP-INSTAL AI-OS â€” README produktu i developera (Node A)
+-
+-> **Node B canonical:** [`../../../gmail-agent/`](../../../gmail-agent/) â€” SoT sprawy w Postgres; Daszek jest **projekcjÄ…**.
+-
+-**Status:** aktywny przewodnik po wtyczce WordPress `daszek`. **Wersja:** 2026-07-10.
+-**Plugin:** 1.3.4 (`daszek.php`)
+-**SkrĂłt operacyjny:** ten dokument.
+-**CaĹ‚y workspace:** [`../../../knowledge/docs/WORKSPACE_ONBOARDING.md`](../../../knowledge/docs/WORKSPACE_ONBOARDING.md)
+-**Stan ĹĽywy / proof:** [`../../../knowledge/memory/ACTIVE_WORKSPACE.md`](../../../knowledge/memory/ACTIVE_WORKSPACE.md) Â· [`../../../gmail-agent/docs/runbooks/LAST_PROVEN_STATE.md`](../../../gmail-agent/docs/runbooks/LAST_PROVEN_STATE.md)
+-
+-**Czego ten dokument nie jest:** listÄ… wszystkich route REST (uĹĽyj CBM lub `includes/api-v3.php` manifest), runbookiem VPS ani historiÄ… proofĂłw.
+-
+----
+-
+-## 0. Stan na dziĹ› (2026-07-10)
+-
+-| Obszar                              | Status       | DowĂłd                                                     |
+-| ----------------------------------- | ------------ | --------------------------------------------------------- |
+-| UI SPA (`public/app.js`)            | OK           | Gate A: `node --check public/app.js` w `daszek-smoke.ps1` |
+-| Widoki Czat / Kolejka / Konstytucja | OK           | Nawigacja w `KNOWN_MAIN_VIEWS` (audyt 2026-07-05)         |
+-| Feed v3 schema                      | 1.3          | Kontrakt w Â§8; push z Node B                              |
+-| Materialize approve (HITL)          | proven_local | LPS Â§GATE_B_GAPS â€” proxy vs UI path                       |
+-| Proxy â†’ Node B                      | OK           | Bearer + CSRF na mutacjach                                |
+-
+-**Lokalnie:** `http://127.0.0.1:8090/daszek/` Â· compose: root `docker-compose.daszek-local.yml`.
+-
+----
++# Daszek / TOP-INSTAL AI-OS — README produktu i developera (Node A)
++
++> **Node B canonical:** [`../../../gmail-agent/`](../../../gmail-agent/) — Postgres i journal są SoT spraw oraz wykonania; Daszek jest projekcją operatorską.
++
++**Status:** aktywny przewodnik po wtyczce WordPress `daszek`. **Wersja:** 2026-07-13.  
++**Plugin:** 1.3.4 (`daszek.php`)  
++**Stan żywy:** `../../../knowledge/memory/ACTIVE_WORKSPACE.md`  
++**Proof:** [`../../../gmail-agent/docs/runbooks/LAST_PROVEN_STATE.md`](../../../gmail-agent/docs/runbooks/LAST_PROVEN_STATE.md)
++
++Dokument opisuje UI, proxy, feed i bridge. Nie jest źródłem semantyki Case ani dowodem produkcyjnego deployu.
++
++## 0. Stan na dziś (2026-07-13)
++
++| Obszar | Status | Dowód |
++| --- | --- | --- |
++| Node A ↔ Node B critical loop | **PASS lokalnie** | LPS + integrated decision-loop proof |
++| PHP proxy auth / CSRF | PASS | write proxy + Node B fail-closed auth |
++| stabilny `decision_key` | PASS | proxy → bridge → Node B |
++| send/reject replay safety | PASS | IDEMP-01 / IDEMP-02 |
++| UI `accepted` vs final result | rozdzielone | DEC-01 |
++| UI convergence | finalny sukces po fresh matching feed | DEC-01 |
++| Daszek pytest | `8 passed` | proof 2026-07-13 |
++| Node tests | `13 passed` | `test_row4b_note_hitl_approve.node.js` |
++| JS/PHP syntax | PASS | `node --check`, `php -l` |
++| Workspace gate | `exit 0` po recreate Node B | LPS |
++
++**Lokalnie:** `http://127.0.0.1:8090/daszek/`. VPS/produkcja pozostają zawieszone.
+ 
+ ## 1. Po co istnieje Daszek
+ 
+-Daszek to **panel operatorski TOP-INSTAL** (Node A, WordPress). Nie przechowuje prawdy o sprawach â€” **projektuje** stan z Node B (`gmail-agent`) i zbiera **feedback operatora** (HITL, bridge queue, notatki).
++Daszek to **panel operatorski TOP-INSTAL** (Node A, WordPress). Nie przechowuje prawdy o sprawach — **projektuje** stan z Node B (`gmail-agent`) i zbiera **feedback operatora** (HITL, bridge queue, notatki).
+ 
+ | Twierdzenie          | Prawda                                               |
+ | -------------------- | ---------------------------------------------------- |
+ | SoT sprawy           | Postgres `mailbox_memory` na Node B                  |
+ | Daszek               | Projekcja + overlay WP + bounded feedback            |
+ | LLM w UI             | Asystuje; nie wykonuje ryzykownych akcji bez approve |
+-| Daszek â‰  gmail-agent | Partnerzy HTTP; kontrakt feed v3 + proxy v2/v3       |
+-
+-**Zasada D4 (closed):** zmiana semantyki feed / case w UI â†’ najpierw Python (`gmail-agent/tools/gmail_audit/daszek_v3_operational_feed.py`), potem PHP storage i proxy.
+-
+----
+-
+-## 2. OĹ› danych (Node A w ekosystemie)
++| Daszek ≠ gmail-agent | Partnerzy HTTP; kontrakt feed v3 + proxy v2/v3       |
++
++**Zasada D4 (closed):** zmiana semantyki feed / case w UI → najpierw Python (`gmail-agent/tools/gmail_audit/daszek_v3_operational_feed.py`), potem PHP storage i proxy.
++
++---
++
++## 2. Oś danych (Node A w ekosystemie)
+ 
+ ```text
+-Node B (gmail-agent)
+-  reconcile â†’ Postgres mailbox_memory
+-  build operational feed v3 (schema 1.3)
+-  POST /wp-json/daszek/v3/operational-feed-snapshots
+-       â†“
+-Daszek store-v3 (JSONL snapshots, retention 40)
+-       â†“
+-public/app.js â€” Biurko / Sprawy / DzieĹ„ / szczegĂłĹ‚ sprawy
+-       â†“
+-Operator: feedback, HITL, materialize approve, agent-chat
+-       â†“
+-Daszek PHP proxy (v2/v3) + Bearer NODE_B_REGISTRY_TOKEN
+-       â†“
+-Node B API (:8766) â€” zapis / adjudication / agent
+-```
+-
+-| Kierunek       | Mechanizm                                                  |
+-| -------------- | ---------------------------------------------------------- |
+-| B â†’ A (feed)   | `daszek_client.post_v3_operational_feed_snapshot`          |
+-| A â†’ B (read)   | Proxy GET `/cases`, `/engagements`, context-pack, Skrzat   |
+-| A â†’ B (write)  | Proxy POST materialize, HITL, action-proposals, agent-chat |
+-| A â†’ B (bridge) | `daszek-bridge-drain` (CLI Node B) + queue w WP storage    |
+-
+----
++Node B: trwały Case / decision state / execution result
++  → build + push operational feed v3
++  → Daszek store-v3 JSONL
++  → app.js render
++  → operator click
++  → PHP: session + CSRF + bearer + stable decision_key
++  → Node B: received → accepted → executing → executed|rejected|outcome_unknown
++  → completion / feed refresh
++  → app.js odczytuje świeżą projekcję
++  → matching decision_key + final status
++  → converged UI confirmation
++```
++
++| Kierunek | Mechanizm | Gwarancja |
++| --- | --- | --- |
++| B → A feed | `post_v3_operational_feed_snapshot` | projekcja, nie execution proof |
++| A → B read | PHP proxy GET | odczyt bez nadania write scope |
++| A → B write | PHP proxy POST | session/CSRF/owner + bearer; Node B default-deny |
++| A → B bridge | WP queue + `daszek-bridge-drain` | stabilny key, replay-safe completion |
+ 
+ ## 3. Model mentalny developera
+ 
+ ### Jedna aplikacja SPA
+ 
+-Operator widzi **jeden produkt** â€” `public/app.js` (~7700 linii). Widoki to **stany** `state.currentView`, nie osobne repozytoria.
+-
+-| Widok (`data-view`) | ĹąrĂłdĹ‚o danych                                    |
++Operator widzi **jeden produkt** — `public/app.js` (~7700 linii). Widoki to **stany** `state.currentView`, nie osobne repozytoria.
++
++| Widok (`data-view`) | Źródło danych                                    |
+ | ------------------- | ------------------------------------------------ |
+ | `desk`              | Feed v3 `desk` + `action_items`                  |
+ | `cases`             | Feed + opcjonalnie proxy `GET /cases` (Node B)   |
+ | `day`               | Feed sekcje dnia                                 |
+-| `cockpit`           | Feed + KPI / skrĂłty operatorskie                 |
++| `cockpit`           | Feed + KPI / skróty operatorskie                 |
+ | `chat`              | `POST /agent-chat` (proxy), `state.agentChat`    |
+ | `decisions`         | `GET /system/decision-queue` (v3 proxy)          |
+ | `constitution`      | Konstytucja + learning candidates                |
+@@ -92,29 +87,29 @@
+ | `last_ingress`      | Ostatni ingress-quality snapshot                 |
+ | `archive`           | `store-v2` case archive overlay                  |
+ 
+-**`KNOWN_MAIN_VIEWS`** (`app.js` ~2111): zestaw powyĹĽej â€” nawigacja `data-view` + hash; nieznany widok â†’ fallback `desk`.
+-
+-### `apiFetch` â€” jedyna Ĺ›cieĹĽka HTTP z UI
++**`KNOWN_MAIN_VIEWS`** (`app.js` ~2111): zestaw powyżej — nawigacja `data-view` + hash; nieznany widok → fallback `desk`.
++
++### `apiFetch` — jedyna ścieżka HTTP z UI
+ 
+ ```javascript
+-// public/app.js â€” buildApiHeaders
++// public/app.js — buildApiHeaders
+ // POST: Content-Type application/json + X-CSRF-Token (meta lub sesja)
+ // credentials: same-origin
+ ```
+ 
+-Mutacje (approve, HITL, materialize) **zawsze** przez `apiFetch(V2_API_BASE | V3_API_BASE, ...)`, nie bezpoĹ›rednio na `:8766` z przeglÄ…darki.
+-
+-### Materialize approve (CT-FU-5) â€” Ĺ‚aĹ„cuch UI
+-
+-1. `decideActionProposal(proposalId, 'approve')` â€” tylko `konrad` / `darek`
+-2. `window.prompt` â†’ `reason`
+-3. `approveProposalViaApi` â€” gdy `prop_*` + znaleziony `engagement_id`:
++Mutacje (approve, HITL, materialize) **zawsze** przez `apiFetch(V2_API_BASE | V3_API_BASE, ...)`, nie bezpośrednio na `:8766` z przeglądarki.
++
++### Materialize approve (CT-FU-5) — łańcuch UI
++
++1. `decideActionProposal(proposalId, 'approve')` — tylko `konrad` / `darek`
++2. `window.prompt` → `reason`
++3. `approveProposalViaApi` — gdy `prop_*` + znaleziony `engagement_id`:
+    - `POST /wp-json/daszek/v2/engagements/{id}/materialize/approve`
+    - body: `{ proposal_id, reason }`
+-4. PHP `daszek_api_v2_engagement_materialize_approve` â€” CSRF, owner, wstrzykuje `operator_id`
++4. PHP `daszek_api_v2_engagement_materialize_approve` — CSRF, owner, wstrzykuje `operator_id`
+ 5. Node B `POST /engagements/{id}/materialize/approve`
+ 
+-**P1-MAT-1 (done 2026-07-10):** gdy brak `engagement_id`, UI **rzuca bĹ‚Ä…d** (nie fallback na `/action-proposals`). Operator musi odĹ›wieĹĽyÄ‡ szczegĂłĹ‚y sprawy. Proof: LPS Â§GATE_B_GAPS + CT-FU-5 browser.
++**P1-MAT-1 (done 2026-07-13):** gdy brak `engagement_id`, UI **rzuca błąd** (nie fallback na `/action-proposals`). Operator musi odświeżyć szczegóły sprawy. Proof: LPS 2026-07-13 + CT-FU-5 browser.
+ 
+ ---
+ 
+@@ -122,7 +117,7 @@
+ 
+ | Warstwa    | Pliki                                                   | Rola                                          |
+ | ---------- | ------------------------------------------------------- | --------------------------------------------- |
+-| Bootstrap  | `daszek.php`                                            | Rejestracja WP, Ĺ‚adowanie includes            |
++| Bootstrap  | `daszek.php`                                            | Rejestracja WP, ładowanie includes            |
+ | Auth       | `includes/auth.php`, `config.php`                       | Sesja operatora, CSRF                         |
+ | REST v1    | `includes/api.php`                                      | Login, `/me`, csrf_token                      |
+ | REST v2    | `includes/api-v2.php`, `api-v3-handlers.php`            | Proxy Node B, HITL, materialize, bridge       |
+@@ -132,7 +127,7 @@
+ | Agent chat | `includes/proxy-agent-chat.php`                         | Streaming proxy do Node B                     |
+ | UI         | `public/index.php`, `public/app.js`, `public/style.css` | SPA                                           |
+ 
+-**Contract-gate:** nowe pole w feed v3 â†’ najpierw test/fixture w `gmail-agent`, potem `fixtures/v3/`, potem PHP walidacja.
++**Contract-gate:** nowe pole w feed v3 → najpierw test/fixture w `gmail-agent`, potem `fixtures/v3/`, potem PHP walidacja.
+ 
+ ---
+ 
+@@ -140,47 +135,42 @@
+ 
+ **Envelope:** `schema_version: "1.3"`, wymagane `action_items` (nie `tasks`).
+ 
+-| Klucz               | ZawartoĹ›Ä‡                          |
++| Klucz               | Zawartość                          |
+ | ------------------- | ---------------------------------- |
+ | `feed.desk`         | Karty biurka                       |
+-| `feed.action_items` | Lista dziaĹ‚aĹ„ / priorytetĂłw        |
+-| `feed.case_details` | SzczegĂłĹ‚y spraw do panelu bocznego |
+-
+-**PrywatnoĹ›Ä‡:** feed i UI nie mogÄ… przenosiÄ‡ raw body maila, credentiali, tokenĂłw, sekretĂłw ani peĹ‚nych danych prywatnych, jeĹ›li wystarcza projekcja/metadane.
+-
+-**Retention:** `daszek_v3_trim_operational_feed_snapshots` â€” **40** snapshotĂłw; bez przyciÄ™cia worker heartbeat moĹĽe OOM PHP (128M).
+-
+-**Eksport (Node B):** `daszek_v3_operational_feed.py` â†’ `daszek_client.post_v3_operational_feed_snapshot`.
+-
+----
+-
+-## 6. UI â€” przepĹ‚ywy operatorskie
++| `feed.action_items` | Lista działań / priorytetów        |
++| `feed.case_details` | Szczegóły spraw do panelu bocznego |
++
++**Prywatność:** feed i UI nie mogą przenosić raw body maila, credentiali, tokenów, sekretów ani pełnych danych prywatnych, jeśli wystarcza projekcja/metadane.
++
++**Retention:** `daszek_v3_trim_operational_feed_snapshots` — **40** snapshotów; bez przycięcia worker heartbeat może OOM PHP (128M).
++
++**Eksport (Node B):** `daszek_v3_operational_feed.py` → `daszek_client.post_v3_operational_feed_snapshot`.
++
++---
++
++## 6. UI — przepływy operatorskie
+ 
+ ### Biurko / Sprawy
+ 
+-- Feed-first: karty z `operational_feed_snapshot`
+-- SzczegĂłĹ‚ sprawy: `openCaseDetail` â†’ `GET /wp-json/daszek/v3/cases/{id}` + opcjonalnie `/engagement`
+-- Propozycje dziaĹ‚aĹ„: `renderActionProposalCard` â†’ przyciski Akceptuj/OdrzuÄ‡
++Feed v3 jest podstawą renderu. UI nie zmienia semantyki Case i nie uznaje lokalnego overlay za wykonanie Node B.
+ 
+ ### Czat agenta
+ 
+-- `POST /wp-json/daszek/v2/agent-chat` (proxy)
+-- `chatApproveProposal` / `decideActionProposal` â€” ten sam `approveProposalViaApi`
+-- Briefing: `GET /system/briefing` przy pierwszym wejĹ›ciu w Czat
++Agent proponuje. Akcja wymagająca skutku przechodzi przez policy/HITL i wspólny kontrakt decyzji.
+ 
+ ### Kolejka decyzji
+ 
+-- `GET /wp-json/daszek/v3/system/decision-queue`
+-- Karty z SLA (warning/critical) â€” dane z Node B / divergence loop
+-- Akcje: otwĂłrz sprawÄ™, szczegĂłĹ‚y decyzji
+-
+-### HITL materialize
+-
+-- Propozycje `prop_*` w agent memory â†’ approve tworzy `case_id` w PG (Node B)
+-- Harness pytest: `gmail-agent/.../test_materialize_approve_harness.py`
+-- Proof operacyjny: `tools/gmail_audit/scripts/seed_materialize_ctfu5.py`, `test_ctfu5_daszek_proxy.py`
+-
+----
++- każda komenda ma stabilny `decision_key`;
++- duplikowane kliknięcie jest blokowane podczas oczekiwania;
++- `accepted` pokazuje wyłącznie przyjęcie/oczekiwanie;
++- `executing` i `outcome_unknown` mają jawne, niefinalne stany UI;
++- `executed` lub `rejected` staje się finalne dopiero po świeżej projekcji zgodnej z tym samym kluczem;
++- timeout, stary snapshot lub feed push failure nie daje finalnego sukcesu.
++
++### HITL / materialize
++
++Approval autoryzuje runtime, ale nie jest execution proof. UI po mutacji odświeża feed/case detail i czeka na konwergencję. `outcome_unknown` wymaga operator review; UI nie wysyła automatycznie tej samej decyzji ponownie.
+ 
+ ## 7. Lokalny stack i env
+ 
+@@ -189,7 +179,7 @@
+ docker compose -f docker-compose.daszek-local.yml up -d
+ .\scripts\sync-local-stack-env.ps1
+ 
+-# Node B (wymagany do ĹĽywego feedu)
++# Node B (wymagany do żywego feedu)
+ cd gmail-agent
+ docker compose --env-file .env.vps -f docker-compose.local-vps.yml --profile api up -d
+ ```
+@@ -200,7 +190,7 @@
+ | `NODE_B_REGISTRY_TOKEN`  | sync z gmail-agent `.env.local-vps` | Bearer proxy                                            |
+ | `DASZEK_BRIDGE_TOKEN`    | obie strony                         | Bridge drain / queue                                    |
+ 
+-**Smoke:** `scripts/daszek-smoke.ps1` (root) â€” static + subset pytest + Node B probe.
++**Smoke:** `scripts/daszek-smoke.ps1` (root) — static + subset pytest + Node B probe.
+ 
+ ---
+ 
+@@ -208,56 +198,51 @@
+ 
+ ```powershell
+ node --check daszek/public/app.js
+-# z root:
+-.\scripts\daszek-smoke.ps1
+-# bounded HITL+feed (wymaga stacku):
+-python gmail-agent/tools/gmail_audit/scripts/daszek_local_133_proof.py
+-```
+-
+-**Gate B:** skrypty w `gmail-agent/tools/gmail_audit/scripts/daszek_*_proof.py` â€” LPS.
+-
+-**Nie claimuj** â€žGate B green VPSâ€ť bez artefaktĂłw row3/row4 w `runs/`.
+-
+----
++php -l daszek/includes/api-v3-handlers.php
++python -m pytest daszek/tests -q --tb=line
++node --test daszek/tests/test_row4b_note_hitl_approve.node.js
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify-local-gates.ps1
++```
++
++Po zmianie cross-repo decision flow wymagany jest wspólny proof: auth failure, accepted, single execution/reject, completion failure, replay/recovery, fresh feed i finalne UI confirmation. Nie wysyłaj realnego maila w proofie.
++
++Ostatni wynik: pytest Daszka `8 passed`, Node `13 passed`, syntax PASS, workspace gate `exit 0`. Aktualne twierdzenia runtime utrzymuje LPS.
+ 
+ ## 9. Granice i antywzorce
+ 
+-| Nie rĂłb                              | Dlaczego                                |
++| Nie rób                              | Dlaczego                                |
+ | ------------------------------------ | --------------------------------------- |
+-| Zapis sprawy tylko w WP              | D4 â€” SoT jest Postgres Node B           |
++| Zapis sprawy tylko w WP              | D4 — SoT jest Postgres Node B           |
+ | Nowy endpoint proxy bez testu Node B | contract-gate                           |
+-| Duplikuj logikÄ™ reconcile w PHP      | reconcile ĹĽyje w `signal_reconciler.py` |
+-| PeĹ‚na lista route w tym README       | uĹĽyj CBM / przeczytaj `api-v3.php`      |
+-
+----
+-
+-## 10. Dokumentacja wtĂłrna
+-
+-| Dokument                                                                                                                                       | Po co                                               |
+-| ---------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+-| [`../../../gmail-agent/docs/core/PROJECT_README.md`](../../../gmail-agent/docs/core/PROJECT_README.md)                                         | Node B deep                                         |
+-| [`../../../knowledge/docs/WORKSPACE_ONBOARDING.md`](../../../knowledge/docs/WORKSPACE_ONBOARDING.md)                                           | Router workspace                                    |
+-| [`../../../gmail-agent/docs/core/truth_flow.md`](../../../gmail-agent/docs/core/truth_flow.md)                                                 | Audyt przepĹ‚ywu prawdy                              |
+-| [`../../../gmail-agent/docs/core/CONTEXT_PROJECTION_KNOWLEDGE_GRAPH.md`](../../../gmail-agent/docs/core/CONTEXT_PROJECTION_KNOWLEDGE_GRAPH.md) | Cel projekcji                                       |
+-
+-**Rozstrzyganie konfliktĂłw:** kod > README. Przy zmianie `app.js` lub proxy â€” zaktualizuj ten plik lub ten dokument w tej samej sesji.
+-
+----
+-
+-## 11. Mapa plikĂłw (start)
++| Duplikuj logikę reconcile w PHP      | reconcile żyje w `signal_reconciler.py` |
++| Pełna lista route w tym README       | użyj CBM / przeczytaj `api-v3.php`      |
++
++---
++
++## 10. Dokumentacja wtórna
++
++- `../../../gmail-agent/docs/core/PROJECT_README.md` — Node B.
++- `../../../gmail-agent/docs/core/CONSTITUTION_V2_1.md` — zasady bezpieczeństwa.
++- `../../../gmail-agent/docs/core/PHYSICAL_TOPOLOGY.md` — granica Node A/B.
++- `../../../gmail-agent/docs/runbooks/LAST_PROVEN_STATE.md` — proof authority.
++- `../../../knowledge/INDEX.md` — router workspace.
++
++Nie przywracaj linków do usuniętych onboardingów, archiwów ani historycznych handoffów.
++
++## 11. Mapa plików (start)
+ 
+ ```text
+ daszek/
+   daszek.php              # plugin header, loaders
+   includes/
+-    api.php               # REST v1 â€” login, csrf, /me
++    api.php               # REST v1 — login, csrf, /me
+     api-v2.php            # route registration v2 (proxy + legacy desk)
+     api-v3.php            # route registration v3 (feed, observability)
+-    api-v3-handlers.php   # proxy handlers (materialize, HITL, â€¦)
++    api-v3-handlers.php   # proxy handlers (materialize, HITL, …)
+     auth.php
+     proxy-agent-chat.php
+   public/
+-    app.js                # SPA â€” wszystkie widoki
++    app.js                # SPA — wszystkie widoki
+     index.php             # shell HTML, csrf meta
+     style.css
+   store.php               # legacy desk
+@@ -271,47 +256,50 @@
+ 
+ ---
+ 
+-## 2a. Model mentalny developera (rozszerzenie)
+-
+-### Dwa wĹ‚aĹ›ciciele HTTP
+-
+-| Warstwa          | WĹ‚aĹ›ciciel                               | Semantyka                                      |
++## 11a. Model mentalny developera — rozszerzenie
++
++### Dwa właściciele HTTP
++
++| Warstwa          | Właściciel                               | Semantyka                                      |
+ | ---------------- | ---------------------------------------- | ---------------------------------------------- |
+-| Feed v3 envelope | Node B (`daszek_v3_operational_feed.py`) | Co widaÄ‡ na Biurku / w Sprawach                |
++| Feed v3 envelope | Node B (`daszek_v3_operational_feed.py`) | Co widać na Biurku / w Sprawach                |
+ | Proxy mutacji    | Node B (`api_app.py`) + PHP transport    | HITL, materialize, agent-chat                  |
+ | Overlay WP       | Daszek storage                           | Bridge queue, archiwum lokalne, notatki biurka |
+ 
+-**Daszek nigdy nie jest arbitrem polityki** â€” PHP sprawdza sesjÄ™, CSRF i owner (`konrad`/`darek`), potem przekazuje do Node B z Bearer.
+-
+-### Cykl odĹ›wieĹĽania UI
++**Daszek nigdy nie jest arbitrem polityki** — PHP sprawdza sesję, CSRF i owner (`konrad`/`darek`), potem przekazuje do Node B z Bearer.
++
++### Cykl odświeżania UI
+ 
+ ```text
+-loadOperationalFeedSnapshot()  â†’ GET v3/operational-feed-snapshots/latest
+-renderCurrentView()            â†’ widok zaleĹĽny od state.currentView
+-openCaseDetail(caseId)         â†’ v3/cases/{id} + engagement opcjonalnie
+-poll / refresh                 â†’ timer + po mutacji (approve, HITL)
+-```
+-
+-Feed-first: gdy snapshot jest Ĺ›wieĹĽy, UI **nie** woĹ‚a Node B dla kaĹĽdej karty biurka â€” czyta z JSONL przez v3 latest.
+-
+-### Bridge queue (feedback Aâ†’B)
+-
+-Operator akcja w UI â†’ czasem `POST bridge-queue` (WP storage) â†’ CLI Node B `daszek-bridge-drain` â†’ reconcile / feedback runtime. **Nie** duplikuj drain w PHP cron bez bounded proof.
++loadOperationalFeedSnapshot()  → GET v3/operational-feed-snapshots/latest
++renderCurrentView()            → widok zależny od state.currentView
++openCaseDetail(caseId)         → v3/cases/{id} + engagement opcjonalnie
++poll / refresh                 → timer + po mutacji (approve, HITL)
++```
++
++Feed-first: gdy snapshot jest świeży, UI **nie** woła Node B dla każdej karty biurka — czyta z JSONL przez v3 latest.
++
++### Bridge queue (feedback A→B)
++
++Operator akcja w UI → czasem `POST bridge-queue` (WP storage) → CLI Node B `daszek-bridge-drain` → reconcile / feedback runtime. **Nie** duplikuj drain w PHP cron bez bounded proof.
+ 
+ ### Auth i CSRF
+ 
+-- v1 `/login` â†’ cookie sesji WP
+-- `GET /csrf` lub meta `csrf-token` w `index.php`
+-- `apiFetch`: `credentials: 'same-origin'`, `X-CSRF-Token` na POST
+-- Push feed z Node B: `DASZEK_BRIDGE_TOKEN` lub operator session (zaleĹĽnie od Ĺ›cieĹĽki w `daszek_client`)
+-
+----
+-
+-## 3. Co jest w systemie (moduĹ‚y)
+-
+-| ModuĹ‚         | Plik                             | OdpowiedzialnoĹ›Ä‡                          |
++- v1 `/login` → cookie sesji WP;
++- `GET /csrf` lub meta `csrf-token`;
++- `apiFetch`: `credentials: same-origin` i `X-CSRF-Token` na POST;
++- PHP proxy wymaga owner/permission i przekazuje bearer Node B;
++- Node B write routes pozostają fail-closed także wtedy, gdy PHP ma błąd konfiguracji;
++- brak/błędny/read-only token nie może dojść do walidacji Case ani store;
++- `operator_id` jest wiązany z uwierzytelnioną sesją, nie bezwarunkowo z body.
++
++---
++
++## 11b. Moduły
++
++| Moduł         | Plik                             | Odpowiedzialność                          |
+ | ------------- | -------------------------------- | ----------------------------------------- |
+-| Bootstrap     | `daszek.php`                     | `require` includes, rejestracja hookĂłw WP |
++| Bootstrap     | `daszek.php`                     | `require` includes, rejestracja hooków WP |
+ | Config        | `config.php`                     | `DASZEK_NODE_B_API_BASE`, tokeny, ownerzy |
+ | Auth          | `includes/auth.php`              | `daszek_require_login`, CSRF verify       |
+ | REST v1       | `includes/api.php`               | Sesja operatora                           |
+@@ -323,15 +311,15 @@
+ | UI SPA        | `public/app.js`                  | Wszystkie widoki, `apiFetch`, HITL        |
+ | Fixtures      | `fixtures/v3/`                   | Kontrakt feed dla pytest PHP/JS           |
+ 
+-**Testy Daszek (Gate A):** `gmail-agent/tools/gmail_audit/tests/test_daszek_*` â€” uruchamiane z root smoke, nie z osobnego `daszek/tests/`.
+-
+----
+-
+-## 3f. Powierzchnia REST (Daszek â€” grupy route)
+-
+-Namespace WordPress: `/wp-json/daszek/{v1|v2|v3}/â€¦`. **PeĹ‚na lista:** CBM lub grep `register_rest_route` w `includes/api*.php`.
+-
+-### v1 â€” sesja (`includes/api.php`)
++**Testy Daszek:** istnieją zarówno Python tests w `daszek/tests`, jak i Node test krytycznego flow w `daszek/tests/test_row4b_note_hitl_approve.node.js`; cross-repo kontrakty nadal mają testy po stronie gmail-agent.
++
++---
++
++## 11c. Powierzchnia REST
++
++Namespace WordPress: `/wp-json/daszek/{v1|v2|v3}/…`. **Pełna lista:** CBM lub grep `register_rest_route` w `includes/api*.php`.
++
++### v1 — sesja (`includes/api.php`)
+ 
+ | Route                        | Metoda   | Rola                            |
+ | ---------------------------- | -------- | ------------------------------- |
+@@ -340,22 +328,22 @@
+ | `/me`                        | GET      | Profil zalogowanego             |
+ | `/tasks`, `/tasks/{id}/done` | GET/POST | Legacy shim (preferuj v2 proxy) |
+ 
+-### v2 â€” proxy operatorski (`includes/api-v2.php`)
+-
+-| Grupa       | PrzykĹ‚ady                                  | Kierunek                 |
++### v2 — proxy operatorski (`includes/api-v2.php`)
++
++| Grupa       | Przykłady                                  | Kierunek                 |
+ | ----------- | ------------------------------------------ | ------------------------ |
+ | Legacy desk | `/desk`, `/day`, `/cases`                  | WP storage lub mix       |
+-| Mutacje     | `/action-proposals/{id}/approve\|reject`   | â†’ Node B                 |
+-| HITL        | `/agent-hitl/approve`, `/agent-hitl/send`  | â†’ Node B                 |
+-| Materialize | `/engagements/{id}/materialize/approve`    | â†’ Node B (CT-FU-5)       |
+-| Agent       | `/agent-chat`                              | â†’ Node B (stream)        |
++| Mutacje     | `/action-proposals/{id}/approve\|reject`   | → Node B                 |
++| HITL        | `/agent-hitl/approve`, `/agent-hitl/send`  | → Node B                 |
++| Materialize | `/engagements/{id}/materialize/approve`    | → Node B (CT-FU-5)       |
++| Agent       | `/agent-chat`                              | → Node B (stream)        |
+ | Bridge      | `/bridge-queue`, `/bridge-queue/complete`  | WP queue                 |
+-| Identity    | `/identity/suggestions`, `/identity/merge` | â†’ Node B                 |
+-| Tasks       | `/tasks`                                   | â†’ Node B deprecated shim |
+-
+-### v3 â€” feed i observability (`includes/api-v3.php`)
+-
+-| Grupa         | PrzykĹ‚ady                                                                | Rola                           |
++| Identity    | `/identity/suggestions`, `/identity/merge` | → Node B                 |
++| Tasks       | `/tasks`                                   | → Node B deprecated shim |
++
++### v3 — feed i observability (`includes/api-v3.php`)
++
++| Grupa         | Przykłady                                                                | Rola                           |
+ | ------------- | ------------------------------------------------------------------------ | ------------------------------ |
+ | Feed          | `/operational-feed-snapshots`, `/latest`, `/{id}`                        | JSONL read/write (push Node B) |
+ | Desk read     | `/desk`, `/day`, `/cases`, `/cases/{id}`                                 | Feed-first + proxy detail      |
+@@ -367,36 +355,37 @@
+ | Identity L3   | `/identity/binding-suggestions/*`                                        | Proxy merge UI                 |
+ | Cohort        | `/cohort-runs`                                                           | Lokalny storage + proxy        |
+ 
+-**Proxy pattern:** handler PHP buduje URL `{DASZEK_NODE_B_API_BASE}{path}`, dodaje `Authorization: Bearer`, przekazuje body JSON, mapuje bĹ‚Ä™dy na `{ok:false,error}`.
+-
+----
+-
+-## 6. Statusy prawdy w Daszku
+-
+-| Etykieta        | Znaczenie                          | PrzykĹ‚ad                           |
+-| --------------- | ---------------------------------- | ---------------------------------- |
+-| `feed_snapshot` | Ostatni push Node B w JSONL        | `operational_feed_snapshots.jsonl` |
+-| `proxy_read`    | Live GET z Node B przez PHP        | context-pack, timeline             |
+-| `wp_overlay`    | Tylko w WP storage                 | desk notes, archive flag           |
+-| `proven_local`  | Gate B artefakt w `runs/`          | LPS Â§GATE_B_GAPS                   |
+-| `not proven`    | Brak artefaktu lub czÄ™Ĺ›ciowy proof | Gate B row3 bez cohort             |
+-
+-**Zasada:** UI pokazuje feed snapshot jako â€žprawdÄ™ operatorskÄ… na ekranieâ€ť, ale **SoT sprawy** pozostaje w Postgres Node B. Po materialize approve UI odĹ›wieĹĽa feed / case detail â€” nie zakĹ‚adaj natychmiastowej spĂłjnoĹ›ci bez `loadOperationalFeedSnapshot()`.
+-
+----
+-
+-## 7. Jak zaczÄ…Ä‡ (developer)
+-
+-### ĹšcieĹĽka 1 â€” tylko UI (bez Node B)
++**Proxy pattern:** handler PHP buduje URL `{DASZEK_NODE_B_API_BASE}{path}`, dodaje `Authorization: Bearer`, przekazuje body JSON, mapuje błędy na `{ok:false,error}`.
++
++---
++
++## 11d. Statusy prawdy w Daszku
++
++| Etykieta | Znaczenie |
++| --- | --- |
++| `accepted` | Node B przyjął decyzję; skutek nie jest jeszcze finalny |
++| `executing` | runtime rozpoczął wykonanie |
++| `outcome_unknown` | wynik skutku jest nieznany; brak automatycznego retry |
++| `feed_snapshot` | ostatnia projekcja Node B w JSONL |
++| `converged` | świeży snapshot potwierdza właściwy `decision_key` i finalny status |
++| `wp_overlay` | lokalny stan pomocniczy; nie jest SoT wykonania |
++| `proven_local` | posiada aktualny artifact i test/runtime proof |
++| `not proven` | brak wystarczającego dowodu |
++
++UI może traktować stan jako finalny wyłącznie po `converged`. Local toast, HTTP 200 i bridge queue completion nie zastępują projekcji Node B.
++
++## 11e. Jak zacząć jako developer
++
++### Ścieżka 1 — tylko UI (bez Node B)
+ 
+ ```powershell
+ docker compose -f docker-compose.daszek-local.yml up -d
+ node --check daszek/public/app.js
+ ```
+ 
+-Feed bÄ™dzie pusty lub fixture â€” wystarczy na zmiany CSS/JS nawigacji.
+-
+-### ĹšcieĹĽka 2 â€” peĹ‚ny stack lokalny
++Feed będzie pusty lub fixture — wystarczy na zmiany CSS/JS nawigacji.
++
++### Ścieżka 2 — pełny stack lokalny
+ 
+ ```powershell
+ .\scripts\sync-local-stack-env.ps1
+@@ -406,15 +395,15 @@
+ .\scripts\daszek-smoke.ps1
+ ```
+ 
+-### ĹšcieĹĽka 3 â€” bounded proof HITL
++### Ścieżka 3 — bounded proof HITL
+ 
+ ```powershell
+-# wymaga MAILBOX_MEMORY_DATABASE_URL â†’ :54129
++# wymaga MAILBOX_MEMORY_DATABASE_URL → :54129
+ python gmail-agent/tools/gmail_audit/scripts/seed_materialize_ctfu5.py
+ python gmail-agent/tools/gmail_audit/scripts/test_ctfu5_daszek_proxy.py
+ ```
+ 
+-### ĹšcieĹĽka 4 â€” zmiana kontraktu feed v3
++### Ścieżka 4 — zmiana kontraktu feed v3
+ 
+ 1. `gmail-agent/.../daszek_v3_operational_feed_contract.py` + testy
+ 2. `daszek/fixtures/v3/`
+@@ -424,122 +413,119 @@
+ 
+ ---
+ 
+-## 8b. Macierz walidacji (skrĂłt)
+-
+-| Zmiana      | Gate A                                | Gate B                                |
+-| ----------- | ------------------------------------- | ------------------------------------- |
+-| `app.js`    | `node --check`                        | `daszek-smoke.ps1`                    |
+-| PHP proxy   | `php -l` plikĂłw                       | smoke + proxy pytest                  |
+-| Feed schema | pytest contract gmail-agent           | push + readback latest                |
+-| Materialize | `test_materialize_approve_harness.py` | seed + proxy + opcjonalnie Playwright |
+-
+-**Metryki pytest Node B:** tylko `knowledge/memory/ACTIVE_WORKSPACE.md` â€” nie kopiuj liczb do tego README.
+-
+----
+-
+-## 12. Jak dodawaÄ‡ nowÄ… funkcjÄ™ w Daszku
++## 11f. Macierz walidacji
++
++| Zmiana | Minimalny gate | Proof końcowy |
++| --- | --- | --- |
++| `app.js` | `node --check` + Node tests | fresh feed convergence test |
++| PHP proxy | `php -l` + auth/proxy tests | unauthorized + authorized runtime proof |
++| decision key/status | backend + frontend RED/GREEN | integrated decision loop |
++| feed schema | Python contract + fixture/store tests | push/readback latest |
++| wspólny Python Node B | targeted + full suite | rebuild API/worker + parity + health |
++
++Metryki pełnego suite pozostają w LPS, nie w wielu README.
++
++## 12. Jak dodawać nową funkcję w Daszku
+ 
+ ### Definition of Done
+ 
+-1. **Semantyka** â€” czy to projekcja (OK w PHP/JS) czy prawda sprawy (â†’ Node B + gateway)?
+-2. **Kontrakt** â€” jeĹ›li nowe pole feed: najpierw Python contract test.
+-3. **Proxy** â€” nowy endpoint: handler w `api-v3-handlers.php`, Bearer, CSRF, owner check.
+-4. **UI** â€” jedna Ĺ›cieĹĽka `apiFetch`; nie `fetch('http://127.0.0.1:8766')` z przeglÄ…darki.
+-5. **Test** â€” pytest proxy lub `daszek-smoke.ps1` subset.
+-6. **Docs** â€” ten plik lub ten dokument w tej samej sesji.
+-7. **CBM** â€” zaktualizuj graf jeĹ›li nowa krawÄ™dĹş HTTP cross-repo.
++1. **Semantyka** — czy to projekcja (OK w PHP/JS) czy prawda sprawy (→ Node B + gateway)?
++2. **Kontrakt** — jeśli nowe pole feed: najpierw Python contract test.
++3. **Proxy** — nowy endpoint: handler w `api-v3-handlers.php`, Bearer, CSRF, owner check.
++4. **UI** — jedna ścieżka `apiFetch`; nie `fetch('http://127.0.0.1:8766')` z przeglądarki.
++5. **Test** — pytest proxy lub `daszek-smoke.ps1` subset.
++6. **Docs** — ten plik lub ten dokument w tej samej sesji.
++7. **CBM** — zaktualizuj graf jeśli nowa krawędź HTTP cross-repo.
+ 
+ ### Antywzorzec: logika reconcile w PHP
+ 
+-JeĹ›li potrzebujesz â€žprzeliczyÄ‡ sprawÄ™â€ť â€” to `signal_reconciler.py` / `case_write_gateway`, nie `store.php`.
++Jeśli potrzebujesz „przeliczyć sprawę” — to `signal_reconciler.py` / `case_write_gateway`, nie `store.php`.
+ 
+ ### Antywzorzec: drugi feed
+ 
+-Jeden kanoniczny envelope v3. Legacy v2 desk jest wycofywany â€” nie dodawaj trzeciego formatu bez RFC.
+-
+----
+-
+-## 13. Bridge i push (szczegĂłĹ‚y)
+-
+-### Push feed (B â†’ A)
++Jeden kanoniczny envelope v3. Legacy v2 desk jest wycofywany — nie dodawaj trzeciego formatu bez RFC.
++
++---
++
++## 13. Bridge i push
++
++### Push feed (B → A)
+ 
+ ```text
+-maybe_push_operational_feed_from_run_state()
+-  â†’ validate_operational_feed_snapshot (schema 1.3)
+-  â†’ POST /wp-json/daszek/v3/operational-feed-snapshots
+-  â†’ store-v3 append JSONL
+-  â†’ trim do 40 wpisĂłw (OOM guard)
+-```
+-
+-### Bridge drain (A â†’ B)
++Node B durable state
++→ validate feed v3
++→ POST operational-feed-snapshots
++→ store-v3 JSONL
++→ trim retention
++→ app.js readback
++```
++
++Feed push jest transportem projekcji. Jego powodzenie nie zastępuje execution result; jego failure nie może uruchamiać skutku ponownie.
++
++### Bridge drain (A → B)
+ 
+ ```text
+-Operator / UI â†’ bridge-queue (WP)
+-  â†’ daszek-bridge-drain (CLI, token)
+-  â†’ Node B feedback / os-events
+-```
+-
+-Token: `DASZEK_BRIDGE_TOKEN` zsynchronizowany przez `sync-local-stack-env.ps1`.
+-
+----
++operator action
++→ WP bridge row z stabilnym queue/decision key
++→ daszek-bridge-drain
++→ auth/policy
++→ single execution or reject
++→ durable result
++→ completion + feed refresh
++```
++
++Replay completion jest dozwolony. Replay external effect po `executed` lub `outcome_unknown` jest zabroniony. Dwa równoległe drainery nie mogą wykonać skutku dwa razy.
+ 
+ ## 14. Observability w UI
+ 
+ Widok `system` agreguje:
+ 
+-- `GET /system/health/status` â€” komponenty Node B
+-- `GET /system/bridge-queue/summary` â€” kolejka WP
++- `GET /system/health/status` — komponenty Node B
++- `GET /system/bridge-queue/summary` — kolejka WP
+ - Diagramy Mermaid (read-only, sync z Node B proof 2026-06)
+-- Koszty / jakoĹ›Ä‡: `/system/cost-summary`, `/system/quality-summary`
+-
+-**Nie** traktuj zakĹ‚adki System jako panelu architekta â€” to projekcja health, nie SoT metryk (metryki ĹĽyjÄ… w PG/logach Node B).
+-
+----
+-
+-## 15. Aktualny praktyczny kierunek (2026-07-10)
+-
+-| Obszar              | Status                                        |
+-| ------------------- | --------------------------------------------- |
+-| Feed v3 schema 1.3  | **shipped** â€” `action_items` wymagane         |
+-| CT-FU-5 materialize | **proven_local** â€” UI path â‰  proxy path (LPS) |
+-| pytest gmail-agent  | **GREEN** â€” patrz ACTIVE_WORKSPACE            |
+-| Gate B row3/4 peĹ‚ny | **czÄ™Ĺ›ciowy** â€” cohort Gmail / pusty drain    |
+-| VPS deploy          | **zawieszony** â€” tylko lokalny Docker         |
+-
+-Priorytety sensowne:
+-
+-1. **P1-MAT-1 done (2026-07-10):** materialize UI bez fallbacku na `/action-proposals` â€” wymaga `engagement_id` z `resolveEngagementIdFromCaseDetail`.
+-2. PeĹ‚ny Gate B **green** â€” kohorta operatorska z `accepted_projection` + readback + row4 drain (row3 obecnie **yellow** bounded).
+-3. Utrzymanie retention feed=40 przy rosnÄ…cym envelope (OOM guard PHP 128M).
+-
+----
+-
+-## 16. NajkrĂłtsza mentalna mapa (Node A)
++- Koszty / jakość: `/system/cost-summary`, `/system/quality-summary`
++
++**Nie** traktuj zakładki System jako panelu architekta — to projekcja health, nie SoT metryk (metryki żyją w PG/logach Node B).
++
++---
++
++## 15. Aktualny praktyczny kierunek (2026-07-13)
++
++| Obszar | Status |
++| --- | --- |
++| feed v3 / Node A projection | stabilny baseline |
++| Node B mutation auth | fail-closed, PASS |
++| send/reject decision loop | replay-safe, PASS |
++| UI accepted/final separation | PASS |
++| final confirmation after convergence | PASS |
++| VPS deploy | zawieszony |
++
++Stabilizacja połączenia `gmail-agent ↔ Daszek` jest zamknięta lokalnie. Następna faza dotyczy jakości inteligencji, która zasila Daszek: uniwersalne rozumienie sygnałów, współpraca kompetencji i business-first synthesis — bez tworzenia osobnego sztywnego workflow dla każdego typu maila.
++
++## 16. Najkrótsza mentalna mapa (Node A)
+ 
+ ```text
+-Node B push feed v3 â†’ store-v3 JSONL
+-  â†’ app.js render (desk/cases/day/action_items)
+-  â†’ operator review (chat, decisions, HITL)
+-  â†’ apiFetch â†’ PHP proxy + CSRF
+-  â†’ Node B API (materialize, agent-chat, learning approve)
+-  â†’ opcjonalnie bridge-queue â†’ drain â†’ reconcile Node B
+-  â†’ refreshed feed snapshot
+-```
+-
+-JeĹ›li zmiana nie mieĹ›ci siÄ™ w mapie â€” sprawdĹş D4 i ownership w `AGENTS.md`.
+-
+----
+-
+----
+-
+-## 17. `app.js` â€” transport HTTP i stan (deep dive)
+-
+-Ten rozdziaĹ‚ uzupeĹ‚nia Â§3 i Â§6 o **konkretne wzorce z kodu** â€” punkt odniesienia przy zmianach proxy lub HITL.
+-
+-### 17.1 StaĹ‚e API i globalny `state`
++Node B durable state + execution result
++  → feed v3
++  → app.js render
++  → operator decision
++  → PHP session/CSRF/owner + bearer
++  → Node B accepted / executing / final result
++  → completion + refreshed feed
++  → matching decision_key
++  → converged UI confirmation
++```
++
++Daszek prezentuje i zbiera decyzję. Nie jest właścicielem prawdy Case ani skutku.
++
++## 17. `app.js` — transport HTTP i stan (deep dive)
++
++Ten rozdział uzupełnia §3 i §6 o **konkretne wzorce z kodu** — punkt odniesienia przy zmianach proxy lub HITL.
++
++### 17.1 Stałe API i globalny `state`
+ 
+ ```javascript
+-// public/app.js (poczÄ…tek pliku)
++// public/app.js (początek pliku)
+ const V2_API_BASE = "/wp-json/daszek/v2";
+ const V3_API_BASE = "/wp-json/daszek/v3";
+ 
+@@ -548,7 +534,7 @@
+   csrfToken: null,
+   currentView: "desk",
+   data: {
+-    /* desk, cases, operationalFeed, decisionQueue, â€¦ */
++    /* desk, cases, operationalFeed, decisionQueue, … */
+   },
+   detail: null, // panel boczny sprawy
+   agentChat: {
+@@ -557,9 +543,9 @@
+ };
+ ```
+ 
+-**Zasada:** nowe ĹşrĂłdĹ‚o danych â†’ pole w `state.data`, nie globalne zmienne poza `state`.
+-
+-### 17.2 `apiFetch` â€” jedyny klient HTTP
++**Zasada:** nowe źródło danych → pole w `state.data`, nie globalne zmienne poza `state`.
++
++### 17.2 `apiFetch` — jedyny klient HTTP
+ 
+ ```javascript
+ async function apiFetch(base, endpoint, options = {}) {
+@@ -572,7 +558,7 @@
+     credentials: "same-origin",
+     cache: method === "GET" ? "no-store" : options.cache,
+   });
+-  // â€¦ parse JSON, throw Error z .status przy !response.ok
++  // … parse JSON, throw Error z .status przy !response.ok
+   return parsedBody;
+ }
+ 
+@@ -588,31 +574,31 @@
+ }
+ ```
+ 
+-| WymĂłg             | Implementacja                                             |
++| Wymóg             | Implementacja                                             |
+ | ----------------- | --------------------------------------------------------- |
+ | Sesja WP          | `credentials: 'same-origin'`                              |
+ | CSRF na mutacjach | `X-CSRF-Token` z `state.csrfToken` (meta / `GET /csrf`)   |
+ | Cache bust GET    | `buildApiUrl` dodaje `_rt` timestamp                      |
+-| BĹ‚Ä…d HTTP         | `throw Error` z `error.status` â€” UI czyta `error.message` |
+-
+-**Antywzorzec:** `fetch('http://127.0.0.1:8766/â€¦')` z przeglÄ…darki â€” omija CSRF i CORS policy.
+-
+-### 17.3 `loadAllData` â€” rĂłwnolegĹ‚e zasilenie
+-
+-Przy starcie / odĹ›wieĹĽeniu UI woĹ‚a **Promise.allSettled** (linie ~1967â€“1978):
++| Błąd HTTP         | `throw Error` z `error.status` — UI czyta `error.message` |
++
++**Antywzorzec:** `fetch('http://127.0.0.1:8766/…')` z przeglądarki — omija CSRF i CORS policy.
++
++### 17.3 `loadAllData` — równoległe zasilenie
++
++Przy starcie / odświeżeniu UI woła **Promise.allSettled** (linie ~1967–1978):
+ 
+ | Request                                    | Baza | Cel                                     |
+ | ------------------------------------------ | ---- | --------------------------------------- |
+-| `/operational-feed-snapshots/latest`       | v3   | **Priorytet** â€” gdy OK, `feedWins=true` |
++| `/operational-feed-snapshots/latest`       | v3   | **Priorytet** — gdy OK, `feedWins=true` |
+ | `/desk`, `/day`, `/cases`                  | v3   | Fallback gdy brak feed snapshot         |
+-| `/mailbox-cases?view=full`                 | v2   | PeĹ‚ny rejestr (opcjonalny)              |
++| `/mailbox-cases?view=full`                 | v2   | Pełny rejestr (opcjonalny)              |
+ | `/cockpit`, `/ai-quality`, cohort, archive | v3   | Widoki poboczne                         |
+ 
+-Gdy `feedWins`, legacy desk/day/cases **nie nadpisujÄ…** feedu â€” D4: semantyka kart z Node B.
++Gdy `feedWins`, legacy desk/day/cases **nie nadpisują** feedu — D4: semantyka kart z Node B.
+ 
+ `hasOperationalFeedSnapshot()` (~294): `state.data.operationalFeed?.snapshot?.feed` istnieje.
+ 
+-### 17.4 Nawigacja widokĂłw
++### 17.4 Nawigacja widoków
+ 
+ ```javascript
+ const KNOWN_MAIN_VIEWS = new Set([
+@@ -635,25 +621,25 @@
+ function renderCurrentView() {
+   const viewKey = normalizeMainViewId(state.currentView) || "desk";
+   const config = viewConfig()[viewKey];
+-  // dispatch: renderDeskView | startChatViewLoad | startDecisionQueueViewLoad | â€¦
++  // dispatch: renderDeskView | startChatViewLoad | startDecisionQueueViewLoad | …
+ }
+ ```
+ 
+-`viewConfig()` (~2140) â€” tytuĹ‚ + subtitle PL per widok; **nie** duplikuj copy w HTML na sztywno poza `index.php` shell.
+-
+-### 17.5 `openCaseDetail` â€” feed-first, potem live
++`viewConfig()` (~2140) — tytuł + subtitle PL per widok; **nie** duplikuj copy w HTML na sztywno poza `index.php` shell.
++
++### 17.5 `openCaseDetail` — feed-first, potem live
+ 
+ ```text
+ openCaseDetail(caseId)
+-  â†’ resolveOperationalFeedCaseDetail(cid)  # z snapshot feed
+-  â†’ jeĹ›li hit: state.detail = { type:'case', source:'operational_feed' }
+-  â†’ inaczej: GET v3/cases/{id} + GET v3/cases/{id}/engagement
+-  â†’ refreshCaseDetailOsEvents() â†’ GET v3/engagements/{id}/os-events
+-```
+-
+-`resolveEngagementIdFromCaseDetail` (~4773) â€” szuka `engagement_id` w zagnieĹĽdĹĽonym `detail.engagement` lub `payload.case`.
+-
+-### 17.6 Materialize approve (CT-FU-5 / P1-MAT-1) â€” Ĺ‚aĹ„cuch UI
++  → resolveOperationalFeedCaseDetail(cid)  # z snapshot feed
++  → jeśli hit: state.detail = { type:'case', source:'operational_feed' }
++  → inaczej: GET v3/cases/{id} + GET v3/cases/{id}/engagement
++  → refreshCaseDetailOsEvents() → GET v3/engagements/{id}/os-events
++```
++
++`resolveEngagementIdFromCaseDetail` (~4773) — szuka `engagement_id` w zagnieżdżonym `detail.engagement` lub `payload.case`.
++
++### 17.6 Materialize approve (CT-FU-5 / P1-MAT-1) — łańcuch UI
+ 
+ ```javascript
+ function resolveEngagementIdForMaterializeProposal(proposalId) {
+@@ -667,7 +653,7 @@
+     const engagementId = resolveEngagementIdForMaterializeProposal(proposalId);
+     if (!engagementId) {
+       throw new Error(
+-        "Brak engagement_id â€” odĹ›wieĹĽ szczegĂłĹ‚y sprawy przed zatwierdzeniem materialize.",
++        "Brak engagement_id — odśwież szczegóły sprawy przed zatwierdzeniem materialize.",
+       );
+     }
+     return apiFetch(
+@@ -687,14 +673,14 @@
+ }
+ ```
+ 
+-**Status (2026-07-10):** brak fallbacku na `/action-proposals` dla `prop_*` â€” zgodnie z kodem `app.js` ~5630â€“5650. WczeĹ›niejsza dokumentacja sugerowaĹ‚a fallback; **przyjÄ™to wersjÄ™ z kodu** (P1-MAT-1).
++**Status (2026-07-13):** brak fallbacku na `/action-proposals` dla `prop_*` — zgodnie z kodem `app.js` ~5630–5650. Wcześniejsza dokumentacja sugerowała fallback; **przyjęto wersję z kodu** (P1-MAT-1).
+ 
+ ### 17.7 PHP proxy materialize (`api-v3-handlers.php`)
+ 
+ ```php
+ function daszek_api_v2_engagement_materialize_approve(WP_REST_Request $request) {
+     // CSRF + daszek_api_v2_require_owner() (konrad/darek)
+-    // body: proposal_id, reason; operator_id z sesji jeĹ›li brak w body
++    // body: proposal_id, reason; operator_id z sesji jeśli brak w body
+     $result = daszek_node_b_get_json(
+         '/engagements/' . rawurlencode($engagement_id) . '/materialize/approve',
+         'POST',
+@@ -703,7 +689,7 @@
+ }
+ ```
+ 
+-Node B: `POST /engagements/{id}/materialize/approve` (registry bearer) â†’ `materialize.execute_materialize_proposal`.
++Node B: `POST /engagements/{id}/materialize/approve` (registry bearer) → `materialize.execute_materialize_proposal`.
+ 
+ ### 17.8 Kolejka decyzji
+ 
+@@ -715,39 +701,50 @@
+ }
+ ```
+ 
+-Request id + `normalizeMainViewId(state.currentView) === 'decisions'` â€” ochrona przed race przy szybkiej nawigacji.
+-
+-### 17.9 Agent chat (skrĂłt)
+-
+-- `POST /wp-json/daszek/v2/agent-chat` â€” `proxy-agent-chat.php` (stream SSE do Node B)
+-- Approve z czatu: `approveProposalViaApi` (ten sam Ĺ‚aĹ„cuch co karty propozycji)
+-- Briefing przy wejĹ›ciu: proxy `GET /system/briefing`
+-
+-### 17.10 Checklist debugowania developera
+-
+-| Objaw             | SprawdĹş                                                               |
++Request id + `normalizeMainViewId(state.currentView) === 'decisions'` — ochrona przed race przy szybkiej nawigacji.
++
++### 17.9 Konwergencja decyzji
++
++Po mutacji UI przechowuje stabilny `decision_key` i stan oczekiwania. Finalne potwierdzenie wymaga:
++
++1. odświeżenia operational feed/case detail;
++2. snapshotu nowszego niż stan przed decyzją;
++3. zgodnego `decision_key`;
++4. finalnego `executed` lub `rejected`;
++5. braku konfliktu lub `outcome_unknown`.
++
++Do czasu spełnienia warunku UI pokazuje `accepted`/„oczekiwanie na synchronizację”, a nie „wykonano”. Duplicate click pozostaje zablokowany. Po refreshu przeglądarki stan jest rekonstruowany z Node B.
++
++### 17.10 Agent chat (skrót)
++
++- `POST /wp-json/daszek/v2/agent-chat` — `proxy-agent-chat.php` (stream SSE do Node B)
++- Approve z czatu: `approveProposalViaApi` (ten sam łańcuch co karty propozycji)
++- Briefing przy wejściu: proxy `GET /system/briefing`
++
++### 17.11 Checklist debugowania developera
++
++| Objaw             | Sprawdź                                                               |
+ | ----------------- | --------------------------------------------------------------------- |
+ | 403 na POST       | `state.csrfToken`, cookie sesji, owner                                |
+ | Pusty biurko      | `operational-feed-snapshots/latest`, worker push, retention 40        |
+ | Materialize 502   | `NODE_B_REGISTRY_TOKEN`, `MAILBOX_MEMORY_DATABASE_URL` na seed        |
+-| Case 404 w panelu | feed vs live â€” `hasOperationalFeedSnapshot()` + odĹ›wieĹĽ push          |
++| Case 404 w panelu | feed vs live — `hasOperationalFeedSnapshot()` + odśwież push          |
+ | Proxy timeout     | `DASZEK_NODE_B_API_BASE` z kontenera WP (`host.docker.internal:8766`) |
+ 
+-**Proof po zmianie `app.js`:** `node --check public/app.js` â†’ `scripts/daszek-smoke.ps1`.
+-
+----
+-
+-## 18. Dokumentacja wtĂłrna (indeks)
+-
+-| Dokument                                                                                                             | Po co                                              |
+-| -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+-| [`../../../gmail-agent/docs/core/PROJECT_README.md`](../../../gmail-agent/docs/core/PROJECT_README.md)               | Node B deep (API, PG, spine)                       |
+-| [`../../../knowledge/docs/WORKSPACE_ONBOARDING.md`](../../../knowledge/docs/WORKSPACE_ONBOARDING.md)                 | Router workspace                                   |
+-| [`../../../knowledge/memory/ACTIVE_WORKSPACE.md`](../../../knowledge/memory/ACTIVE_WORKSPACE.md)                     | Metryki ĹĽywe                                       |
+-| [`../../../gmail-agent/docs/runbooks/LAST_PROVEN_STATE.md`](../../../gmail-agent/docs/runbooks/LAST_PROVEN_STATE.md) | Proof z datÄ…                                       |
+-| CBM                                                                                                                  | Symbole, route, impact â€” nie statyczne listy tutaj |
+-
+----
+-
+-_Przy rozbieĹĽnoĹ›ci README vs `public/app.js` / `api-v3-handlers.php` â€” wygrywa kod._
+-
++**Proof po zmianie `app.js`:** `node --check public/app.js` → `scripts/daszek-smoke.ps1`.
++
++---
++
++## 18. Dokumentacja wtórna
++
++| Dokument | Rola |
++| --- | --- |
++| `../../../gmail-agent/docs/core/PROJECT_README.md` | Node B deep manual |
++| `../../../gmail-agent/docs/core/CONSTITUTION_V2_1.md` | nadrzędne gwarancje |
++| `../../../gmail-agent/docs/core/PHYSICAL_TOPOLOGY.md` | Node A/B i kanały |
++| `../../../gmail-agent/docs/runbooks/LAST_PROVEN_STATE.md` | proof z datą |
++| `../../../knowledge/INDEX.md` | router workspace |
++| `../../../knowledge/memory/ACTIVE_WORKSPACE.md` | żywy stan |
++| CBM | symbole i wpływ zmian |
++
++Przy rozbieżności README vs `public/app.js`/PHP wygrywa kod i test; przy claimie „działa” wygrywa LPS.
+--- a/gmail-agent/AGENTS.md
++++ b/gmail-agent/AGENTS.md
+@@ -1,42 +1,46 @@
+-# AGENTS.md - gmail-agent
++# AGENTS.md — gmail-agent
+ 
+-Status: active repo router.
++**Status:** aktywny router repo.
+ 
+-## Role
++## Rola
+ 
+-`gmail-agent` is Node B and owns Gmail intake, mailbox/case runtime, engagement state, policy/reconcile, operational feed inputs and feedback consumption.
++`gmail-agent` jest Node B. Odpowiada za intake Gmail/Drive, journal i replay, mailbox/case runtime, engagement state, policy, execution, operational feed oraz konsumpcję feedbacku.
+ 
+-It does not own HVAC pricing, sizing or `OfferDTO`; that belongs to `kalk-top`.
++Nie jest właścicielem HVAC pricing, sizing ani `OfferDTO`; to należy do `kalk-top`.
+ 
+-## Read First
++## Czytaj najpierw
+ 
+-1. root `../AGENTS.md`
+-2. `../knowledge/memory/OPERATOR_DECISIONS.md`
+-3. `README.md`
+-4. `docs/core/PROJECT_README.md`
+-5. `docs/runbooks/LAST_PROVEN_STATE.md` only for proof/runtime claims
+-6. source and targeted tests
++1. root `../AGENTS.md`;
++2. `../knowledge/INDEX.md` i `../knowledge/source-of-truth.md`;
++3. `../knowledge/memory/OPERATOR_DECISIONS.md` oraz `ACTIVE_WORKSPACE.md`;
++4. `README.md`;
++5. `docs/core/CONSTITUTION_V2_1.md`;
++6. `docs/core/PROJECT_README.md`;
++7. `docs/runbooks/LAST_PROVEN_STATE.md` tylko dla proof/runtime claims;
++8. aktualny kod i targeted tests.
+ 
+-Do not read historical handoffs, proof packs, archives or raw exports as active truth.
++Nie czytaj historycznych handoffów, proof-packów, archiwów ani raw exports jako aktywnej prawdy.
+ 
+-## Runtime Boundaries
++## Runtime boundaries i freeze
+ 
+-- Default work is local Docker only.
+-- Production/VPS deploy is suspended unless explicitly requested.
+-- Daszek is projection-only UI; do not make it a write SoT.
+-- No autonomous customer email, Calendar write or CRM write by default.
+-- Keep `signal_id`, `trace_id`, `engagement_id`, feed v3 and identity semantics stable under the workspace freeze.
++- Domyślnie local Docker only; VPS/prod są zawieszone.
++- Daszek jest projection-only; Node B pozostaje SoT spraw i wykonania.
++- Zachowaj semantykę `message_id`, `signal_id`, `engagement_id`, `case_id`, `run_id`, `trace_id` i `source_signal_ids`.
++- Zachowaj `POSTGRES_ATOMIC_MUTATION_CONFIRMED`; nie wracaj do stale full-row overwrite.
++- `/tasks*` write routes pozostają fail-closed.
++- Zachowaj stabilny `decision_key` oraz rozdzielenie `accepted`, execution, completion i convergence.
++- Nie ponawiaj automatycznie `outcome_unknown`.
++- Nie przywracaj finalnego sukcesu UI przed matching fresh projection.
++- Brak autonomicznego customer email, Calendar write lub CRM write bez policy/HITL i osobnego proofu.
+ 
+ ## Verification
+ 
+-Use targeted tests for changed code. Do not claim fresh proof from old docs.
+-
+-Common local checks:
++Używaj targeted tests podczas implementacji. Pełny closeout obejmuje odpowiedni suite, workspace gate oraz — dla kodu bake’owanego — rebuild/recreate, host/container parity i health.
+ 
+ ```powershell
+ python -m compileall tools/gmail_audit scripts -q
+-python -m pytest tools/gmail_audit/tests -q
++python -m pytest tools/gmail_audit/tests -q --tb=line
+ python tools/gmail_audit/gmail_intake.py doctor --skip-gmail --verbose
+ ```
+ 
+-Do not run containers, replays or runtime proofs unless the task explicitly asks.
++Nie uruchamiaj realnych replayów, customer send ani operacji VPS bez jawnego zakresu.
+--- a/gmail-agent/docs/README.md
++++ b/gmail-agent/docs/README.md
+@@ -1,9 +1,27 @@
+ # gmail-agent Docs
+ 
+-Active documentation:
++**Status:** aktywny indeks po stabilizacji 2026-07-13.
+ 
+-- `core/PROJECT_README.md` - deep manual.
+-- `runbooks/LAST_PROVEN_STATE.md` - latest proven state and constraints.
+-- `contracts/engagement_snapshot_v2.schema.json` - active EngagementSnapshot v2 schema.
++## Zasady i architektura
+ 
+-Historical plans, proof packs, handoffs and generated reports are not active documentation.
++- [`core/CONSTITUTION_V2_1.md`](core/CONSTITUTION_V2_1.md) — nadrzędne niezmienniki.
++- [`core/ARCHITECTURE_PRECEDENCE.md`](core/ARCHITECTURE_PRECEDENCE.md) — kolejność źródeł prawdy.
++- [`core/PHYSICAL_TOPOLOGY.md`](core/PHYSICAL_TOPOLOGY.md) — Node A / Node B i lokalny deployment.
++- [`core/PROJECT_README.md`](core/PROJECT_README.md) — główny manual Node B.
++- [`core/AGENT_RUNTIME_ARCHITECTURE.md`](core/AGENT_RUNTIME_ARCHITECTURE.md) — bounded mapa agent runtime PR-A–PR-G.
++- [`core/EVENT_CATALOG.md`](core/EVENT_CATALOG.md) — eventy i semantyka finalności/replayu.
++
++## Kontrakty
++
++- [`contracts/engagement_snapshot_v2.schema.json`](contracts/engagement_snapshot_v2.schema.json) — EngagementSnapshot v2.
++- [`core/CORRELATION_REGISTRY_P0_CONTRACT.md`](core/CORRELATION_REGISTRY_P0_CONTRACT.md) — identity/engagement/linking.
++- [`core/AGENT_CONSTITUTION.md`](core/AGENT_CONSTITUTION.md) — semantyka agenta HVAC.
++
++## Operacje i proof
++
++- [`runbooks/LAST_PROVEN_STATE.md`](runbooks/LAST_PROVEN_STATE.md) — jedyne źródło bieżących claimów runtime.
++- [`runbooks/MAILBOX_MEMORY_POSTGRES.md`](runbooks/MAILBOX_MEMORY_POSTGRES.md) — persistence i atomowa mutacja Case.
++- [`runbooks/SIGNAL_ACTIVE_ONLY.md`](runbooks/SIGNAL_ACTIVE_ONLY.md) — aktywny signal spine.
++- [`runbooks/README.md`](runbooks/README.md) — pełny aktywny indeks runbooków.
++
++Historyczne plany, handoffy, proof-packi i usunięte archiwa nie są aktywną dokumentacją.
+--- a/gmail-agent/docs/core/AGENT_CONSTITUTION.md
++++ b/gmail-agent/docs/core/AGENT_CONSTITUTION.md
+@@ -1,62 +1,78 @@
+-# Konstytucja agenta TOP-INSTAL (operator HVAC)
++# Konstytucja agenta TOP-INSTAL — operator HVAC
+ 
+-**Status:** zywy dokument semantyczny - edycja bez zmiany kodu runtime.
++**Status:** żywy dokument semantyczny  
++**Ostatni przegląd:** 2026-07-13
+ 
+-`generate_draft_reply` ustawia akcje `draft_reply` z `enabled=True` (technicznie gotowa); wykonanie wysylki blokuje `hitl_gate.required` do zatwierdzenia operatora (MCP `approve_hitl_action` lub przyciski w Daszku).
++Agent interpretuje sytuację i przygotowuje propozycje. Nie jest źródłem prawdy wykonania.
+ 
+-## identity
++`generate_draft_reply` może przygotować akcję `draft_reply`, ale gotowy draft nie oznacza wysłania. Operator approval oznacza wyłącznie zgodę na rozpoczęcie kontrolowanego execution. Finalny wynik pochodzi z trwałego `ExecutionResult` Node B i jest potwierdzany operatorowi dopiero po konwergencji projekcji.
+ 
+-## Kim jestes
++## identity — kim jesteś
+ 
+-Jestes operatorem techniczno-handlowym TOP-INSTAL (pompy ciepla, HVAC). Nie jestes chatbotem ogolnym. Prowadzisz sprawe od sygnalu (mail/Drive) do pakietu dla czlowieka: profil budynku, wycena z kalkulatora, draft odpowiedzi.
++Jesteś operatorem techniczno-handlowym TOP-INSTAL w obszarze pomp ciepła i HVAC. Prowadzisz sprawę od sygnału do użytecznego pakietu dla człowieka: fakty, braki, ryzyka, następny krok, kalkulacja z właścicielskiego narzędzia i draft komunikacji.
+ 
+-## hvac_rules
++Nie jesteś chatbotem ogólnym i nie tworzysz własnej prawdy poza stanem/evidence Node B.
+ 
+-## Co wiesz (semantyka)
++## hvac_rules — wiedza i granice
+ 
+-### Program Czyste Powietrze 2025
++### Program Czyste Powietrze
+ 
+-- Dotacja zalezy od parametru instalacji i klasy urzadzenia - uzyj narzedzia `check_cp2025_eligibility` po uzupelnieniu profilu.
+-- Nie obiecuj kwoty dotacji bez wyniku narzedzia lub kalk-top.
++- Użyj właściwego narzędzia wiedzy dla aktualnych warunków programu.
++- Nie obiecuj kwoty dotacji bez wyniku narzędzia i wiarygodnego evidence.
+ 
+-### Dobor urzadzen (Mitsubishi / Panasonic / Daikin)
++### Dobór urządzeń
+ 
+-- Orientacyjnie: dom jednorodzinny ~100-150 m2 -> czesto pompa 6-8 kW (zaleznie od OZC).
+-- Brak OZC / metrazu -> nie podawaj modelu jako pewnik; zglos luke.
++- Orientacyjny przedział mocy nie jest finalnym doborem.
++- Brak OZC, metrażu albo danych instalacji oznacz jako lukę; nie przedstawiaj modelu jako pewnika.
+ 
+-### Marze i ceny
++### Ceny i marże
+ 
+-- Cena instalacji wylacznie z `call_kalk_top_quote` (Node A). Nie wymyslaj PLN w tekscie.
++- Cenę instalacji pobieraj wyłącznie z `call_kalk_top_quote`/właścicielskiego runtime.
++- Nie wymyślaj kwot, rabatów ani marży.
+ 
+-## Jak myslisz (procedura)
++## procedure — jak myślisz
+ 
+-1. Przeczytaj `EngagementSnapshot.v2` - co jest znane, co w `gaps`.
+-2. Wybierz jedno narzedzie z allowlisty na ture.
+-3. Po narzedziu Python aktualizuje snapshot; Ty proponujesz kolejny krok, nie zapisujesz do bazy sam.
++1. Odczytaj aktualny `EngagementSnapshot`/Case Context i evidence.
++2. Rozpoznaj fakty, intencje, konflikty, braki oraz ryzyka.
++3. Wybierz jedno narzędzie z allowlisty na turę.
++4. Po narzędziu pozwól deterministycznemu runtime zaktualizować stan.
++5. Zaproponuj kolejny krok i wyjaśnij confidence/provenance.
++6. Gdy potrzebne jest wykonanie, utwórz propozycję/HITL; nie deklaruj skutku przed `ExecutionResult`.
+ 
+-## forbidden_actions
++## decision_semantics — semantyka decyzji
+ 
+-## Czego nie robisz (bezwzgledne)
++- `received`: komenda istnieje.
++- `accepted`: Node B ją przyjął; skutek jeszcze nie jest potwierdzony.
++- `executing`: runtime rozpoczął wykonanie.
++- `executed`: trwały wynik potwierdza skutek.
++- `failed_before_execution`: skutek nie rozpoczął się; retry może być dozwolony.
++- `outcome_unknown`: skutek mógł wystąpić; automatyczny retry jest zabroniony.
++- `rejected`: decyzja została trwale odrzucona.
++- `converged`: świeża projekcja potwierdza ten sam decision key i stan końcowy.
+ 
+-- Nie wysylasz maili (`send_email`, `auto_send`).
+-- Nie tworzysz OfferDTO w gmail-agent (`create_offerdto`).
+-- Nie archiwizujesz Gmaila ani nie zmieniasz kalendarza na zywo.
++## forbidden_actions — czego nie robisz
+ 
+-## hitl_policy
++- Nie wysyłasz maila samodzielnie ani bez zatwierdzonego HITL/policy.
++- Nie uznajesz `accepted` ani HTTP 200 za dowód wysłania.
++- Nie ponawiasz `outcome_unknown`.
++- Nie tworzysz `OfferDTO` w gmail-agent.
++- Nie archiwizujesz Gmaila ani nie zmieniasz kalendarza na żywo bez osobnego kontraktu.
++- Nie nadpisujesz trwałego finalnego wyniku sprzeczną decyzją.
+ 
+-## Kiedy zatrzymujesz sie (`pending_operator`)
++## hitl_policy — kiedy zatrzymujesz się
+ 
+-Natychmiast ustaw `pending_operator` gdy:
++Ustaw `pending_operator` lub wymagaj HITL, gdy:
+ 
+-- Brakuje metrazu i nie ma go w Drive/Gmail po budzecie narzedzi.
+-- Brakuje OZC przy wycenie wymagajacej mocy.
+-- Masz gotowy draft - `hitl_gate.required=true`; operator klika [WYSLIJ] w Daszku.
++- brakuje danych blokujących bezpieczną decyzję;
++- wynik jest niejednoznaczny lub sprzeczny;
++- akcja ma skutek zewnętrzny;
++- powstał gotowy draft do wysłania;
++- execution ma status `outcome_unknown`;
++- policy wymaga operatora.
+ 
+-Nie czekaj na wyczerpanie wszystkich tur, jesli luka jest blokujaca.
++Nie czekaj na wyczerpanie wszystkich tur, jeśli luka jest blokująca.
+ 
+ ## tool_allowlist
+-
+-## Allowlist narzedzi
+ 
+ - `search_gmail_thread`
+ - `list_drive_folder`
+--- a/gmail-agent/docs/core/AGENT_CONSTITUTION.md.sha256
++++ b/gmail-agent/docs/core/AGENT_CONSTITUTION.md.sha256
+@@ -1 +1 @@
+-b1be461ecc89b7bf+9d4d21346667a954de9950b8291d656e0388535a33100187dcab67a80a383902  AGENT_CONSTITUTION.md
+--- a/gmail-agent/docs/core/AGENT_RUNTIME_ARCHITECTURE.md
++++ b/gmail-agent/docs/core/AGENT_RUNTIME_ARCHITECTURE.md
+@@ -1,16 +1,16 @@
+-# Agent Runtime Architecture (PR-A / PR-B)
++# Agent Runtime Architecture (PR-A–PR-G, zakres ograniczony)
+ 
+-**Status:** operator SoT + graph mock/OpenAI-ready (2026-06-04)
++**Status:** aktywna, lecz ograniczona mapa agent runtime PR-A–PR-G; przegląd 2026-07-13
+ 
+ ## Cel
+ 
+-Jeden **Digital Twin operatora HVAC** na engagement: stan w `operator_engagement_snapshots`, epizody w `agent_runtime_turns`, semantyka w `AGENT_CONSTITUTION.md` (+ opcjonalny RAG).
++Jeden **Digital Twin operatora HVAC** na engagement: working state w `operator_engagement_snapshots`, epizody w `agent_runtime_turns`, semantyka w `AGENT_CONSTITUTION.md` (+ opcjonalny RAG). Dokument opisuje runtime agenta, nie pełną architekturę AI-OS. Operacyjnym SoT spraw pozostają journal i Postgres mailbox memory.
+ 
+ ## Trzy warstwy pamięci
+ 
+ | Warstwa      | Magazyn                                                    | Zawartość                                                                            |
+ | ------------ | ---------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+-| **Working**  | `operator_engagement_snapshots.snapshot_data`              | `EngagementSnapshotV2` — jedyny SoT operatorski                                      |
++| **Working**  | `operator_engagement_snapshots.snapshot_data`              | `EngagementSnapshotV2` — kanoniczny working snapshot agenta; nie zastępuje Case/Postgres SoT                                      |
+ | **Episodic** | `agent_runtime_turns`                                      | Każde wywołanie narzędzia: args (redacted), status, `turn_summary_pl`, `tokens_used` |
+ | **Semantic** | `docs/core/AGENT_CONSTITUTION.md` + pgvector (opcjonalnie) | Reguły HVAC, allowlist, HITL; `load_live(rag_enabled=True)`                          |
+ 
+@@ -75,49 +75,38 @@
+ 
+ **Doctor:** `python gmail_intake.py doctor` raportuje `checks.agent_runtime`.
+ 
+-## PR-D — Spine → AgentRun
++## PR-D — Spine → AgentRun (historyczny etap implementacyjny)
+ 
+-W `signal_reconciler.py`:
++PR-D opisuje genezę spięcia agent runtime z reconcile. Aktualny kontrakt nadrzędny jest prostszy:
+ 
+-- `AGENT_RUNTIME_ENABLED=1` + `mode=prep|primary` → `_reconcile_gmail_signal_agent` / `_reconcile_drive_signal_agent`
+-- `mode=legacy` lub agent wyłączony → `_reconcile_gmail_signal_legacy` (12 modułów downstream)
++- `SIGNAL_RUNTIME_MODE=active` jest jedyną wspieraną ścieżką wejścia;
++- canonical reconcile działa przez rejestr handlerów i wspólny downstream;
++- agent runtime może działać jako ograniczona warstwa `prep`, ale nie zastępuje journalu, Case state ani policy;
++- `AGENT_RUNTIME_MODE=primary` pozostaje zablokowany;
++- historyczny legacy tail nie jest alternatywnym runtime.
+ 
+-Przepływ agent:
++Elementy nadal istotne:
+ 
+-1. `resolve_engagement_for_case` (correlation_registry)
+-2. `ensure_engagement_snapshot` → `execute_agent_run`
+-3. `patch_signal_engagement_id`
+-4. `build_v2_projection_from_engagement` → `ReconcileResult.v2_projection`
++1. rozwiązanie `engagement_id`/`case_id`;
++2. inicjalizacja lub odczyt snapshotu agenta;
++3. bounded `execute_agent_run`;
++4. walidowany zapis snapshotu/turn journal;
++5. projekcja do aktualnego feedu bez tworzenia drugiego SoT.
+ 
+-Moduły: `agent_reconcile.py`, `feed_projection.py`, `jobs.py` (audit completed runs).
++Źródłem aktualnego zachowania są `signal_reconciler.py`, `intake_shared_downstream.py`, `config.py`, testy oraz `SIGNAL_ACTIVE_ONLY.md`.
+ 
+-| Funkcja                                | Zachowanie                                            |
+-| -------------------------------------- | ----------------------------------------------------- |
+-| `agent_runtime_reconcile_active()`     | `enabled=1` + `prep\|primary`                         |
+-| `legacy_downstream_reconcile_active()` | negacja agenta → `run_shared_downstream_stages`       |
+-| `build_agent_reconcile_result()`       | jeden builder `ReconcileResult` (Gmail + Drive)       |
+-| `resolve_case_id_for_agent()`          | case z entity link / payload                          |
+-| `gmail_signal_adapter`                 | `run_state.reconcile_path=agent_runtime` po reconcile |
++## PR-E — Daszek feed (historyczny adapter snapshotu)
+ 
+-DDL: `agent_runtime_jobs` (opcjonalny audit, bootstrap razem z operator store).
++PR-E wprowadził mapowanie `EngagementSnapshotV2` do widoków Daszka. Obecny kontrakt UI jest operational feed v3 schema 1.3:
+ 
+-## PR-E — Daszek feed (EngagementSnapshot.v2)
++- listy `desk`, `cases`, `action_items`, `case_details`, `day`;
++- brak kanonicznej listy `tasks` w feedzie 1.3;
++- Node B buduje i waliduje projekcję; Daszek ją przechowuje i renderuje;
++- `read_only=true` oznacza brak wykonania po stronie feedu;
++- stan decyzji/execution jest potwierdzany przez stable decision identity i świeżą projekcję, nie przez sam push HTTP;
++- best-effort feed push nie jest execution checkpointem.
+ 
+-Moduł: `daszek_engagement_feed.py`. Mapowanie 1:1 snapshot → `desk` / `cases` / `tasks` / `case_details` (+ `agent_turns` z journal).
+-
+-| Element                                | Zachowanie                                                                                  |
+-| -------------------------------------- | ------------------------------------------------------------------------------------------- |
+-| `engagement_feed_source_enabled()`     | auto gdy `agent_runtime_reconcile_active()` lub `DASZEK_FEED_SOURCE=engagement_snapshot_v2` |
+-| `build_engagement_feed_for_cel()`      | CEL push: operator store + `extra_case_ids` (hints + overlays)                              |
+-| `accumulate_engagement_feed_case_hint` | pin `case_id` po reconcile agenta (brak projection routes)                                  |
+-| `daszek_legacy_v2_push_allowed()`      | w `gmail_intake` — blokuje podwójny push v2 gdy feed z engagement                           |
+-| `build_daszek_feed_doctor_check()`     | doctor: konflikt `DASZEK_FEED_SOURCE` vs `AGENT_RUNTIME_*`                                  |
+-| `daszek_v3_feed_runtime`               | gałąź engagement zamiast `build_operational_feed_for_cel` gdy źródło włączone               |
+-| Filtr                                  | `_operator_desk*`, artefakty Gate B (`gateb_badbad`, `gateb-`)                              |
+-| UI Daszek                              | `daszek/public/app.js` — sekcja `agent_turns`, timeline z `event_type=agent_turn`           |
+-| Fixture                                | `daszek/fixtures/v3/operational_feed_agent_runtime.json`                                    |
+-
+-Envelope: `validate_operational_feed_snapshot` (Daszek V3 contract); `read_only: true` na API — zgodnie z kontraktem, nie stub legacy.
++Historyczne funkcje `daszek_engagement_feed.py` mogą nadal wspierać bounded ścieżki, ale nie są osobnym źródłem prawdy ani pozwoleniem na schema drift. Aktualną mapę feedu opisują `PROJECT_README.md`, kontrakt v3 i LPS.
+ 
+ ## PR-F — Primary cutover (historyczny; **primary zablokowany w kodzie**)
+ 
+@@ -130,7 +119,7 @@
+ | `legacy_downstream_reconcile_active()` | ConfigError gdy `enabled=1` + `mode=legacy`                                                           |
+ | `canonical_production`                 | Gdy `AGENT_RUNTIME_ENABLED=1`: wymaga OpenAI key; **nie** `mode=primary` (zablokowany przed profilem) |
+ 
+-Runbook historyczny: `docs/archive/runbooks/AGENT_PRIMARY_CUTOVER.md`.
++Historyczny primary cutover nie jest aktywnym runbookiem; bieżący stan potwierdza `docs/runbooks/LAST_PROVEN_STATE.md`.
+ Testy: `tests/test_digital_twin_cel_radlin_dod.py`, `tests/test_agent_primary_mode_pr_f.py`.
+ 
+ ## PR-G — MCP server (Cursor / audyt)
+@@ -141,7 +130,7 @@
+ | `agent_runtime/mcp_server.py`     | stdio MCP (`mcp` package)                                                                                           |
+ | `gmail_intake.py agent-mcp-serve` | Entrypoint operacyjny                                                                                               |
+ | Narzędzia                         | `get_engagement_snapshot`, `list_active_engagements`, `trigger_agent_run`, `approve_hitl_action`, `get_agent_turns` |
+-| `approve_hitl_action`             | CAS na snapshot — zdejmuje `hitl_gate`, włącza `action_id`                                                          |
++| `approve_hitl_action`             | rejestruje approval/HITL w snapshotcie; nie jest samodzielnym dowodem wykonania skutku                               |
+ | Konfiguracja Cursor               | Operator-profile snippet: `docs/dev/mcp/snippets/agent-runtime.placeholder.jsonc`                                   |
+ 
+ | `scripts/agent_mcp_smoke_gate.py` | Gate in-process: wszystkie narzędzia MCP, exit 0 = PASS |
+@@ -149,7 +138,29 @@
+ | Filtry listy | `hitl_required_only`, `blocking_gaps_only`, `status` |
+ | `include_full` na get | Pełny JSON snapshot (ograniczone użycie) |
+ 
+-Runbook: `docs/runbooks/AGENT_RUNTIME_MCP.md`. Testy: `tests/test_agent_mcp_pr_g.py`, `tests/test_agent_mcp_pr_g_complete.py`.
++Operacje MCP traktuj jako debug/bounded tooling; bieżący proof pozostaje w LPS. Testy: `tests/test_agent_mcp_pr_g.py`, `tests/test_agent_mcp_pr_g_complete.py`.
++
++## Rozszerzenie bezpieczeństwa decyzji (2026-07-13)
++
++Agent runtime działa na deterministycznym kontrakcie execution:
++
++```text
++received → accepted → executing → executed | outcome_unknown | failed_before_execution → converged
++received → accepted → rejected → converged
++```
++
++- stabilny `decision_key`/queue identity przechodzi przez Daszek, bridge i Node B;
++- `accepted` nie jest dowodem wykonania;
++- trwały execution result jest zapisany przed completion/projection;
++- replay `executed`/`rejected` nie wywołuje executora ani drugiego finalnego eventu;
++- `failed_before_execution` może być ponowiony;
++- `outcome_unknown` wymaga jawnego recovery i nie jest automatycznie ponawiany;
++- dwa równoległe drainery tej samej decyzji nie wykonują skutku dwa razy;
++- finalne UI confirmation wymaga konwergencji fresh feedu dla tego samego decision key.
++
++Główni właściciele: `agent_hitl_bridge.py`, `hitl_gmail_send.py`, `execution_runtime.py`, `daszek_bridge_queue_drain.py`, `agent_runtime/authz.py`, `api_app.py` oraz po stronie Node A `api-v3-handlers.php` i `public/app.js`.
++
++Proof: `docs/runbooks/LAST_PROVEN_STATE.md` oraz `C:\ai-os-critical-findings-fix-20260713T122855Z`.
+ 
+ ## Spine-first + case bootstrap (gap + workaround)
+ 
+@@ -157,8 +168,8 @@
+ 
+ **Workaround (2026-06-07):** `ingest_signal_batch.py` wywołuje `_ensure_mailbox_case()` przed `process_snapshot` — bootstrap case/message w durable store. Dodatkowo `resolve_case_id_for_agent()` ma fallback `fetch_case_by_message_id`.
+ 
+-**Docelowa naprawa:** entity link w `process_snapshot` / spine-first path (follow-up). Runbook: [`AGENT_INGEST_SIGNAL_BATCH.md`](../runbooks/AGENT_INGEST_SIGNAL_BATCH.md).
++**Status:** traktuj jako ograniczenie tej historycznej ścieżki PR-A–PR-G. Aktualny signal-active runtime i proof opisują `docs/runbooks/SIGNAL_ACTIVE_ONLY.md` oraz `LAST_PROVEN_STATE.md`; nie odtwarzaj usuniętego runbooka ingest.
+ 
+ ## Tryby runtime
+ 
+-`AGENT_RUNTIME_MODE`: `prep` | `primary` | `legacy` — wzajemnie wykluczające. Szczegóły: `.cursor/plans/stateful_agent_runtime_b605104d.plan.md`.
++`AGENT_RUNTIME_MODE`: kod dopuszcza wspierany tryb `prep`; `primary` pozostaje zablokowany, a aktywny signal spine nie przywraca legacy tail. Źródłem jest `config.py` i testy, nie historyczny plan `.cursor`.
+--- a/gmail-agent/docs/core/ARCHITECTURE_AUTHORITY_V2_1.json
++++ b/gmail-agent/docs/core/ARCHITECTURE_AUTHORITY_V2_1.json
+@@ -1,31 +1,35 @@
+ {
+   "architecture_version": "v2.1",
+   "status": "authoritative",
+-  "reviewed_on": "2026-05-19",
++  "reviewed_on": "2026-07-13",
+   "authoritative_docs": [
+     "docs/core/CONSTITUTION_V2_1.md",
+     "docs/core/ARCHITECTURE_PRECEDENCE.md",
+     "docs/core/PHYSICAL_TOPOLOGY.md"
+   ],
+-  "code_grounded_spine_docs": [
+-    "docs/core/CONTEXT_PROJECTION_KNOWLEDGE_GRAPH.md",
+-    "docs/core/truth_flow.md",
+-    "docs/dev/CODEX_GITNEXUS_MASTER_HANDOFF.md",
+-    "docs/dev/RUNTIME_FLOW_FLAGS_MATRIX.md"
++  "active_code_grounded_docs": [
++    "docs/core/PROJECT_README.md",
++    "docs/core/EVENT_CATALOG.md",
++    "docs/core/AGENT_RUNTIME_ARCHITECTURE.md",
++    "docs/runbooks/MAILBOX_MEMORY_POSTGRES.md"
+   ],
+-  "implementation_snapshot_2026_05_19": {
+-    "truth_flow_pr_0_8": "done_in_repo",
+-    "context_projection_pr_b_h": "read_only_done_locally_not_live_proven",
+-    "local_pytest": "658 passed, 2 skipped",
+-    "runtime_proof_authority": "docs/runbooks/LAST_PROVEN_STATE.md"
+-  },
++  "runtime_proof_authority": "docs/runbooks/LAST_PROVEN_STATE.md",
++  "proof_metrics_policy": "volatile test counts and runtime claims belong only in LAST_PROVEN_STATE.md",
+   "hard_invariants": [
+     "append_only_first",
+     "raw_observation_before_canonical_signal",
+     "state_first",
+     "hot_state_default_cold_evidence_on_demand",
+-    "evidence_backed_facts",
++    "evidence_backed_facts_and_explicit_conflicts",
++    "postgres_node_b_operational_truth",
++    "atomic_case_mutation_for_concurrent_writers",
+     "policy_before_action",
++    "external_mutations_default_deny",
++    "stable_decision_identity",
++    "accepted_is_not_executed",
++    "durable_execution_result_before_completion_projection",
++    "no_automatic_retry_after_outcome_unknown",
++    "final_ui_success_after_node_b_convergence",
+     "daszek_projection_only",
+     "feedback_split_calibration_vs_adjudication",
+     "node_a_node_b_physical_boundary"
+@@ -34,11 +38,14 @@
+     "mail_first_truth",
+     "raw_event_direct_to_heavy_reasoning",
+     "full_history_prompt_by_default",
+-    "policy_only_in_ui",
+-    "daszek_semantic_owner",
+-    "daszek_agent_shared_filesystem_assumption",
++    "policy_or_auth_only_in_ui",
++    "write_route_open_when_token_missing",
++    "daszek_semantic_or_execution_owner",
++    "node_a_node_b_shared_filesystem_assumption",
+     "silent_conflict_flattening",
+-    "action_without_policy_decision",
++    "action_without_policy_and_stable_decision_key",
++    "retry_external_effect_after_unknown_outcome",
++    "ui_final_success_from_http_accepted_only",
+     "mixed_feedback_modes"
+   ]
+ }
+--- a/gmail-agent/docs/core/ARCHITECTURE_PRECEDENCE.md
++++ b/gmail-agent/docs/core/ARCHITECTURE_PRECEDENCE.md
+@@ -1,42 +1,45 @@
+-# Pierwszenstwo architektury
++# Pierwszeństwo architektury
+ 
+-Status: autorytatywny
+-Zakres: kolejnosc zrodel architektonicznych
+-Ostatni przeglad: 2026-05-19
++**Status:** autorytatywny  
++**Zakres:** kolejność źródeł architektonicznych  
++**Ostatni przegląd:** 2026-07-13
+ 
+-Ten dokument definiuje kolejnosc autorytetu przy konflikcie zrodel.
++## Kolejność autorytetu
+ 
+-## Kolejnosc autorytetu
++1. `docs/core/CONSTITUTION_V2_1.md`.
++2. Formalne kontrakty V2.1, w tym `docs/core/ARCHITECTURE_AUTHORITY_V2_1.json`.
++3. `docs/core/PHYSICAL_TOPOLOGY.md` dla granicy Node A / Node B i modelu deploymentu.
++4. Root `AGENTS.md`, repo `AGENTS.md` oraz decyzje operatora w `knowledge/memory/OPERATOR_DECISIONS.md`.
++5. Aktualny kod i kontrakty danych, o ile nie naruszają V2.1.
++6. Testy kontraktowe, integracyjne i runtime proof.
++7. `docs/runbooks/LAST_PROVEN_STATE.md` dla twierdzeń „działa / zostało udowodnione”.
++8. Aktywne README i runbooki zgodne z powyższymi źródłami.
++9. Dokumenty historyczne wyłącznie jako kontekst.
+ 
+-1. `docs/core/CONSTITUTION_V2_1.md`
+-2. zatwierdzone kontrakty formalne V2.1 (np. `core/ARCHITECTURE_AUTHORITY_V2_1.json`)
+-3. `docs/core/PHYSICAL_TOPOLOGY.md` dla granicy Node A / Node B
+-4. `AGENTS.md`
+-5. **mapa flow w kodzie** (nie zastępuje konstytucji): `docs/core/truth_flow.md`, `docs/dev/CODEX_GITNEXUS_MASTER_HANDOFF.md`, `docs/core/CONTEXT_PROJECTION_KNOWLEDGE_GRAPH.md` — przy konflikcie z RFC wygrywa kod + test + `LAST_PROVEN_STATE`
+-6. aktualny kod (o ile nie narusza V2.1)
+-7. aktywne dokumenty zgodne z V2.1
+-8. dokumenty historyczne jako kontekst
++`LAST_PROVEN_STATE.md` wygrywa nad opisem stanu runtime w README, lecz nie może nadpisać konstytucyjnych granic bezpieczeństwa.
+ 
+-**Proof runtime:** `docs/runbooks/LAST_PROVEN_STATE.md` wygrywa nad opisem „działa” w README/produkcie, ale nie nadpisuje granic V2.1.
++## Rozstrzyganie konfliktu
+ 
+-## Zasada dokumentow historycznych
++- **Semantyka i granice:** wygrywa Konstytucja V2.1.
++- **Faktyczna implementacja:** wygrywa aktualny kod wraz z testem.
++- **Stan uruchomionego środowiska:** wygrywa świeży proof wskazany w LPS.
++- **Stan produktu w UI:** musi być zgodny ze stanem Node B i kontraktem konwergencji.
++- **Liczby testów:** nie są utrzymywane w dokumentach autorytatywnych; źródłem jest LPS.
+ 
+-Dokumenty oznaczone jako `superseded`, `historical`, `archived`, `legacy` lub niezgodne z V2.1:
++## Dokumenty historyczne
+ 
+-- moga wyjasniac historie,
+-- nie moga sterowac nowa implementacja.
++Dokument oznaczony `historical`, `superseded`, `archived`, `legacy` albo odnoszący się do usuniętego runtime:
+ 
+-## Zasada dla agentow
++- może wyjaśniać genezę rozwiązania;
++- nie może sterować nową implementacją;
++- nie może być użyty jako aktualny proof;
++- nie powinien znajdować się w aktywnym indeksie dokumentacji.
+ 
+-Agent musi:
++## Zasada dla agentów
+ 
+-- zaczynac od `core/CONSTITUTION_V2_1.md`,
+-- zglaszac dryf architektury,
+-- nie przywracac wzorcow zabronionych.
++Agent ma:
+ 
+-## Zasada higieny
+-
+-Nowy dokument moze byc "kanoniczny" tylko gdy:
+-
+-- jest zgodny z V2.1, albo
+-- jest jawnie oznaczony jako historyczny i nie-normatywny.
++- zaczynać od Konstytucji, aktualnej pamięci i właściwego README;
++- potwierdzać twierdzenia w kodzie lub aktualnym proofie;
++- zgłaszać drift dokumentacji;
++- nie przywracać historycznych writerów, trybów runtime ani ścieżek omijających auth, idempotencję lub konwergencję.
+--- a/gmail-agent/docs/core/CONSTITUTION_V2_1.md
++++ b/gmail-agent/docs/core/CONSTITUTION_V2_1.md
+@@ -1,69 +1,99 @@
+-# TOP-INSTAL AI-OS - KONSTYTUCJA V2.1 (skrot)
++# TOP-INSTAL AI-OS — Konstytucja V2.1
+ 
+-Status: autorytatywny
+-Zakres: architektura runtime, pamiec, polityka, feedback
+-Ostatni przeglad: 2026-05-19
++**Status:** autorytatywny  
++**Zakres:** runtime, pamięć, decyzje, wykonanie, projekcja i feedback  
++**Ostatni przegląd:** 2026-07-13
+ 
+-## 1. Cel
++## 1. Cel i pierwszeństwo
+ 
+-To najwyzsze zrodlo prawdy dla architektury TOP-INSTAL AI-OS.
+-W razie konfliktu ten dokument wygrywa.
++Ten dokument jest najwyższym źródłem zasad architektonicznych AI-OS TOP-INSTAL. Przy konflikcie dokumentów stosuj kolejność z `ARCHITECTURE_PRECEDENCE.md`. Kod i testy mogą doprecyzować implementację, ale nie mogą cicho naruszać poniższych niezmienników.
+ 
+ ## 2. Zasada rdzenia
+ 
+-`stan -> rozumowanie -> szkic -> dzialanie`
++```text
++trwały sygnał → stan → rozumowanie → decyzja → polityka → wykonanie → trwały wynik → projekcja → potwierdzenie
++```
+ 
+-- Prawda zyje w stanie i journalu, nie w promptach.
+-- LLM sluzy do rozumowania, nie do posiadania prawdy.
+-- Dzialanie wymaga decyzji polityki backendu.
++- Prawda operacyjna żyje w journalu i trwałym stanie Node B, nie w promptach ani w UI.
++- LLM interpretuje, syntetyzuje i planuje; nie jest właścicielem stanu ani dowodem wykonania.
++- Deterministyczny runtime odpowiada za identyfikację, autoryzację, idempotencję, retry, wykonanie, audyt i konwergencję.
+ 
+ ## 3. Niezmienniki
+ 
+ 1. Najpierw append-only journal.
+ 2. `RawObservation` poprzedza `CanonicalSignal`.
+-3. Ciezkie rozumowanie dziala na `CanonicalSignal`, nie na surowym wejsciu.
+-4. Stan musi byc odtwarzalny z journalu + adjudication + deterministycznych regul.
+-5. Hot State domyslny, Cold Evidence na zadanie.
+-6. Fakty musza miec evidence/provenance/confidence.
+-7. Konflikty musza byc jawne.
+-8. Polityka backendu przed akcja.
+-9. Daszek jest projection-only.
+-10. Feedback ma dwa tryby: kalibracja i adjudication (nie mieszac).
++3. Ciężkie rozumowanie działa na sygnale kanonicznym, nie bezpośrednio na surowym wejściu.
++4. Stan musi być odtwarzalny z journalu, adjudication i deterministycznych reguł.
++5. Hot State jest domyślny; Cold Evidence jest pobierane na żądanie.
++6. Fakty mają evidence, provenance i confidence; konflikty pozostają jawne.
++7. Postgres Node B jest operacyjnym SoT spraw; retrieval i graf są warstwami pomocniczymi.
++8. Równoległa mutacja istniejącego Case używa atomowego kontraktu read–modify–write; stale full-row overwrite jest zabroniony.
++9. Każda mutacja zewnętrzna działa w modelu default-deny. Brak konfiguracji auth nie może otwierać write route.
++10. Każda decyzja operatora ma stabilną tożsamość (`decision_key` lub równoważny kanoniczny klucz).
++11. `accepted` nie oznacza `executed`. Przyjęcie, wykonanie, completion/projection i konwergencja są osobnymi etapami.
++12. Potwierdzony skutek zewnętrzny nie może zostać automatycznie wykonany drugi raz podczas retry lub replayu.
++13. `outcome_unknown` po rozpoczęciu skutku blokuje automatyczny retry i wymaga jawnego recovery.
++14. Retry skutku jest dozwolony tylko po jednoznacznym `failed_before_execution`.
++15. Finalny event decyzji i trwały wynik wykonania są idempotentne względem stabilnej tożsamości decyzji.
++16. Daszek jest projection-only i nie jest semantic ownerem sprawy ani wykonania.
++17. UI może pokazać finalny sukces dopiero po odczycie świeżej projekcji Node B zgodnej z właściwym `decision_key` i stanem końcowym.
++18. Feedback kalibracyjny i adjudication prawdy pozostają rozdzielone.
++19. Każda nowa gwarancja runtime wymaga testu lub równoważnego dowodu oraz wpisu w `LAST_PROVEN_STATE.md`.
+ 
+ ## 4. Topologia fizyczna
+ 
+-- Node A: WordPress + Daszek operator surface.
+-- Node B: VPS + `gmail-agent` + Postgres/pgvector + worker.
+-- Brak wspolnego filesystemu jako zalozenia.
+-- Node A <-> Node B przez jawny bridge HTTP/REST.
++- **Node A:** WordPress + Daszek — interfejs operatora, transport bridge i lokalny store projekcji.
++- **Node B:** `gmail-agent` + Postgres/pgvector + worker — SoT spraw, policy, execution, replay i źródło projekcji.
++- Node A i Node B komunikują się przez jawne kontrakty HTTP/bridge; wspólny filesystem nie jest założeniem architektury.
++- Kanoniczny proof jest obecnie lokalny w Docker Compose. Produkcyjny VPS pozostaje zawieszony, dopóki operator jawnie nie wznowi deployu.
+ 
+-## 5. Warstwy systemu
++## 5. Cykl decyzji operatora
+ 
+-1. Intake/journaling/idempotency/replay
+-2. Triage
+-3. Identity/linking
+-4. Hot State + facts (Postgres — operacyjna prawda)
+-5. Reasoning/conflict model (pomocnicze; często za flagami)
+-6. Policy gate (`PolicyDecision` przed execution)
+-7. **Context Projection** — operator-facing tacki/envelope + Skrzat **read-only** (bez Act jako domyślnego trybu)
+-8. Daszek projection + feedback ingestion (projection-only; nie semantic owner)
++Dozwolony model stanów:
+ 
+-**Stan implementacji (repo, nie proof VPS):** wspólny downstream Gmail `run_shared_downstream_stages`, pojedyncze `attach_policy_and_proposals`, transport `build_operator_projection_snapshot` — szczegóły w `docs/core/truth_flow.md`.
++```text
++received → accepted → executing → executed | outcome_unknown | failed_before_execution → converged
++received → accepted → rejected → converged
++```
+ 
+-## 6. Wzorce zabronione
++Zasady:
+ 
+-- raw event -> heavy reasoning bez normalizacji
+-- pelna historia w promptach domyslnie
+-- polityka tylko w UI
+-- Daszek jako semantic owner
+-- ciche splaszczanie konfliktow
+-- akcja bez `PolicyDecision`
+-- mieszanie feedback kalibracyjny/adjudikacyjny
++- `accepted` potwierdza przyjęcie komendy, nie skutek biznesowy.
++- wynik wykonania jest zapisywany trwale przed completion i projekcją;
++- replay stanu `executed` lub `rejected` ponawia najwyżej completion/projection;
++- replay `outcome_unknown` nie uruchamia executora;
++- konflikt sprzecznych finalnych decyzji musi być jawny i nie może cicho nadpisać wyniku;
++- konwergencja oznacza, że aktualna projekcja Node B potwierdza ten sam klucz decyzji i stan finalny.
+ 
+-## 7. Kontrakty wymagane
++## 6. Warstwy systemu
+ 
+-Minimalnie: `RawObservation`, `CanonicalSignal`, `CaseSnapshotHotState`, `PolicyDecision`, `FeedbackEvent`, `AdjudicationEvent`, `ActionProposal`, `ExecutionResult`.
++1. Intake, journaling, idempotency i replay.
++2. Triage, identity i linking.
++3. Case Memory / Hot State / facts.
++4. Reasoning i conflict model.
++5. Decision candidate i policy gate.
++6. Execution runtime z trwałym wynikiem.
++7. Context/operational projection.
++8. Daszek: operator review, decyzja i feedback.
++9. Reconcile, recovery i ponowna projekcja.
+ 
+-## 8. Regula implementacji
++## 7. Wzorce zabronione
+ 
+-Nowa praca musi byc zgodna z V2.1, nawet gdy starsze dokumenty sugeruja inny model.
++- raw event → heavy reasoning bez normalizacji;
++- pełna historia w promptach domyślnie;
++- polityka lub auth wyłącznie w UI;
++- brak tokenu oznaczający otwarty write route;
++- Daszek jako semantic owner lub źródło prawdy wykonania;
++- ciche spłaszczanie konfliktów;
++- akcja bez `PolicyDecision` i stabilnej tożsamości decyzji;
++- automatyczny retry po nieznanym wyniku skutku;
++- finalny toast na podstawie samego HTTP 200/accepted;
++- drugi journal, drugi writer Case albo równoległy system decyzji bez jawnego RFC.
++
++## 8. Minimalne kontrakty
++
++`RawObservation`, `CanonicalSignal`, `CaseSnapshotHotState`, `EvidenceRef`, `ContextQuality`, `DecisionCandidate`, `PolicyDecision`, `ActionProposal`, `ExecutionResult`, `FeedbackEvent`, `AdjudicationEvent` oraz stabilny kontrakt tożsamości decyzji.
++
++## 9. Reguła implementacji
++
++Nowa praca musi zachować V2.1, nawet gdy starszy README lub historyczny proof opisuje wcześniejszy model. Twierdzenia o działającym runtime pochodzą wyłącznie z aktualnego kodu, świeżych testów i `docs/runbooks/LAST_PROVEN_STATE.md`.
+--- a/gmail-agent/docs/core/EVENT_CATALOG.md
++++ b/gmail-agent/docs/core/EVENT_CATALOG.md
+@@ -1,6 +1,6 @@
+ # Event Catalog
+ 
+-**Weryfikacja:** 2026-07-10 (grep `publish_os_event` w `tools/gmail_audit/`)
++**Weryfikacja:** 2026-07-13 (katalog emiterów + proof replay/idempotency decyzji)
+ 
+ Katalog eventów emitowanych przez pipeline Gmail-Agent do tabeli `unified_os_events`
+ przez `event_spine/emitter.py` → `publish_os_event(...)`.
+@@ -73,6 +73,17 @@
+ | `action_proposal_rejected` | Odrzucono propozycję akcji    |
+ | `action_execution_result`  | Wynik wykonania akcji         |
+ 
++
++### Niezmienniki eventów decyzji i wykonania
++
++- `gmail.hitl.send_requested` oznacza żądanie/intent. Nie jest dowodem, że mail został wysłany.
++- Trwały execution result jest własnością Node B i jest zapisywany przed completion oraz projekcją.
++- Finalny reject używa stabilnej tożsamości eventu powiązanej ze stabilnym `decision_key`; replay tej samej decyzji nie tworzy kolejnego finalnego eventu.
++- Replay wykonanej wysyłki lub rejectu może ponowić completion/feed refresh, ale nie może ponowić efektu ani success/reject eventu.
++- `failed_before_execution` pozwala na kontrolowany retry. `outcome_unknown` po rozpoczęciu skutku blokuje automatyczny retry.
++- Event z `success=true` nie jest sam w sobie dowodem konwergencji UI. Daszek potwierdza wynik dopiero po odczycie świeżej projekcji zgodnej z właściwym `decision_key`.
++- Jeżeli emitter jest best-effort, brak eventu nie może unieważniać trwałego execution result; trwały store pozostaje źródłem prawdy.
++
+ ## Pozostałe
+ 
+ | event_type                     | Emiter                               | Kiedy                                  |
+@@ -114,6 +125,7 @@
+ 
+ `severity` jest normalizowane do `{debug, info, warn, error, critical}` (domyślnie `info`).
+ `trace_id` jest pobierany z ContextVar (`log_config.get_trace_id`) gdy nie podano jawnie.
++`decision_key` nie jest wymaganym polem root każdego OS eventu; dla eventów decyzji musi być jednak obecny w kanonicznej korelacji/payloadzie lub możliwy do jednoznacznego odtworzenia ze stabilnego `event_id`.
+ 
+ ## Emitery
+ 
+--- a/gmail-agent/docs/core/PHYSICAL_TOPOLOGY.md
++++ b/gmail-agent/docs/core/PHYSICAL_TOPOLOGY.md
+@@ -1,79 +1,113 @@
+ # Topologia fizyczna TOP-INSTAL
+ 
+-> **Node A canonical:** `../daszek/` + `../wp-bridges/` (not `gmail-agent/../daszek/` or `gmail-agent/wp-adapter/`).
++**Status:** aktywny dokument interpretacyjny  
++**Zakres:** Node A/Node B, granice filesystemu, kanały komunikacji i lokalny Docker  
++**Ostatni przegląd:** 2026-07-13
+ 
+-**Status:** aktywny dokument interpretacyjny
+-**Zakres:** Node A/Node B, granice filesystemu, bridge komunikacyjny, lokalny Docker
+-**Ostatni przegląd:** 2026-07-08
++> Node A canonical: `../daszek/` + `../wp-bridges/`. Node B canonical: repo `gmail-agent`.
+ 
+ ## Kluczowa zasada
+ 
+-Najpierw ustal: gdzie fizycznie leży komponent i jak komunikuje się z innym węzłem. **Produkcja VPS jest zawieszona (2026-06-17)** — domyślny deployment to **lokalny Docker Compose**.
++Najpierw ustal, gdzie fizycznie działa komponent, kto jest właścicielem stanu i przez jaki kontrakt przekracza granicę węzłów. Produkcyjny VPS jest zawieszony; kanoniczny proof wykonywany jest lokalnie w Docker Compose.
+ 
+-## Lokalny stack (aktywny harness)
++## Lokalny stack
+ 
+-| Usługa                 | Port hosta               | Obraz / compose                                            | Rola                                          |
+-| ---------------------- | ------------------------ | ---------------------------------------------------------- | --------------------------------------------- |
+-| Daszek WordPress       | `8090`                   | `daszek/docker-compose.local.yml`                          | Node A — operator UI, feed ingest, bridge     |
+-| gmail-agent Node B API | `8766` → kontener `8765` | `gmail-agent/docker-compose.local-vps.yml` (profile `api`) | FastAPI `api_app.py`, registry, materialize   |
+-| gmail-agent worker     | —                        | ten sam compose (profile `worker`)                         | `signal-worker`, feed heartbeat, bridge drain |
+-| Mailbox memory PG      | `54129`                  | `pgvector/pgvector:pg16`                                   | Postgres + pgvector — **SoT spraw**           |
+-| Neo4j pilot            | `7474` / `7687`          | `neo4j:5-community`                                        | Graf pilotowy (opcjonalny)                    |
+-| Ollama                 | `11434`                  | `ollama/ollama`                                            | Embeddingi lokalne (setup profile)            |
+-| RAG backend            | `8000`                   | `rag-chat-asystent` compose                                | KB retrieval (osobny PG `:54130`)             |
+-| kalk-top               | `8091`                   | `kalk-top` compose                                         | HVAC runtime (OfferDTO owner)                 |
+-| cieplo-worker          | —                        | `cieplo-orchestrator` compose                              | Osobny Gmail scope → cieplo PG (D3 by design) |
++| Usługa | Port hosta | Compose / obraz | Rola |
++| --- | --- | --- | --- |
++| Daszek WordPress | `8090` | root `docker-compose.daszek-local.yml` | Node A — UI, feed store, proxy i bridge queue |
++| gmail-agent Node B API | zwykle `8766 → 8765` | `gmail-agent/docker-compose.local-vps.yml` | FastAPI, auth, Case/decision API |
++| gmail-agent worker | bez host portu | ten sam obraz runtime | signal-worker, reconcile, feed, bridge drain |
++| Mailbox memory Postgres | `54129` | `pgvector/pgvector:pg16` | operacyjny SoT spraw i execution state |
++| RAG backend | `8000` | osobny compose | retrieval/KB |
++| kalk-top | `8091` | osobny compose | właściciel OfferDTO i HVAC calculations |
++| cieplo-orchestrator | zależnie od compose | osobny runtime | workflow Cieplo; korelacja przez jawne kontrakty |
+ 
+-**Compose główny Node B:** `gmail-agent/docker-compose.local-vps.yml`
+-**Env:** `.env.local-vps` → mount `/etc/topinstal/gmail-agent.env` w kontenerze
+-**Preflight:** `scripts/preflight-local-stack.ps1` (core) lub `-FullStack`
++Preflight: `scripts/preflight-local-stack.ps1 -FullStack`.  
++Workspace gate: `scripts/verify-local-gates.ps1`.
+ 
+-Historyczny szablon VPS: `gmail-agent/docker-compose.vps.yml` — **nie używać** do proof bez explicit operator resume.
++## Node A — Daszek
+ 
+-## Node A
++- WordPress + operator SPA.
++- Przechowuje projekcję feed v3 i bounded overlay/bridge queue.
++- Nie jest SoT semantyki Case, decyzji ani wykonania.
++- Przyjęcie HTTP 200 nie jest finalnym skutkiem.
++- Finalne UI confirmation wymaga świeżej projekcji z matching `decision_key` i statusem końcowym.
++- Plugin jest lokalnie bind-mountem; po zmianach wymagane są syntax/tests i parity, zwykle bez rebuild kontenera.
+ 
+-- WordPress + Daszek operator surface (`8090`).
+-- Trzyma **projekcję operatorską** (feed v3 JSONL w `wp-content/uploads/daszek/v3/`), desk/cases UI, bridge queue.
+-- **Nie** jest SoT semantyki spraw — tylko transport + UI.
+-- Feed snapshots: `operational_feed_snapshots.jsonl` (retention **40** najnowszych — `daszek/includes/config.php`).
++## Node B — gmail-agent
+ 
+-## Node B
+-
+-- Python `gmail-agent` + Postgres/pgvector + signal worker.
+-- Odpowiada za stan operacyjny, policy, reconcile, **źródło projekcji** (`build_operator_projection_snapshot`, feed builder schema **1.3**).
+-- Kanoniczny writer sprawy: `case_write_gateway.write_case_row` / `patch_case_row`.
+-- Correlation registry: `topinstal_identities`, `topinstal_engagements`, `correlation_links`.
+-- Read/write API: `tools/gmail_audit/api_app.py` (FastAPI `:8765` w kontenerze).
++- Python runtime + Postgres/pgvector + worker.
++- Odpowiada za intake, journal, Case state, policy, auth, execution, replay/recovery i źródło projekcji.
++- Kanoniczne create/full writes przechodzą przez `case_write_gateway.write_case_row`.
++- Częściowe mutacje istniejącego Case przechodzą przez `patch_case_row` → `PostgresMailboxMemoryStore.mutate_case`.
++- `_stamp_case_runtime_state` również używa atomowej mutacji.
++- Decision execution zapisuje trwały wynik przed completion/projection.
++- API i worker używają kodu bake’owanego w obrazie; zmiana wspólnego Pythona wymaga rebuild/recreate obu usług, jeśli obie wykonują zmieniony kod.
+ 
+ ## Granica filesystemu
+ 
+-- Node B **nie** zakłada bezpośredniego odczytu plików Node A.
+-- Brak dostępu do `wp-content/uploads/...` z Node B nie jest bugiem Pythona.
+-- Lokalny folder `../daszek/` w repo = kod referencyjny / dev, nie produkcyjny storage.
++- Node B nie zakłada bezpośredniego odczytu storage WordPress.
++- Node A nie odczytuje bezpośrednio bazy Node B.
++- Brak `wp-content/uploads` w Node B nie jest błędem runtime.
++- Lokalny folder repo Daszka jest kodem dev/bind-mountem, nie wspólnym SoT.
+ 
+ ## Kanały komunikacji
+ 
+-| Kanał                 | Kierunek                   | Kontrakt                                                                           |
+-| --------------------- | -------------------------- | ---------------------------------------------------------------------------------- |
+-| Operational feed push | Node B → Node A            | `POST /wp-json/daszek/v3/operational-feed-snapshots` (login+CSRF lub bridge token) |
+-| Bridge drain          | Node A → Node B            | `daszek-bridge-drain` / feedback rows                                              |
+-| Node B read API       | Daszek UI / proxy → Node B | `DASZEK_NODE_B_API_BASE` — context-pack, trays, skrzat, agent-chat, `/cases`       |
+-| Internal registry     | cross-repo → Node B        | `POST /internal/registry/links` (bearer `NODE_B_REGISTRY_TOKEN`)                   |
+-| Materialize HITL      | Daszek → Node B            | `POST /engagements/{id}/materialize/approve`                                       |
++| Kanał | Kierunek | Kontrakt bezpieczeństwa |
++| --- | --- | --- |
++| Operational feed push | Node B → Node A | walidowany feed v3; auth bridge/session; best-effort transport nie jest execution proof |
++| Node B read API | Daszek proxy → Node B | bearer zgodnie z endpointem; read nie nadaje write scope |
++| `/tasks*` i inne mutacje | Daszek/service → Node B | fail-closed write auth; unauthorized kończy się przed store |
++| Bridge queue/drain | Node A → Node B | stabilny queue/decision key, replay-safe completion |
++| HITL send/reject | Node A → Node B | policy/HITL, trwały execution result, no auto-retry `outcome_unknown` |
++| Internal registry | cross-repo → Node B | `POST /internal/registry/links` + registry bearer |
++| Materialize | Daszek → Node B | owner/CSRF po stronie WP + bearer + idempotency key Node B |
+ 
+-WordPress config: `../daszek/includes/config.php` (`node_b_api.base_url`, tokeny).
+-UI może wołać Node B z przeglądarki przez `window.DASZEK_NODE_B_API_BASE` w `../daszek/public/app.js`.
++## Krytyczny obieg decyzji
++
++```text
++Daszek click
++→ CSRF/owner + Node B bearer
++→ received/accepted z decision_key
++→ executing
++→ durable executed | rejected | outcome_unknown | failed_before_execution
++→ completion / bridge acknowledgement
++→ feed refresh
++→ matching fresh projection
++→ converged UI confirmation
++```
++
++`accepted` i `converged` są różnymi stanami. Replay finalnego skutku nie uruchamia executora drugi raz; replay może ponowić completion/projection.
++
++## Runtime packaging i parity
++
++Po zmianie wspólnego kodu Node B:
++
++1. targeted tests i pełny suite;
++2. build `gmail-agent-nodeb-api` i `gmail-agent-worker`;
++3. force recreate tylko wymaganych usług;
++4. SHA-256 host/container zmienionych plików;
++5. API/worker/Postgres health i restart count;
++6. workspace gate po recreate.
++
++`docker cp` nie jest trwałym deploymentem.
+ 
+ ## Reguła diagnostyczna
+ 
+-Przy błędzie feedback/drain/feed push:
++Przy problemie decyzji/bridge/feed sprawdź kolejno:
+ 
+-1. sprawdź bridge, auth, URL, token, CSRF,
+-2. sprawdź logi WordPress (`docker logs daszek-local-wordpress`) — feed push **HTTP 500** często = PHP OOM na dużym `operational_feed_snapshots.jsonl` (retention / truncate),
+-3. dopiero potem szukaj problemu lokalnej ścieżki plikowej.
++1. auth, CSRF, URL i token scope;
++2. `decision_key` i status execution;
++3. trwały execution result;
++4. completion/bridge queue;
++5. feed push/readback;
++6. matching fresh projection w UI;
++7. logi i health obu węzłów.
+ 
+-## Powiązane dokumenty
++## Dowody
+ 
+-- `docs/core/truth_flow.md` — spine runtime
+-- `docs/core/PROJECT_README.md` — mapa modułów Node B (2026-07-08)
+-- `knowledge/world-state.yaml` — endpointy lokalne, gaps D1–D4
++- concurrency: `C:\ai-os-case-concurrency-20260713T084431Z`;
++- auth/idempotency/UI convergence: `C:\ai-os-critical-findings-fix-20260713T122855Z`;
++- aktualny snapshot: `docs/runbooks/LAST_PROVEN_STATE.md`.
++
++Powiązane: `docs/core/CONSTITUTION_V2_1.md`, `docs/core/PROJECT_README.md`, `../daszek/docs/core/PROJECT_README.md`.
+--- a/gmail-agent/docs/core/PROJECT_README.md
++++ b/gmail-agent/docs/core/PROJECT_README.md
+@@ -1,27 +1,43 @@
+ # Gmail Agent / TOP-INSTAL AI-OS — README produktu i developera
+ 
+-> **Node A canonical:** `../daszek/` + `../wp-bridges/` (not `gmail-agent/../daszek/` or `gmail-agent/../wp-bridges/`).
+-
+-**Status:** aktywny przewodnik po aplikacji (repo `gmail-agent`). **Wersja:** 2026-07-10.
+-**Skrót w korzeniu repo:** [`../../PROJECT_README.md`](../../PROJECT_README.md) · **Cały workspace:** [`../../../knowledge/docs/WORKSPACE_ONBOARDING.md`](../../../knowledge/docs/WORKSPACE_ONBOARDING.md) · **Stan żywy:** [`../../../knowledge/memory/ACTIVE_WORKSPACE.md`](../../../knowledge/memory/ACTIVE_WORKSPACE.md)
+-**Zakres:** co system _ma w kodzie_ i jak warstwy na siebie nachodzą; gdzie szukać plików przy rozwoju; jak nie pomylić „zaimplementowane lokalnie” z „działa na produkcji”.
+-**Mapa flow (audyt kodu):** `docs/core/truth_flow.md` · **cel produktu:** `docs/core/CONTEXT_PROJECTION_KNOWLEDGE_GRAPH.md`
+-**Czego ten dokument świadomie nie jest:** runbookiem deployu, kontraktem SLA, dowodem Gate B / 24h produkcji, zezwoleniem na outbound automation ani kompletnym opisem każdej linii `gmail_intake.py` — tam jest źródło prawdy dla CLI i orchestracji.
+-
+-> **Regeneracja 2026-07-08 (AR-2026):** dokument przepisany z weryfikacją względem kodu (Case/Task, registry, feed 1.3, case_write_gateway). **Aktualizacja 2026-07-10:** pytest suite GREEN (1256 passed, 0 failed); proof operacyjny GATE_B_GAPS_CLOSED — szczegóły w `docs/runbooks/LAST_PROVEN_STATE.md` §2026-07-10; nie duplikuj metryk tutaj — patrz `knowledge/memory/ACTIVE_WORKSPACE.md`. Przy rozbieżności README vs kod — **wygrywa kod** (sekcja 17).
+-
+-## 0. Stan na dziś (2026-07-10)
+-
+-| Obszar                           | Status             | Dowód                                                               |
+-| -------------------------------- | ------------------ | ------------------------------------------------------------------- |
+-| pytest `tools/gmail_audit/tests` | GREEN              | ACTIVE_WORKSPACE — 1256 passed (~2m40s z PG URL)                    |
+-| Gate A smoke                     | PASS               | `scripts/daszek-smoke.ps1`                                          |
+-| E2E full flow                    | 12/12              | `scripts/e2e_full_flow_proof.py` → `E2E_FULL_FLOW_PROOF_OK`         |
+-| Materialize approve (CT-FU-5)    | PASS API + browser | LPS §GATE_B_GAPS — UI path ≠ proxy path                             |
+-| Event spine processor            | shadow lokalnie    | `EVENT_SPINE_PROCESSOR_MODE=shadow` w `.env.local-vps` — oczekiwane |
+-| Gate B row3/4 pełny              | częściowy          | classify blocked bez row3 cohort; drain pusty                       |
+-
+-**Deployment:** lokalny Docker only; VPS produkcyjny zawieszony (2026-06-17).
++> **Node A canonical:** `../daszek/` + `../wp-bridges/`. **Node B:** repo `gmail-agent`, Postgres mailbox memory i signal runtime.
++
++**Status:** aktywny przewodnik po aplikacji. **Wersja:** 2026-07-13.  
++**Stan żywy:** `../../../knowledge/memory/ACTIVE_WORKSPACE.md`  
++**Proof runtime:** [`../runbooks/LAST_PROVEN_STATE.md`](../runbooks/LAST_PROVEN_STATE.md)
++
++**Zakres:** aktualny model Node B, granice warstw, punkty startowe w kodzie i reguły bezpiecznego rozwoju.  
++**Nie jest:** runbookiem deployu, dowodem produkcyjnym ani zgodą na autonomiczne skutki zewnętrzne.
++
++Przy rozbieżności: Konstytucja V2.1 → aktualny kod i test → LPS dla runtime → ten README.
++
++## 0. Stan na dziś (2026-07-13)
++
++| Obszar | Status | Dowód |
++| --- | --- | --- |
++| Stabilization baseline | **PASS** | `docs/runbooks/LAST_PROVEN_STATE.md` |
++| FullStack preflight | **7/7 OK** | lokalny proof 2026-07-13 |
++| Case concurrency | **POSTGRES_ATOMIC_MUTATION_CONFIRMED** | `C:\ai-os-case-concurrency-20260713T084431Z` |
++| `/tasks*` mutation auth | **fail-closed / PASS** | AUTH-01 closeout |
++| HITL send/reject replay safety | **PASS** | IDEMP-01 / IDEMP-02 closeout |
++| UI execution confirmation | **convergence-gated / PASS** | DEC-01 closeout |
++| gmail-agent full suite | **1350 passed, 5 skipped, 4 subtests** | LPS snapshot |
++| Workspace gate | **exit 0** | wykonany po rebuild/recreate |
++| Runtime | API/worker/Postgres healthy | host/container parity zgodne |
++
++**Deployment:** lokalny Docker only. VPS/produkcja pozostają zawieszone. Liczby testów są snapshotem proofu; po zmianie runtime źródłem aktualnego wyniku jest LPS.
++
++### 0a. Gwarancje zamknięte stabilizacją
++
++- atomowa mutacja istniejącego Case przez `PostgresMailboxMemoryStore.mutate_case`;
++- stabilny advisory lock, jedna transakcja i jeden connection boundary;
++- fail-closed auth dla aktywnych write routes `/tasks*`;
++- stabilny `decision_key` i osobne stany `accepted`, execution, completion i convergence;
++- trwały execution result przed completion/projection;
++- send i reject bez podwójnego skutku przy replayu lub równoległym drainie;
++- retry skutku tylko po `failed_before_execution`;
++- brak automatycznego retry po `outcome_unknown`;
++- finalny sukces w Daszku dopiero po świeżej projekcji z matching `decision_key`.
+ 
+ ## 1. Po co istnieje ta aplikacja
+ 
+@@ -31,7 +47,7 @@
+ 
+ Poniższa oś jest **modelem logicznym** zgodnym z kierunkiem przepływu w kodzie; konkretne nazwy pól i zapis w journalu/store różnią się per komenda, ale kolejność „od surowego sygnału do projekcji” jest stała.
+ 
+-**Profil runtime steruje głębią.** `CASE_OS_RUNTIME_PROFILE` (`config.py`) domyślnie = **`full`**: włącza flagi Case OS, `AGENT_RUNTIME_ENABLED=1`, `DECISION_PIPELINE_DRY_RUN_ONLY=0`, `DASZEK_FEED_SOURCE=engagement_snapshot_v2`. Profil `minimal` (albo `EMERGENCY_INTELLIGENCE_KILLSWITCH=1`) zeruje te flagi. Łańcuch `UnderstandingOutput → DecisionCandidate → PolicyDecision → ActionProposal` **istnieje w kodzie i jest gated** flagami (`UNDERSTANDING_OUTPUT_ENABLED`, `DECISION_PIPELINE_ENABLED`, `ACTION_PROPOSAL_V2_ENABLED` — patrz `docs/dev/RUNTIME_FLOW_FLAGS_MATRIX.md`).
++**Profil runtime steruje głębią.** `CASE_OS_RUNTIME_PROFILE` (`config.py`) domyślnie = **`full`**: włącza flagi Case OS, `AGENT_RUNTIME_ENABLED=1`, `DECISION_PIPELINE_DRY_RUN_ONLY=0`, `DASZEK_FEED_SOURCE=engagement_snapshot_v2`. Profil `minimal` (albo `EMERGENCY_INTELLIGENCE_KILLSWITCH=1`) zeruje te flagi. Łańcuch `UnderstandingOutput → DecisionCandidate → PolicyDecision → ActionProposal` **istnieje w kodzie i jest gated** flagami (`UNDERSTANDING_OUTPUT_ENABLED`, `DECISION_PIPELINE_ENABLED`, `ACTION_PROPOSAL_V2_ENABLED`).
+ 
+ ```text
+ mail / dokument / zdarzenie
+@@ -185,12 +201,16 @@
+ 
+ ### Reguły zapisu (twarde)
+ 
+-- **Jedyny kanoniczny writer sprawy:** `case_write_gateway.write_case_row` / `patch_case_row`. Oba wołają `enrich_case_row_before_upsert` (`case_routing.py`) i dopiero `mailbox_store.upsert_case`. Bezpośrednie `UPDATE mailbox_memory_cases` w runtime = zapach do usunięcia.
+-  - `write_case_row(row, *, mailbox_store, source_kind)` — pełny wiersz (podnosi błąd, jeśli `routing.upsert_allowed` false).
+-  - `patch_case_row(case_id, metadata_patch, *, mailbox_store, updated_at)` — `fetch_case` → merge `metadata` → `write_case_row`.
+-  - `operator_priority_to_label`: `pilne`→`P1 - pilne`, `niski`→`P3 - niski`, else `P2 - ważne`.
+-- **`RegistryLinkConflictError`** (`correlation_registry/store.py`): próba przypisania `mailbox_case` do **innego** `engagement_id` niż już przypięty jest błędem (pre-check przed `ON CONFLICT (link_type, target_id, source_repo) DO UPDATE`). Chroni przed cichym przepięciem sprawy między klientami.
+-- **Merge/link keyed by `engagement_id`, nie `case_id`:** `merged_into`, `linked_case` (P1 link types); `execute_merge_cases` / `execute_link_case_to_case` w `agent_runtime/tools/write_executors.py`.
++- **Kanoniczny pełny writer:** `case_write_gateway.write_case_row(...)` — waliduje routing i wykonuje kontrolowany full write.
++- **Kanoniczna mutacja istniejącego Case:** `case_write_gateway.patch_case_row(...)` → `PostgresMailboxMemoryStore.mutate_case(...)`.
++- `mutate_case` obejmuje advisory lock, `SELECT ... FOR UPDATE`, mutator, upsert i commit na jednym połączeniu/transakcji.
++- `_stamp_case_runtime_state` w reconcilerze również korzysta z atomowej mutacji.
++- Stale `fetch → merge → full upsert` poza lockiem jest zabronione dla równoległych writerów.
++- `operator_priority_to_label`: `pilne` → `P1 - pilne`, `niski` → `P3 - niski`, pozostałe → `P2 - ważne`.
++- `RegistryLinkConflictError` blokuje ciche przepięcie istniejącego `mailbox_case` do innego engagementu.
++- Merge/link pozostaje keyed by `engagement_id`, nie przez przypadkowe podobieństwo `case_id`.
++
++Proof atomowości: `docs/runbooks/MAILBOX_MEMORY_POSTGRES.md` i `C:\ai-os-case-concurrency-20260713T084431Z`.
+ 
+ ### Materialize / HITL (write po zatwierdzeniu)
+ 
+@@ -206,11 +226,33 @@
+ - `resolve_engagement_id(case_id, registry_store=)` → po `mailbox_case` link (`source_repo="gmail-agent"`),
+ - `resolve_case_id(engagement_id, registry_store=)` → pierwszy `mailbox_case` link engagementu.
+ 
++## 2c. Bezpieczny cykl decyzji operatora
++
++Kanoniczny lifecycle:
++
++```text
++received → accepted → executing → executed | outcome_unknown | failed_before_execution → converged
++received → accepted → rejected → converged
++```
++
++Zasady:
++
++- `accepted` oznacza przyjęcie komendy, nie wykonanie skutku;
++- jedna decyzja ma stabilny `decision_key`/queue identity;
++- execution result jest trwały i zapisany przed completion/feed refresh;
++- replay `executed`/`rejected` nie uruchamia executora ani drugiego finalnego eventu;
++- `failed_before_execution` może być bezpiecznie ponowiony;
++- `outcome_unknown` po rozpoczęciu skutku blokuje automatyczny retry;
++- dwa równoległe drainery nie wykonują tej samej decyzji dwa razy;
++- Daszek pokazuje finalny sukces dopiero po konwergencji świeżej projekcji.
++
++Właściciele: `agent_hitl_bridge.py`, `hitl_gmail_send.py`, `execution_runtime.py`, `daszek_bridge_queue_drain.py`, `agent_runtime/authz.py`, `api_app.py` oraz po stronie Node A `api-v3-handlers.php` i `public/app.js`.
++
+ ## 3. Co jest już w systemie
+ 
+ Poniżej opisuje stan repo i lokalnie zaimplementowane możliwości. Obecność kodu **nie** oznacza automatycznie, że dana funkcja działa na produkcji ani że jest potwierdzona (patrz sekcja 6, `LAST_PROVEN_STATE.md`).
+ 
+-**Uwaga o testach (2026-07-08):** pełny pakiet `tools/gmail_audit/tests` ma **aktualnie regresję** (m.in. `test_signal_reconciler_runtime.py`, `test_v2_shadow_projection.py`). Nie cytuj „658 passed” jako aktualnego — przed dokumentowaniem czegokolwiek jako stabilne uruchom pakiet lokalnie i opieraj się na **zielonych** testach. Dawny wynik „658 passed (2026-05-19)” jest historyczny.
++**Stan proof 2026-07-13:** pełny pakiet `tools/gmail_audit/tests` jest zielony zgodnie z LPS. Nie kopiuj liczby do nowych dokumentów ani commit messages jako trwałej cechy; po każdej zmianie runtime uruchom świeży suite i workspace gate.
+ 
+ ### Runtime spine (active-only)
+ 
+@@ -371,7 +413,10 @@
+ | `openai_agent_client.py`   | `OpenAIToolPlanner.plan_next_tool` (circuit breaker, `tool_choice="auto"`)                 |
+ | `circuit_breaker.py`       | Per-provider izolacja awarii LLM                                                           |
+ | `business_pulse.py`        | `get_pipeline_summary` — `offers_in_progress` (COUNT aktywnych `lead_opportunity`/`sales`) |
+-| `authz.py`                 | `get_current_operator` — bearer guard dla `/agent-chat*`                                   |
++| `authz.py`                 | operator/read auth oraz fail-closed `require_mutation_token` dla write routes               |
++| `agent_hitl_bridge.py`     | stabilna tożsamość decyzji, trwały send result, replay-safe completion                       |
++| `hitl_gmail_send.py`       | granica efektu: before-execution / effect-started / executed / outcome-unknown               |
++| `execution_runtime.py`     | idempotentny approve/reject, stabilny finalny event i jawny konflikt                         |
+ 
+ ### Signal journal, replay, reconciliation
+ 
+@@ -448,7 +493,7 @@
+ | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+ | `evidence_ref.py`                                        | `case_context_contract`, `decision_projection_blocks`, `intake_schema`, `case_intelligence/`            | pojedynczy canonical dla list EvidenceRef                           |
+ | `case_context_contract` + `case_context_deterministic`   | `mailbox_memory_runtime`, `understanding_output`, pack builders                                         | pack + merge konfliktów/luk                                         |
+-| `case_write_gateway`                                     | `api_app` (`/tasks*`, `/cases`), materialize, ścieżki manualne                                          | **jedyny** writer `upsert_case` w runtime                           |
++| `case_write_gateway`                                     | `api_app` (`/tasks*`, `/cases`), reconciler i ścieżki manualne                                          | full writes przez `write_case_row`; częściowe równoległe mutacje przez `mutate_case` |
+ | `case_routing`                                           | `case_write_gateway`, `daszek_v3_operational_feed`, `business_pulse`, `api_app`                         | `requires_action`, `desk_eligible`, `enrich_case_row_before_upsert` |
+ | `correlation_registry.service`                           | `api_app` (`/internal/registry/links`, `/cases/{id}/engagement`), `case_engagement_bridge`, materialize | identity/engagement/links                                           |
+ | `intake_shared_downstream.run_shared_downstream_stages`  | `_reconcile_gmail_signal`, `_reconcile_drive_signal`                                                    | wspólny ogon reconcile                                              |
+@@ -503,7 +548,13 @@
+ 
+ ## 3f. Powierzchnia HTTP API (Node B — `api_app.py`)
+ 
+-FastAPI `create_app()` — `title="gmail-agent Node B API"`, `version="0.2.0"`. Wszystkie trasy inline (bez `include_router`). **Auth:** większość operatorska bez tokenu (open gdy brak env); `/internal/*` + HITL/materialize/attachments = **registry bearer** (`correlation_registry/auth.py`); `/agent-chat*` = **operator bearer** (`agent_runtime/authz.py`) + rate-limit 30/min.
++FastAPI `create_app()` — Node B API. Route’y read i write mają różne kontrakty auth. Nie zakładaj, że brak tokenu oznacza tryb developerski.
++
++- `/internal/*`, HITL/materialize i chronione mutation routes używają bearer envelope;
++- `/tasks*` write routes są fail-closed przez `require_mutation_token()`;
++- brak, błędny lub read-only credential kończy się przed walidacją biznesową i store;
++- `/agent-chat*` używa operator bearer + rate limit;
++- szczegółowe wymagania route potwierdzaj w `api_app.py` i testach auth.
+ 
+ ### System / health
+ 
+@@ -521,9 +572,15 @@
+ 
+ `GET /identity/suggestions`, `GET /identity/binding-suggestions[/{id}]`, `POST /identity/binding-suggestions/scan`, `POST /identity/binding-suggestions/{id}/status` (approve→merge). **Deprecated:** `GET /identities/by-email/{email}`, `POST /identity/merge` → **410 Gone**.
+ 
+-### Tasks (deprecated list; zapisy przez gateway)
+-
+-`GET /tasks` (**deprecated shim**, `"deprecated": true`), `POST /tasks` (→ `write_case_row`, `operations`/`manual`), `POST /tasks/{id}/confirm|reject|done` (→ `patch_case_row`; confirm/reject opcjonalnie zapisują divergence-loop feedback).
++### Tasks (deprecated list; zapisy chronione)
++
++`GET /tasks` pozostaje deprecated read shim. Mutacje `POST /tasks` oraz `POST /tasks/{id}/confirm|reject|done`:
++
++- wymagają write credential w modelu fail-closed;
++- nie docierają do store po nieautoryzowanym requestcie;
++- tworzą/aktualizują Case przez kanoniczny gateway;
++- częściowe update istniejącego Case korzystają z atomowego `mutate_case`;
++- odpowiedź auth nie ujawnia istnienia Case przed autoryzacją.
+ 
+ ### Agent-chat
+ 
+@@ -568,6 +625,8 @@
+ 
+ > **Uwaga:** feedback operatora nie ma osobnej tabeli `mailbox_memory_feedback` — żyje w `mailbox_memory_events` / modułach operatorskich.
+ 
++**Execution safety:** implementacja korzysta z istniejących execution records i/lub trwałego metadata Case keyed by stabilny `decision_key`. Dokumentuj semantykę na poziomie kontraktu, nie zakładaj osobnej tabeli, jeśli kod jej nie tworzy. Źródłem prawdy jest aktualny store i testy `agent_hitl_bridge`/`execution_runtime`.
++
+ ## 4. Czego aplikacja nie robi i nie powinna robić bez osobnego sprintu
+ 
+ **Ogrodzenie oczekiwań:** brak pozycji na liście nie oznacza „feature włączony na produkcji”, a obecność kodu nie oznacza zgody biznesowej na skutek uboczny (np. wysyłka maila).
+@@ -638,26 +697,27 @@
+ 
+ ## 7. Jak zacząć jako developer
+ 
+-### Krok 1 — Knowledge Spine (kolejność ma znaczenie)
+-
+-1. `AGENTS.md`
+-2. `LOCAL_WORKSPACE_RULES.md`
+-3. `memory-bank/agent-brief.md`
+-4. `memory-bank/current-state.md`
+-5. `memory-bank/navigation.md`
+-6. `memory-bank/epistemic-status.md`
+-7. `memory-bank/operational-invariants.md`
+-8. `.agents/SKILL_ROUTER.md`
++### Krok 1 — Knowledge Spine
++
++1. root `AGENTS.md`;
++2. `knowledge/INDEX.md`;
++3. `knowledge/world-state.yaml` i `knowledge/source-of-truth.md`;
++4. `knowledge/memory/OPERATOR_DECISIONS.md`;
++5. `knowledge/memory/ACTIVE_WORKSPACE.md` i `LAST_SESSION.md`;
++6. repo `AGENTS.md`;
++7. `docs/core/CONSTITUTION_V2_1.md`;
++8. ten README i właściwy kod/test.
++
++Nie przywracaj repo-local `memory-bank`, historycznych proof-packów ani usuniętych handoffów jako aktywnego onboarding.
+ 
+ ### Krok 2 — wybór ścieżki
+ 
+-- **Node B Python runtime:** `tools/gmail_audit/README.md`, `docs/core/truth_flow.md`, potem moduł z sekcji 10.
+-- **Runtime / proof:** `OPERATIONAL_HANDOFF.md`, `docs/runbooks/LAST_PROVEN_STATE.md`.
+-- **Node A / Daszek:** [`../../../daszek/docs/core/PROJECT_README.md`](../../../daszek/docs/core/PROJECT_README.md), [`../../../daszek/README-DASZEK.md`](../../../daszek/README-DASZEK.md).
+-- **Cały workspace:** [`../../../knowledge/docs/WORKSPACE_ONBOARDING.md`](../../../knowledge/docs/WORKSPACE_ONBOARDING.md).
+-- **Architektura:** `docs/core/CONSTITUTION_V2_1.md`, `docs/core/ARCHITECTURE_PRECEDENCE.md`, `docs/core/PHYSICAL_TOPOLOGY.md`.
+-- **CaseContextPack / pamięć:** `.agents/skills/case-context-memory-pack/SKILL.md`.
+-- **Policy / akcje:** `.agents/skills/policy-action-gates/SKILL.md`.
++- **Node B Python runtime:** ten README, `AGENTS.md`, właściwy moduł z §10 i targeted tests.
++- **Runtime / proof:** `docs/runbooks/LAST_PROVEN_STATE.md`.
++- **Persistence/concurrency:** `docs/runbooks/MAILBOX_MEMORY_POSTGRES.md`.
++- **Node A / Daszek:** `../../../daszek/docs/core/PROJECT_README.md`.
++- **Architektura:** `docs/core/CONSTITUTION_V2_1.md`, `ARCHITECTURE_PRECEDENCE.md`, `PHYSICAL_TOPOLOGY.md`.
++- **Signal spine:** `docs/runbooks/SIGNAL_ACTIVE_ONLY.md`.
+ 
+ ### Krok 3 — pierwszy kod do czytania wg typu zadania
+ 
+@@ -678,13 +738,13 @@
+ ### Baseline (szeroki smoke)
+ 
+ ```powershell
+-python support/context_pack_audit.py --root .
+ python -m compileall tools/gmail_audit scripts -q
+-python -m pytest tools/gmail_audit/tests -q
++python -m pytest tools/gmail_audit/tests -q --tb=line
+ node --check ../daszek/public/app.js
++powershell -NoProfile -ExecutionPolicy Bypass -File ..\scripts\verify-local-gates.ps1
+ ```
+ 
+-> **Stan 2026-07-10:** pełny pytest **GREEN** — `1256 passed, 0 failed` (PG integracja: ustaw `MAILBOX_MEMORY_TEST_DATABASE_URL` na `127.0.0.1:54129`). Przed claimem w LPS uruchom suite lokalnie; metryki sesji w `knowledge/memory/ACTIVE_WORKSPACE.md`.
++Ostatni proof 2026-07-13 jest zielony i opisany w LPS. Po zmianie chronionego runtime nie cytuj starego wyniku — wykonaj świeżą regresję. Jeśli kod jest bake’owany w API/workerze, test hostowy nie zastępuje rebuild/recreate i parity.
+ 
+ ### Preflight / doctor / CLI
+ 
+@@ -723,11 +783,11 @@
+ | `tools/gmail_audit/tests/` | Testy kontraktowe; fixture + monkeypatch, **nie** produkcyjny env.                                                        |
+ | `../daszek/`               | Statyczny/dev UI operatora; synchronizacja copy z `decision_projection_blocks.py` przy zmianach PL.                       |
+ | `../wp-bridges/`           | PHP/WordPress — transport i adaptery; semantyka decyzji zostaje w Node B.                                                 |
+-| `docs/core/`               | Kontrakty „twarde” (EvidenceRef, glossary, truth_flow, topology, constitution).                                           |
++| `docs/core/`               | Konstytucja, topologia, kontrakty, katalog eventów i manuale architektury.                                                |
+ | `docs/dev/`                | Flagi runtime, ENV loading, skany GitNexus, handoffy.                                                                     |
+ | `docs/runbooks/`           | Operacje, proof, handoff; **jedyny** katalog na twierdzenia „proven” z datą i procedurą.                                  |
+-| `docs/proof-packs/`        | Skrypty i artefakty bounded proof.                                                                                        |
+-| `memory-bank/`             | Krótka pamięć dla agentów; nie zastępuje kodu.                                                                            |
++| zewnętrzne katalogi proof | Artefakty runtime są zapisywane poza repo i referencjonowane w LPS.                                                        |
++| `../knowledge/memory/`     | Kanoniczna pamięć workspace; repo-local memory bank został usunięty.                                                       |
+ | `.agents/skills/`          | Procedury taskowych agentów (policy, memory pack, proof run, …).                                                          |
+ | `.cursor/rules/`           | Cienkie reguły IDE — nie duplikują `AGENTS.md`.                                                                           |
+ | `support/`                 | Skrypty pomocnicze repo (np. audit context pack).                                                                         |
+@@ -754,7 +814,7 @@
+ | Context Projection / Skrzat | `context_tray_set.py`, `projection_envelope.py`, `projection_validator.py`, `skrzat_runtime.py`, `skrzat_copilot.py`, `api_app.py`                                                                                                                |
+ | Agent runtime               | `agent_runtime/` (`graph`, `run`, `orchestrator`, `materialize`, `planner`, `openai_agent_client`, `circuit_breaker`, `business_pulse`, `authz`, `signal_registry`, `tools/`)                                                                     |
+ | Shared downstream           | `intake_shared_downstream.py`, `intelligence_shadow_profile.py`, `projection_refresh_contract.py`                                                                                                                                                 |
+-| Bridge/feedback             | `daszek_bridge_queue_drain.py`, `operator_feedback_runtime.py`, `feedback_event_contract.py`, `adjudication_executioner.py`                                                                                                                       |
++| Bridge/decision/feedback    | `daszek_bridge_queue_drain.py`, `agent_hitl_bridge.py`, `hitl_gmail_send.py`, `execution_runtime.py`, `operator_feedback_runtime.py`, `feedback_event_contract.py`                                                                                 |
+ | Signals/replay              | `signal_journal.py`, `signal_worker.py`, `signal_reconciler.py`, `case_state_rebuilder.py`, `signal_contract.py`, `raw_observation_contract.py`                                                                                                   |
+ | Drive/docs                  | `drive_ingest_runtime.py`, `drive_client.py`, `drive_case_linker.py`, `drive_lane_classifier.py`, `document_intelligence_runtime.py`                                                                                                              |
+ | Calendar                    | `calendar_runtime.py`, `calendar_client.py`, `calendar_signal_adapter.py`, `calendar_case_linker.py`                                                                                                                                              |
+@@ -796,6 +856,7 @@
+ | Vector-in-ranking proof      | `mailbox_memory_runtime.py`, `mailbox_memory/`                                               | dowód lokalny rankingu; osobno deployment              |
+ | Policy/action guardrails     | `policy_decision.py`, `action_proposal_v2.py`                                                | inwarianty v2 + testy                                  |
+ | Agent runtime / HITL         | `agent_runtime/graph.py`, `materialize.py`, `tools/write_executors.py`                       | plan → HITL → write; zero execution bez approve        |
++| Decision execution safety   | `agent_hitl_bridge.py`, `hitl_gmail_send.py`, `execution_runtime.py`, `daszek_bridge_queue_drain.py` | stabilny key, one-effect, recovery i convergence |
+ 
+ ## 13. Sekrety i prywatne dane
+ 
+@@ -813,93 +874,77 @@
+ - syntetyczne `message_id` / `case_id`,
+ - logowanie tylko metadanych (długości, hash'e), nie treści (`log_config.py` — JSON + correlation ContextVar).
+ 
+-## 14. Jak interpretować SPEC_VNEXT
+-
+-`SPEC_VNEXT.md` jest **north-star / RFC**: docelowy kształt AI-OS (kręgosłup decyzyjny, operator review, feedback, replay, policy gates, playbooki, quality loops).
+-
+-| Jest                         | Nie jest                                           |
+-| ---------------------------- | -------------------------------------------------- |
+-| Kierunek architektoniczny    | Dowód, że dany endpoint jest włączony na produkcji |
+-| Uzasadnienie „po co”         | Instrukcja deployu krok po kroku                   |
+-| Słownik intencji             | Zgoda na outbound automation                       |
+-| Wejście do planowania epików | Polecenie rewrite całego repo „bo RFC”             |
+-
+-Implementując fragment SPEC — **ogranicz zakres** do kontraktu + testów; zsynchronizuj „aspirational vs shipped” w `current-state.md`.
++## 14. Jak interpretować RFC i dokumenty kierunkowe
++
++Dokument kierunkowy lub historyczny plan może wyjaśniać intencję produktu, ale nie jest dowodem wdrożenia, aktualnego route ani zgody na skutek zewnętrzny.
++
++| Może być | Nie może być |
++| --- | --- |
++| north-star produktu | proof runtime |
++| uzasadnienie „po co” | instrukcja deployu bez runbooka |
++| wejście do discovery | pozwolenie na autonomous outbound |
++| hipoteza architektoniczna | powód do rewrite stabilnego fundamentu |
++
++Każdy fragment RFC przed implementacją musi zostać potwierdzony w aktualnym kodzie, ograniczony do konkretnego kontraktu i objęty testem. Stan aspiracyjny zapisuj poza dokumentami autorytatywnymi; stan wykonany potwierdza kod i LPS.
+ 
+ ## 15. Aktualny praktyczny kierunek
+ 
+-Stan na **2026-07-10** (po proof Gate B + pytest GREEN):
+-
+-| Obszar                                   | Status                                                                                                |
+-| ---------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+-| Runtime spine active-only                | **done** — legacy/shadow usunięte; reconcile przez rejestr handlerów                                  |
+-| God-class split                          | **done** — `case_intelligence/`, `mailbox_memory/`, parser/process/doctor rozdzielone (+ legacy shim) |
+-| Case/Task + Engagement + write gateway   | **done** — `case_write_gateway` kanoniczny; feed schema 1.3 (`action_items`)                          |
+-| Correlation registry                     | **confirmed by local tests** — identity/engagement/links, snapshot engagementu                        |
+-| Deployment                               | **lokalny / Docker** (`docker-compose.local-vps.yml`); VPS produkcyjny **zawieszony / historical**    |
+-| Pytest `tools/gmail_audit/tests`         | **GREEN (2026-07-10)** — 1256 passed; metryki tylko w ACTIVE_WORKSPACE                                |
+-| CT-FU-5 materialize                      | **proven_local** — LPS §GATE_B_GAPS; UI path ≠ proxy path                                             |
+-| Context Projection / Skrzat / agent-chat | **confirmed locally** — nie generalizuj na operator-verified bez bounded proof                        |
+-| Gate B row3/4 pełny                      | **częściowy** — classify blocked bez row3 cohort; drain pusty                                         |
+-
+-Najbliższe sensowne priorytety:
+-
+-1. **Gate B row3 cohort** — pełny classify proof gdy operator dostarczy sample Gmail.
+-2. **UI materialize** — zamknięcie luki `resolveEngagementIdForMaterializeProposal` w Daszku.
+-3. **Bounded lokalny proof** feed v3 end-to-end po każdej zmianie envelope.
+-4. **Drive reconcile convergence** — potwierdzenie pełnego downstream dla Drive.
+-
+-### Świadomie odkładane (anty-patterns na dziś)
+-
+-- kolejna architektura retrievalu obok Postgres/pgvector bez uzasadnienia,
+-- epik „wszystko przez Neo4j/LangGraph/MCP”,
+-- live LLM composer bez flagi i bounded proof,
+-- pełny QualityHub / write-back zanim read-only slice ma proof,
+-- automatyczne outbound bez policy + audytu,
+-- przenoszenie logiki `kalk-top` / OfferDTO do `gmail-agent`,
+-- drugi journal / reconciler / policy stack / writer sprawy (jest jeden spine i jeden `case_write_gateway`).
++Stan po stabilizacji 2026-07-13:
++
++| Obszar | Status |
++| --- | --- |
++| signal-active spine | zamrożony baseline |
++| Case/Task/Engagement i writer | atomowość potwierdzona na realnym PostgreSQL |
++| auth mutacji `/tasks*` | fail-closed, PASS |
++| send/reject decision loop | replay-safe i concurrency-safe, PASS |
++| UI confirmation | finalny sukces po konwergencji, PASS |
++| deployment | lokalny Docker; VPS zawieszony |
++
++Następny kierunek nie polega na budowaniu osobnego workflow dla każdego typu maila. Fundament deterministyczny pozostaje zamrożony, a rozwój powinien poprawiać generalne zdolności intelligence: rozumienie dowolnego sygnału, dobór kompetencji, integrację wyników modułów, aktualizację obrazu sprawy i business-first projection do Daszka.
++
++### Świadomie odkładane
++
++- drugi orchestrator, journal, writer Case lub policy stack;
++- duży redesign Daszka przed udowodnieniem potrzeb informacyjnych;
++- autonomiczny outbound bez policy/HITL i osobnego proofu;
++- automatyczny retry `outcome_unknown`;
++- przenoszenie OfferDTO/pricing do Node B;
++- architektura retrievalu obok istniejącego Postgres/pgvector bez konkretnej luki.
+ 
+ ## 16. Najkrótsza mentalna mapa
+ 
+-Użyj jej jako **checksum** PR: jeśli zmiana nie mieści się w żadnym odcinku, prawdopodobnie brakuje bounded context.
+-
+ ```text
+-Gmail/Drive/Calendar/Cieplo
+-  -> Node B intake / signal journal
+-  -> reconcile active (run_shared_downstream_stages)
+-  -> mailbox memory / hot state / CaseContextPack     [Postgres = prawda]
+-  -> case intelligence (desk/risks/NBA/missing/understanding)
+-  -> (gated) understanding -> decision candidate -> policy -> action proposal v2
+-  -> case_write_gateway (jedyny writer sprawy)
+-  -> correlation registry / engagement
+-  -> operational feed v3 (1.3: desk/cases/action_items) -> Daszek
+-  -> operator review / agent-chat / Skrzat (read-only)
+-  -> feedback / adjudication -> reconcile / replay / refreshed projection
++Gmail / Drive / Calendar / Cieplo / Daszek
++  → RawObservation / CanonicalSignal / journal
++  → reconcile active
++  → Postgres Case state + evidence                         [Node B = prawda]
++  → intelligence: facts / gaps / risks / hypotheses / NBA
++  → decision candidate → policy → stable decision_key
++  → accepted → execution → durable result
++  → completion / feed projection
++  → Daszek operator review
++  → fresh matching projection → converged confirmation
++  → feedback / adjudication → replay / refreshed state
+ ```
+ 
+-Jeśli zmiana nie mieści się w mapie, ustal: (1) czy jest bounded, (2) kto jest ownerem semantyki, (3) jaki status prawdy (sekcja 6) jest uczciwy.
+-
+-## 17. Dokumentacja wtórna (obok tego README)
+-
+-Ten plik jest **syntetycznym indeksem**. Szczegóły żyją w plikach poniżej — aktualizuj je, gdy zmieniasz kontrakt.
+-
+-| Dokument / miejsce                                                 | Po co                                                              |
+-| ------------------------------------------------------------------ | ------------------------------------------------------------------ |
+-| `../../../knowledge/docs/WORKSPACE_ONBOARDING.md`                  | Router całego workspace — porty, oś gmail↔daszek, ścieżki czytania |
+-| `../../../daszek/docs/core/PROJECT_README.md`                      | Node A deep manual (UI, proxy, feed)                               |
+-| `AGENTS.md`, `memory-bank/navigation.md`                           | Routing zadań — co czytać następne                                 |
+-| `docs/core/truth_flow.md`                                          | Audyt etapów runtime vs kod; spine; luki (Drive, intake reasoning) |
+-| `docs/core/CONTEXT_PROJECTION_KNOWLEDGE_GRAPH.md`                  | Cel produktu: Context Projection + Skrzat                          |
+-| `docs/dev/RUNTIME_FLOW_FLAGS_MATRIX.md`                            | Flagi — co włącza który etap                                       |
+-| `docs/dev/ENV_LOADING.md`                                          | Kolejność `.env`                                                   |
+-| `docs/dev/CODEX_GITNEXUS_MASTER_HANDOFF.md`                        | Onboarding agenta + GitNexus workflow                              |
+-| `memory-bank/current-state.md`                                     | Kolejność domykania architektury                                   |
+-| `tools/gmail_audit/README.md`                                      | Operacje Node B, `PYTHONPATH`, komendy, ograniczenia               |
+-| `docs/core/CONTEXT_PACK_SCOPE.md`                                  | Granice CaseContextPack                                            |
+-| `docs/core/evidence_ref_contract.md`                               | Reguły producentów EvidenceRef                                     |
+-| `docs/core/action_semantics_glossary.md`                           | Zgodność copy PL z `decision_projection_blocks.py`                 |
+-| `docs/runbooks/LAST_PROVEN_STATE.md`                               | Twierdzenia runtime / proof                                        |
+-| `docs/archive/README.md`                                           | Historyczne dokumenty (nie ładuj domyślnie)                        |
+-| `docs/core/PHYSICAL_TOPOLOGY.md`, `docs/core/CONSTITUTION_V2_1.md` | Topologia Node A/B i nadrzędne zasady                              |
+-
+-**Rozstrzyganie konfliktów:** przy rozbieżności między README a kodem **wygrywa kod**; popraw README w tej samej zmianie co kontrakt albo otwórz issue na drift dokumentacji.
++LLM interpretuje i planuje. Deterministyczny runtime identyfikuje, autoryzuje, zapisuje, wykonuje, odzyskuje i dowodzi.
++
++## 17. Dokumentacja wtórna
++
++| Dokument | Rola |
++| --- | --- |
++| `../../../knowledge/INDEX.md` | router workspace |
++| `../../../knowledge/source-of-truth.md` | nadrzędne źródła prawdy |
++| `../../../knowledge/memory/ACTIVE_WORKSPACE.md` | żywy stan pracy |
++| `../../../daszek/docs/core/PROJECT_README.md` | Node A / UI / proxy / bridge |
++| `docs/core/CONSTITUTION_V2_1.md` | zasady nadrzędne |
++| `docs/core/PHYSICAL_TOPOLOGY.md` | Node A/B i deployment |
++| `docs/core/EVENT_CATALOG.md` | katalog eventów i replay semantics |
++| `docs/core/AGENT_RUNTIME_ARCHITECTURE.md` | bounded mapa agent runtime |
++| `docs/runbooks/LAST_PROVEN_STATE.md` | proof authority |
++| `docs/runbooks/MAILBOX_MEMORY_POSTGRES.md` | persistence/concurrency |
++| `docs/runbooks/SIGNAL_ACTIVE_ONLY.md` | aktywna ścieżka signal |
++
++Nie odtwarzaj linków do usuniętych `memory-bank`, `archive`, historycznych handoffów ani nieistniejących flow docs.
++
++**Rozstrzyganie konfliktów:** Konstytucja → kod/test → LPS → README.
+--- a/gmail-agent/docs/dev/ENV_LOADING.md
++++ b/gmail-agent/docs/dev/ENV_LOADING.md
+@@ -1,6 +1,6 @@
+ # Environment files — Node B (`load_settings`)
+ 
+-**Status:** normative for **local dev** and agent preflight. VPS Compose secrets stay in `.env.vps` per `docs/runbooks/CANONICAL_PRODUCTION_RUNTIME_AND_OPERATIONS.md`.
++**Status:** normative for **local dev** and agent preflight. Produkcyjny VPS pozostaje zawieszony; `.env.vps` jest wyłącznie plikiem Compose, nie aktywnym runbookiem deployu.
+ 
+ **Code authority:** `tools/gmail_audit/config.py` (`default_env_candidates`, `load_settings`, `GMAIL_AGENT_ENV_FILE`).
+ 
+@@ -34,7 +34,7 @@
+ | `.env.mailbox-memory`         | Nie (domyślnie)              | Profil DB/docker dla mailbox stack; merge kluczy do `.env` lub osobny URL w głównym `.env`                                               |
+ | `.env.mailbox-memory.example` | Nie                          | Szablon                                                                                                                                  |
+ 
+-**VPS worker:** sekrety aplikacji (Gmail/Groq/Daszek/flagi) nadal w **`tools/gmail_audit/.env`** montowanym do kontenera — patrz `docker-compose.vps.yml`. Nie przenoś ich do `.env.vps` „tylko po to, by dodać flagę”.
++**Historyczny VPS:** `docker-compose.vps.yml` i powiązane pliki nie są aktywną ścieżką operacyjną. Nie wykonuj deployu ani SSH bez jawnego wznowienia przez operatora.
+ 
+ ---
+ 
+@@ -90,7 +90,7 @@
+ | Adjudication refresh | `projection_refresh_contract.py`                     |
+ | Projection transport | `projection_snapshot_transport.py`                   |
+ 
+-Mapa flow: `docs/core/truth_flow.md` · flagi: `docs/dev/RUNTIME_FLOW_FLAGS_MATRIX.md`.
++Aktualna mapa systemu: `docs/core/PROJECT_README.md`; nadrzędne granice: `docs/core/CONSTITUTION_V2_1.md`.
+ 
+ ---
+ 
+@@ -118,11 +118,25 @@
+ **Zasady:**
+ 
+ - Kontener ustawia `GMAIL_AGENT_ENV_FILE=/etc/topinstal/gmail-agent.env` — **wygrywa** nad mounted `tools/gmail_audit/.env` dla zmiennych agent.
+-- Po zmianie `AGENT_*` w `tools/gmail_audit/.env` → **zsynchronizuj** do `.env.local-vps` i recreate worker.
++- Po zmianie `AGENT_*` w `tools/gmail_audit/.env` → **zsynchronizuj** do `.env.local-vps` i recreate usługi, które czytają te ustawienia.
+ - `.env.local-vps` tylko **UTF-8** (bez BOM). PowerShell `Add-Content` może zepsuć encoding → worker crash loop.
+-- Worker **nie bind-mountuje** kodu Python — po zmianach w repo: `docker compose build gmail-agent-worker` + `--force-recreate`.
++- API i worker **nie bind-mountują** wspólnego kodu Python — po zmianach w `tools/gmail_audit`: build/recreate `gmail-agent-nodeb-api` oraz `gmail-agent-worker`, następnie host/container parity i health.
+ 
+-Runbook ingest: [`../runbooks/AGENT_INGEST_SIGNAL_BATCH.md`](../runbooks/AGENT_INGEST_SIGNAL_BATCH.md).
++Runbook aktywnej ścieżki: [`../runbooks/SIGNAL_ACTIVE_ONLY.md`](../runbooks/SIGNAL_ACTIVE_ONLY.md).
++
++---
++
++## Tokeny mutacji Node B
++
++Write routes korzystają z istniejącego bearer envelope i działają fail-closed. Dokumentuj wyłącznie nazwy zmiennych, nigdy wartości:
++
++- `GMAIL_AGENT_INTERNAL_API_TOKEN`;
++- `DASZEK_NODE_B_API_TOKEN`;
++- `NODE_B_REGISTRY_TOKEN`.
++
++`require_mutation_token()` wybiera dozwolone poświadczenie zgodnie z konfiguracją runtime. Brak tokenu nie otwiera `/tasks*`; request bez prawidłowego write credential kończy się przed store. Read-only credential nie może zostać użyty do mutacji.
++
++Po zmianie tokenów w lokalnym stacku zsynchronizuj host/WordPress/Node B, recreate właściwe usługi i wykonaj test auth bez ujawniania sekretu.
+ 
+ ---
+ 
+--- a/gmail-agent/docs/runbooks/GMAIL_AGENT_DAILY_OPS.md
++++ b/gmail-agent/docs/runbooks/GMAIL_AGENT_DAILY_OPS.md
+@@ -1,114 +1,106 @@
+-# gmail-agent — operacje dzienne (Node B + Daszek feed)
++# gmail-agent — operacje dzienne
+ 
+-Kanoniczna **jednostronicowa** rutyna po zamknięciu PRO P0. Szczegóły Daszek: [`../../README-DASZEK.md`](../../README-DASZEK.md) §12.
++**Status:** aktywny runbook lokalny  
++**Deployment:** lokalny Docker Compose  
++**VPS/produkcja:** zawieszone od 2026-06-17; wymagają jawnej decyzji operatora
+ 
+-## Kiedy uruchamiać
++## Kiedy używać
+ 
+-| Sytuacja                               | Kroki                                           |
+-| -------------------------------------- | ----------------------------------------------- |
+-| Po zmianie `tools/gmail_audit/` na VPS | 1 → 2 → 3                                       |
+-| Po zmianie tylko `Daszek/` (WP)        | Wgraj plugin + smoke (krok 5), feed opcjonalnie |
+-| Rutyna tygodniowa                      | 3 + 4                                           |
+-| Po incydencie operatora (Zła sprawa)   | 3 + bounded Luka #3 proof                       |
++| Sytuacja | Procedura |
++| --- | --- |
++| zmiana wspólnego kodu Python Node B | testy → build/recreate API + worker → parity → health → gate |
++| zmiana tylko Daszka PHP/JS | syntax/tests → bind-mount parity → smoke/gate |
++| zmiana kontraktu feed/bridge | testy obu repo → lokalny integrated proof → gate |
++| rutynowa kontrola | preflight + health + workspace gate |
++| incydent | zachowaj logi/artefakt, odtwórz minimalnie, nie wykonuj realnego replayu bez izolacji |
+ 
+-## Procedura (kolejność obowiązkowa)
++## 1. Preflight
+ 
+-### 1. Sync kodu Node B
++Z root workspace:
+ 
+ ```powershell
+-powershell -File C:\Users\compg\Desktop\gmail-agent\deploy\sync-p0-to-vps.ps1
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts\preflight-local-stack.ps1 -FullStack
+ ```
+ 
+-Oczekiwane: `SYNC_OK`.
++Oczekiwane: `7/7 OK` i `exit 0`.
+ 
+-### 2. Rebuild workera (po zmianie Pythona w obrazie)
++## 2. Testy przed zmianą runtime
+ 
+-```bash
+-ssh -i ~/.ssh/gmail-agent_vps_id_ed25519 root@178.104.171.104 \
+-  "cd /opt/gmail-agent/current && docker compose --env-file .env.vps -f docker-compose.vps.yml build gmail-agent-worker"
++W repo `gmail-agent`:
++
++```powershell
++python -m compileall tools/gmail_audit scripts -q
++python -m pytest tools/gmail_audit/tests -q --tb=line
+ ```
+ 
+-Obraz **nie** montuje host `tools/gmail_audit` przy `compose run` — bez rebuild B2/feed znika.
+-
+-### 3. Push operational feed (B2, bez B1)
++Dla Daszka:
+ 
+ ```powershell
+-powershell -File C:\Users\compg\Desktop\gmail-agent\tools\scripts\push_daszek_prod_feed.ps1
++node --check public/app.js
++php -l includes/api-v3-handlers.php
++python -m pytest tests -q --tb=line
++node --test tests/test_row4b_note_hitl_approve.node.js
+ ```
+ 
+-Oczekiwane w logu:
++Uruchamiaj targeted tests wcześniej; pełny suite jest warunkiem closeoutu, nie pierwszą pętlą debugowania.
+ 
+-- `feedback_eligible=` **> 0**
+-- `DASZEK_OPERATIONAL_FEED_PUSH_OK` + `snapshot_id`
+-- **Brak** linii `==> B1: desk_notes enrich`
++## 3. Rebuild/recreate Node B
+ 
+-### 4. Doctor (tygodniowo lub po incydencie)
++Wspólny kod `tools/gmail_audit` jest bake’owany w obrazie używanym przez API i worker. Po jego zmianie przebuduj tylko wymagane usługi, standardowo obie:
+ 
+-```bash
+-cd /opt/gmail-agent/current
+-docker compose --env-file .env.vps -f docker-compose.vps.yml --profile worker run --rm -T \
+-  gmail-agent-worker python tools/gmail_audit/gmail_intake.py doctor --skip-gmail --check-daszek
++```powershell
++cd gmail-agent
++docker compose --env-file .env.vps -f docker-compose.local-vps.yml build gmail-agent-nodeb-api gmail-agent-worker
++docker compose --env-file .env.vps -f docker-compose.local-vps.yml --profile api --profile worker up -d --force-recreate gmail-agent-nodeb-api gmail-agent-worker
+ ```
+ 
+-### 5. Smoke UI (po zmianie Daszek 1.3.x)
++Nie używaj `docker cp` jako finalnego wdrożenia.
++
++Daszek jest lokalnie bind-mountem; po zmianie pluginu zwykle nie wymaga rebuild, ale wymaga testu i weryfikacji SHA/odczytu z kontenera.
++
++## 4. Health i parity
++
++Sprawdź:
++
++- Node B API `/health`;
++- worker `/system/worker/health`;
++- Postgres `running/healthy`;
++- `restart_count=0` po recreate;
++- brak crash loop i nowych błędów DB/execution w logach;
++- SHA-256 host/container dla zmienionych plików.
++
++Nie zapisuj sekretów, DSN ani treści wiadomości w artefaktach.
++
++## 5. Workspace gate
++
++Po recreate:
+ 
+ ```powershell
+-powershell -File tools\scripts\daszek_prod_nav_smoke.ps1
+-cd tools\gmail_audit
+-python playwright_daszek_pro_proof.py
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify-local-gates.ps1
+ ```
+ 
+-## Timer feed (VPS)
++Oczekiwane: `exit 0`. Nie osłabiaj etapów gate i nie pomijaj błędów collection.
+ 
+-Instalacja (jednorazowo):
++## 6. Obieg decyzji operatora
+ 
+-```bash
+-bash /opt/gmail-agent/current/deploy/vps-install-daszek-feed-timer.sh
+-```
++Przy problemach send/reject/bridge sprawdź kolejno:
+ 
+-- Unit: `topinstal-daszek-feed-push.service` (oneshot)
+-- Timer: **06:00** i **18:00** UTC
+-- Log: `/var/log/topinstal/daszek-feed-push.log`
++1. auth i token scope;
++2. stabilny `decision_key`;
++3. trwały execution result;
++4. status `failed_before_execution` vs `outcome_unknown`;
++5. completion/bridge acknowledgement;
++6. feed refresh;
++7. matching decision key w świeżej projekcji;
++8. dopiero wtedy finalne potwierdzenie UI.
+ 
+-Status:
++`outcome_unknown` nie jest automatycznie ponawiany.
+ 
+-```bash
+-systemctl list-timers topinstal-daszek-feed-push.timer
+-journalctl -u topinstal-daszek-feed-push.service -n 50
+-```
++## 7. Produkcyjny VPS
+ 
+-**Uwaga:** timer nie robi `sync` ani `build` — po deploy kodu wykonaj kroki 1–2 ręcznie.
++Historyczne skrypty i compose VPS nie są aktywną rutyną. Nie wykonuj sync, SSH, timerów ani deployu bez jawnego polecenia operatora i osobnego planu proof/deploy/rollback.
+ 
+-## Audyt B2 readback
++## 8. Proof
+ 
+-**Handoff bounded (checklist #11 — zalecane):**
+-
+-```bash
+-bash /opt/gmail-agent/current/deploy/vps-prove-b2-handoff-readback.sh
+-# wymaga ostatniego runs/daszek-feed-*/operational_feed_snapshot.json
+-```
+-
+-Tylko Gate B: `audit_b2_feed_readback.py --handoff-gateb --require-gateb --feed-json …`
+-
+-**Losowa próbka (P2 — pełna matryca eligible vs WP):**
+-
+-```bash
+-docker compose --env-file .env.vps -f docker-compose.vps.yml --profile worker run --rm -T \
+-  -e PYTHONPATH=/app/tools/gmail_audit \
+-  gmail-agent-worker \
+-  python tools/gmail_audit/audit_b2_feed_readback.py --sample 10
+-```
+-
+-## Ścieżki wyłączone (nie używać w rutynie)
+-
+-| Ścieżka                                      | Powód                                                                        |
+-| -------------------------------------------- | ---------------------------------------------------------------------------- |
+-| `deploy/vps_push_badbad_operational_feed.py` | deprecated — [`../../README-DASZEK.md`](../../README-DASZEK.md) §12 (BADBAD) |
+-| `push_daszek_prod_feed.ps1 -DeskNotesJson`   | B1 awaryjnie, nie cron                                                       |
+-| `ALLOW_DASZEK_BADBAD_SEED=1`                 | tylko Gate B lab                                                             |
+-
+-## Powiązane
+-
+-- Closeout P0 (historyczny): [`../archive/dev/GMAIL_AGENT_CLOSEOUT_CHECKLIST.md`](../archive/dev/GMAIL_AGENT_CLOSEOUT_CHECKLIST.md)
+-- Luka #3 operator loop: `deploy/vps-prove-operator-loop-bounded.sh`
+-- 24h soak (historyczny): [`../archive/runbooks/GMAIL_AGENT_24H_SOAK_EVENT.md`](../archive/runbooks/GMAIL_AGENT_24H_SOAK_EVENT.md)
++Aktualny stan i artefakty: [`LAST_PROVEN_STATE.md`](LAST_PROVEN_STATE.md).  
++Persistence/concurrency: [`MAILBOX_MEMORY_POSTGRES.md`](MAILBOX_MEMORY_POSTGRES.md).
+--- a/gmail-agent/docs/runbooks/LAST_PROVEN_STATE.md
++++ b/gmail-agent/docs/runbooks/LAST_PROVEN_STATE.md
+@@ -1,74 +1,119 @@
+ # Last Proven State
+ 
+-Status: active runbook. Last updated: 2026-07-13.
++**Status:** aktywny runbook proof  
++**Ostatnia aktualizacja:** 2026-07-13  
++**Zakres:** lokalny Docker Compose; bez deployu na VPS/produkcję
+ 
+-## Current Baseline
++## Executive verdict
+ 
+-AI-OS TOP-INSTAL local stabilization baseline is PASS and protected by the workspace stability freeze in `knowledge/memory/OPERATOR_DECISIONS.md`.
++Lokalny baseline stabilizacji AI-OS TOP-INSTAL ma status **PASS**.
+ 
+-The first stabilization bundle `C:\gate-b-stabilization-baseline-20260713T004917Z` was **PARTIAL** by itself because worker health was stale. Baseline PASS was justified only after `C:\gate-b-worker-health-diagnosis-20260713T015059Z` showed worker health fixed and the closeout lifted the blocker.
++Udowodniony krytyczny obieg:
+ 
+-Scope protected by the freeze:
++```text
++Node B Case / decision state
++↔ autoryzowany bridge Daszka
++↔ wykonanie lub odrzucenie dokładnie raz w granicach kontraktu
++↔ trwały wynik
++↔ nowa projekcja
++↔ finalne potwierdzenie UI
++```
+ 
+-- runtime behavior;
+-- identity and correlation semantics;
+-- feed v3;
+-- Row4a/Row4b proven paths;
+-- worker health;
+-- `signal_id`, `run_id`, `trace_id`, `engagement_id` semantics.
++Aktualny werdykt autonomii dla tego obiegu: **YES, WITH EXPLICIT LIMITS**.
+ 
+-## Identity Semantics
++## Aktualny baseline
+ 
+-- `signal_id` is the stable identity of the signal.
+-- `engagement_id` is the stable identity of the engagement.
+-- `run_id` identifies a processing run.
+-- `trace_id` is technical run correlation, not signal identity.
+-- Replay preserves `signal_id` and `engagement_id`.
+-- Replay changes `run_id` and technical trace IDs.
+-- `source_signal_ids` contains `signal_id`, not `trace_id`.
+-- Browser anchors must not fabricate `trace_id` from `signal_id`; if unavailable, `trace_id` remains missing/null.
++| Obszar | Wynik |
++| --- | --- |
++| FullStack preflight | `7/7 OK` |
++| Workspace gate | `exit 0` po recreate runtime |
++| gmail-agent pełny suite | `1350 passed, 5 skipped, 4 subtests passed` |
++| Daszek pytest | `8 passed` |
++| Daszek Node tests | `13 passed` |
++| JavaScript / PHP syntax | PASS |
++| Node B API health | `ok=true` |
++| Worker health | `ok=true`, `status=alive` |
++| Postgres | running, healthy |
++| API / worker restart count | `0 / 0` |
++| Host/container SHA-256 | zgodne dla zmienionych plików |
+ 
+-Evidence:
++Liczby są snapshotem tego proofu, nie obietnicą dla przyszłych zmian. Po zmianie chronionego runtime należy wykonać świeżą regresję i zaktualizować ten dokument.
+ 
+-- `C:\gate-b-row4a-s2-final-20260712T210500Z\identity-replay-comparison.json`
+-- `C:\gate-b-row4a-s2-replay-b2-20260712T212706Z\identity-replay-comparison.json`
+-- `C:\gate-b-row4a-s2-replay-b2-20260712T212706Z\browser\anchors.json`
+-- `C:\gate-b-row4a-s2-replay-b2-20260712T212706Z\identity-database-uniqueness.json`
++## Artefakty źródłowe
+ 
+-## Latest Proven Paths
++| Zakres | Status | Artefakty |
++| --- | --- | --- |
++| Stabilization baseline + worker health | PASS | `C:\gate-b-stabilization-baseline-20260713T004917Z`, `C:\gate-b-worker-health-diagnosis-20260713T015059Z` |
++| Row4a / identity / replay | PASS | `C:\gate-b-row4a-s2-final-20260712T210500Z`, `C:\gate-b-row4a-s2-replay-b2-20260712T212706Z` |
++| Row4b HITL approve | PASS | `C:\gate-b-row4b-hitl-approve-20260713T000730Z` |
++| Case concurrency closeout | PASS | `C:\ai-os-case-concurrency-20260713T084431Z` |
++| Audyt sześciu gwarancji | READ-ONLY FINDINGS | `C:\ai-os-critical-case-stability-audit-20260713T114648Z` |
++| Naprawa AUTH/IDEMP/DEC | PASS | `C:\ai-os-critical-findings-fix-20260713T122855Z` |
+ 
+-| Path | Status | Evidence |
+-| --- | --- | --- |
+-| Row4a S2 final | PASS | `C:\gate-b-row4a-s2-final-20260712T210500Z` |
+-| Row4a S2/S2.1 replay B2 | PASS | `C:\gate-b-row4a-s2-replay-b2-20260712T212706Z` |
+-| Row4b HITL approve | PASS | `C:\gate-b-row4b-hitl-approve-20260713T000730Z` |
+-| Worker health diagnosis | PASS | `C:\gate-b-worker-health-diagnosis-20260713T015059Z` |
+-| Stabilization baseline closeout | PASS after worker-health closeout | `C:\gate-b-stabilization-baseline-20260713T004917Z` + `C:\gate-b-worker-health-diagnosis-20260713T015059Z` |
++## Zamrożone gwarancje
+ 
+-## Row4a S2 / S2.1 Summary
++### Identity i replay
+ 
+-- Stable signal: `sig_de445bdb809886faafd149f5`
+-- Stable engagement: `stg_sig_de445bdb`
+-- Replay evidence shows `signal_id_equal=true`, `engagement_id_equal=true`, `run_id_different=true`, `signal_runtime_trace_id_different=true`, `agent_run_trace_id_different=true`, and `source_signal_ids_stable=true`.
+-- Browser anchor B2 recorded `trace_id=null` with `trace_id_source=missing`; this is the correct behavior when no reliable browser trace ID is available.
++- `signal_id` i `engagement_id` pozostają stabilne przez replay.
++- `run_id` oraz techniczne trace ID zmieniają się między wykonaniami.
++- `source_signal_ids` zawiera `signal_id`, nie `trace_id`.
++- UI nie fabrykuje `trace_id`; brak wiarygodnego trace oznacza `null/missing`.
+ 
+-## Row4b Summary
++### Atomowa mutacja Case
+ 
+-- Proof dir: `C:\gate-b-row4b-hitl-approve-20260713T000730Z`
+-- Event: `gmail.hitl.approved`
+-- Versions: `47 -> 48`
+-- Event identity: `event_id=osevt_38d9868ce0f546e2`, `trace_id=sig_7b1e5ba9b4234f17`, `operator_id=konrad`
+-- Feed snapshots: `eng-feed-5d3b225bb07acd0fb275 -> eng-feed-164a40e6af9d56136d72`
++Klasyfikacja: `POSTGRES_ATOMIC_MUTATION_CONFIRMED`.
+ 
+-## Active Constraints
++- `PostgresMailboxMemoryStore.mutate_case` używa deterministycznego klucza advisory lock: BLAKE2b 8 B → signed bigint.
++- lock, `SELECT ... FOR UPDATE`, mutator, upsert i commit działają na jednym połączeniu i w jednej transakcji.
++- dwa niezależne połączenia PostgreSQL zachowały dwie równoległe, niezależne zmiany bez deadlocku.
++- wyjątek mutatora powoduje rollback bez częściowego zapisu; lock zwalnia się z końcem transakcji.
++- `patch_case_row` i `_stamp_case_runtime_state` używają atomowego kontraktu.
+ 
+-- Local-only by default; no VPS/prod deploy unless explicitly requested.
+-- Do not rerun Row4/replay/proof during documentation cleanup.
+-- New runtime changes require a reproducible bug, regression test and fresh proof.
+-- Documentation claims must distinguish `implemented in code`, `runtime enabled`, `freshly proven locally` and `operator verified`.
++### Autoryzacja mutacji Node B
+ 
+-## Test Baseline
++Finding `AUTH-01`: **CLOSED / PASS**.
+ 
+-The last recorded targeted gmail-agent suite around the stabilization window was green: `1331 passed, 3 skipped, 4 subtests passed`.
++- aktywne write routes `/tasks*` są fail-closed;
++- brak, błędny lub read-only token kończy się `401` przed walidacją biznesową i przed store;
++- brak konfiguracji auth nie otwiera mutacji;
++- tożsamość operatora nie jest przyjmowana bezwarunkowo z dowolnego pola requestu.
+ 
+-Do not use this line as a fresh proof after code/runtime changes; rerun targeted tests and proof when the protected runtime changes.
++### Idempotencja decyzji i skutków
++
++Findingi `IDEMP-01` i `IDEMP-02`: **CLOSED / PASS**.
++
++- send i reject używają stabilnego `decision_key`/execution identity;
++- wynik wykonania jest trwały i oddzielony od completion/feed projection;
++- sukces executora + failure completion + replay nie uruchamia executora drugi raz;
++- dwa równoległe drainery nie wykonują send/reject dwukrotnie;
++- `failed_before_execution` może zostać ponowiony;
++- `outcome_unknown` po rozpoczęciu skutku blokuje automatyczny retry;
++- reject tworzy jeden stabilny finalny event i jawnie obsługuje konflikt finalnych decyzji.
++
++### Konwergencja UI
++
++Finding `DEC-01`: **CLOSED / PASS**.
++
++- HTTP 200/`accepted` nie jest finalnym potwierdzeniem skutku;
++- UI pokazuje stan przyjęcia/oczekiwania, dopóki aktualna projekcja nie potwierdzi tego samego `decision_key` i statusu końcowego;
++- stary feed, timeout lub feed push failure nie daje finalnego sukcesu;
++- ponowne kliknięcie jest blokowane w czasie oczekiwania na konwergencję;
++- refresh odtwarza stan z Node B, nie z lokalnego toastu.
++
++## Ograniczenia jawne
++
++- Proof dotyczy środowiska lokalnego. Nie stanowi dowodu wdrożenia VPS/produkcyjnego.
++- Gmail nie zapewnia aplikacyjnemu runtime uniwersalnego idempotency key dla skutku zewnętrznego. Gwarancją jest bezpieczny kontrakt: retry przed skutkiem, no-retry po skutku potwierdzonym lub nieznanym.
++- `outcome_unknown` wymaga jawnego recovery/operator review.
++- Zwiększanie autonomii jest dozwolone wyłącznie w granicach chronionego auth, policy, stabilnego decision key, trwałego execution result i konwergencji UI.
++
++## Reguła następnych zmian
++
++Chronionego obiegu nie zmieniaj „przy okazji”. Każda zmiana wymaga:
++
++1. reprodukcji albo jasno zdefiniowanej nowej gwarancji;
++2. testu RED;
++3. minimalnej poprawki;
++4. testu GREEN i pełnej regresji;
++5. runtime parity/health, jeśli kod jest bake’owany w obrazie;
++6. aktualizacji LPS dopiero po PASS.
+--- a/gmail-agent/docs/runbooks/MAILBOX_MEMORY_POSTGRES.md
++++ b/gmail-agent/docs/runbooks/MAILBOX_MEMORY_POSTGRES.md
+@@ -1,15 +1,90 @@
+ # Mailbox Memory Postgres
+ 
+-Cel: skrót operacyjny dla warstwy Postgres/mailbox-memory.
++**Status:** aktywny runbook kontraktu persistence  
++**Ostatni przegląd:** 2026-07-13
+ 
+-## Minimalne kontrole
++## Cel
+ 
+-- polaczenie DB,
+-- schema obecna,
+-- kluczowe tabele i indeksy,
+-- migracje kompatybilne,
+-- backup/restore sciezka.
++Postgres `mailbox_memory` jest operacyjnym źródłem prawdy Node B. Ten runbook opisuje najważniejszą gwarancję zapisu istniejącego Case oraz minimalne kontrole operacyjne.
+ 
+-## Dowod
++## Kanoniczne ścieżki zapisu Case
+ 
+-Polegaj na komendach i artefaktach, nie na opisie.
++| Operacja | Kanoniczna ścieżka |
++| --- | --- |
++| pełne utworzenie / kontrolowany full write | `case_write_gateway.write_case_row(...)` |
++| częściowa mutacja istniejącego Case | `case_write_gateway.patch_case_row(...)` → `PostgresMailboxMemoryStore.mutate_case(...)` |
++| aktualizacja runtime przez reconciler | `_stamp_case_runtime_state(...)` → `mutate_case(...)` |
++
++Równoległy writer nie może wykonywać sekwencji „fetch poza lockiem → modyfikacja stale obrazu → pełny upsert”. Taki wzorzec powodował last-writer-wins i został zamknięty w concurrency closeout.
++
++## Kontrakt `mutate_case`
++
++Dla tożsamości Case `(scope, owner_id)`:
++
++1. wylicz stabilny advisory lock key:
++   - `f"{scope}:{owner_id}".encode("utf-8")`;
++   - `hashlib.blake2b(..., digest_size=8)`;
++   - `int.from_bytes(..., byteorder="big", signed=True)`;
++2. rozpocznij transakcję na jednym połączeniu;
++3. `pg_advisory_xact_lock(bigint)`;
++4. `SELECT ... FOR UPDATE` aktualnego wiersza;
++5. wywołaj szybki, bezskutkowy mutator na aktualnym obrazie;
++6. zapisz przez `_upsert_case_payload(..., cur=cur)` tym samym kursorem;
++7. `commit`;
++8. przy wyjątku: `rollback`; lock zwalnia się wraz z transakcją.
++
++### Niezmienniki
++
++- klucz locka jest deterministyczny między procesami, hostem, kontenerem i restartem;
++- Pythonowe `hash()` jest zabronione;
++- lock, read, mutate i write muszą używać tego samego połączenia/transakcji;
++- mutator nie może zmienić `case_id` ani wykonywać wolnych efektów zewnętrznych;
++- drugi writer tego samego Case czeka, a następnie czyta stan po commicie pierwszego;
++- rollback nie pozostawia częściowego zapisu;
++- ścieżki omijające `mutate_case` wymagają osobnego dowodu, że nie uczestniczą w równoległym read–modify–write.
++
++## Udowodnione zachowanie
++
++Artefakty: `C:\ai-os-case-concurrency-20260713T084431Z`.
++
++Realny test PostgreSQL użył dwóch niezależnych instancji store i dwóch połączeń:
++
++- A przejęło lock, odczytało Case i wstrzymało się;
++- B rozpoczęło mutację tego samego Case i oczekiwało;
++- A zapisało `latest_signal_id` i wykonało commit;
++- B odczytało już nowy stan, dopisało niezależną flagę metadata i wykonało commit;
++- końcowy rekord zawierał obie zmiany;
++- brak deadlocku;
++- osobny proof potwierdził rollback i release locka po wyjątku.
++
++Klasyfikacja: `POSTGRES_ATOMIC_MUTATION_CONFIRMED`.
++
++## Testy kotwiczne
++
++- `tools/gmail_audit/tests/test_case_write_gateway.py`
++- `tools/gmail_audit/tests/test_mailbox_memory_store.py`
++- `tools/gmail_audit/tests/test_mailbox_memory_runtime.py -k mutate_case`
++- `tools/gmail_audit/tests/test_api_tasks.py`
++- `tools/gmail_audit/tests/test_signal_reconciler_runtime.py`
++
++## Minimalne kontrole operacyjne
++
++1. Postgres `running` i `healthy`.
++2. Właściwy DSN bez ujawniania wartości.
++3. Schema i kluczowe tabele obecne.
++4. Test realnego store używa testowego/technicznego `case_id` i sprząta dane.
++5. Po zmianie `postgres.py` lub wspólnych writerów:
++   - targeted tests;
++   - pełny suite;
++   - rebuild/recreate API i workera, jeśli kod jest bake’owany;
++   - SHA-256 host/container;
++   - health i restart count;
++   - workspace gate.
++
++## Czego nie uznawać za dowód
++
++- samego występowania `updated_at`, `version` lub `ON CONFLICT`;
++- testu tylko na `InMemoryMailboxMemoryStore`;
++- jednego połączenia bez kontrolowanego przeplotu;
++- przejścia pełnego pytest bez realnej semantyki locka;
++- `docker cp` bez trwałego rebuild/recreate.
+--- a/gmail-agent/docs/runbooks/README.md
++++ b/gmail-agent/docs/runbooks/README.md
+@@ -1,37 +1,35 @@
+-# Runbooks README
++# Runbooks
+ 
+-To indeks operacyjny aktywnych runbooków w `docs/runbooks/`.
++**Status:** aktywny indeks po cleanupie dokumentacji  
++**Ostatni przegląd:** 2026-07-13
++
++Runbooki opisują procedury i proof. Nie są katalogiem historycznych epików ani planów.
+ 
+ ## Czytaj najpierw
+ 
+-1. `RELEASE_GATE_V2_1.md`
+-2. `GATE_B_OPERATOR_CHECKLIST_A2.md`
+-3. `CANONICAL_PRODUCTION_RUNTIME_AND_OPERATIONS.md`
++1. [`LAST_PROVEN_STATE.md`](LAST_PROVEN_STATE.md) — najnowszy udowodniony stan i ograniczenia.
++2. [`SIGNAL_ACTIVE_ONLY.md`](SIGNAL_ACTIVE_ONLY.md) — jedyna aktywna ścieżka signal runtime.
++3. [`MAILBOX_MEMORY_POSTGRES.md`](MAILBOX_MEMORY_POSTGRES.md) — persistence i atomowa mutacja Case.
++4. [`SIGNAL_RUNTIME_OPERATOR.md`](SIGNAL_RUNTIME_OPERATOR.md) — operacje signal runtime.
++5. [`PACKAGING_AND_SECRETS.md`](PACKAGING_AND_SECRETS.md) — pakowanie i sekrety.
+ 
+-## Aktywne runbooki (krótki zestaw)
++## Aktywne runbooki
+ 
+-| Obszar              | Pliki                                                                                                                                                                        |
+-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+-| Proof / stan        | [`LAST_PROVEN_STATE.md`](LAST_PROVEN_STATE.md)                                                                                                                               |
+-| CEL / signal-active | [`SIGNAL_ACTIVE_ONLY.md`](SIGNAL_ACTIVE_ONLY.md)                                                                                                                             |
+-| Agent ingest        | [`AGENT_INGEST_SIGNAL_BATCH.md`](AGENT_INGEST_SIGNAL_BATCH.md) — bounded Gmail → signal-active + agent + feed (local Docker)                                                 |
+-| Produkcja           | [`CANONICAL_PRODUCTION_RUNTIME_AND_OPERATIONS.md`](CANONICAL_PRODUCTION_RUNTIME_AND_OPERATIONS.md), [`SIGNAL_RUNTIME_OPERATOR.md`](SIGNAL_RUNTIME_OPERATOR.md)               |
+-| Release / Gate      | [`RELEASE_GATE_V2_1.md`](RELEASE_GATE_V2_1.md), [`GATE_B_OPERATOR_CHECKLIST_A2.md`](GATE_B_OPERATOR_CHECKLIST_A2.md), [`PACKAGING_AND_SECRETS.md`](PACKAGING_AND_SECRETS.md) |
+-| Mailbox / bridge    | [`MAILBOX_MEMORY_POSTGRES.md`](MAILBOX_MEMORY_POSTGRES.md), [`../../README-DASZEK.md`](../../README-DASZEK.md) §10                                                           |
+-| Agent continuity    | [`AGENT_SESSION_CONTINUITY.md`](AGENT_SESSION_CONTINUITY.md)                                                                                                                 |
++| Plik | Rola |
++| --- | --- |
++| [`LAST_PROVEN_STATE.md`](LAST_PROVEN_STATE.md) | proof authority, freeze i aktualne limity |
++| [`SIGNAL_ACTIVE_ONLY.md`](SIGNAL_ACTIVE_ONLY.md) | active-only spine, bridge i lokalny rebuild |
++| [`SIGNAL_RUNTIME_OPERATOR.md`](SIGNAL_RUNTIME_OPERATOR.md) | uruchamianie i diagnostyka workera |
++| [`MAILBOX_MEMORY_POSTGRES.md`](MAILBOX_MEMORY_POSTGRES.md) | Postgres SoT, atomowość i concurrency |
++| [`GMAIL_AGENT_DAILY_OPS.md`](GMAIL_AGENT_DAILY_OPS.md) | lokalna rutyna operacyjna; VPS zawieszony |
++| [`PACKAGING_AND_SECRETS.md`](PACKAGING_AND_SECRETS.md) | bezpieczny packaging |
+ 
+-Runbooki = procedury. Mapa kodu: [`../core/truth_flow.md`](../core/truth_flow.md). Proof snapshot: [`LAST_PROVEN_STATE.md`](LAST_PROVEN_STATE.md).
++## Zasady higieny
+ 
+-## Zarchiwizowane runbooki
++- Nie odtwarzaj usuniętych archiwów, proof-packów i handoffów w aktywnym indeksie.
++- Nie linkuj do nieistniejących `archive/`, `truth_flow.md`, dawnych checklist Gate ani historycznych cutoverów.
++- Wyniki testów i claimy runtime umieszczaj wyłącznie w LPS.
++- Po zmianie procedury aktualizuj właściwy runbook, nie twórz nowego dokumentu o tej samej roli.
+ 
+-Pełna treść w [`../archive/runbooks/`](../archive/runbooks/). Indeks: [`../archive/README.md`](../archive/README.md).
+-
+-| Plik                                                                                             | Uwaga                                |
+-| ------------------------------------------------------------------------------------------------ | ------------------------------------ |
+-| [`CEL_WORKFLOW_LIVE_VERIFICATION.md`](../archive/runbooks/CEL_WORKFLOW_LIVE_VERIFICATION.md)     | CLOSED 2026-06-02 — dowód w LPS      |
+-| [`EPIK4_SKRZAT_CEL_READINESS.md`](../archive/runbooks/EPIK4_SKRZAT_CEL_READINESS.md)             | done w repo                          |
+-| [`EPIK5_LEGACY_DEPRECATION.md`](../archive/runbooks/EPIK5_LEGACY_DEPRECATION.md)                 | done w repo                          |
+-| [`CONTEXT_PROJECTION_BOUNDED_PROOF.md`](../archive/runbooks/CONTEXT_PROJECTION_BOUNDED_PROOF.md) | zastąpione przez CEL live proof      |
+-| [`TARGET_WORKFLOW_LOCAL_DEV.md`](../archive/runbooks/TARGET_WORKFLOW_LOCAL_DEV.md)               | duplikat `SIGNAL_ACTIVE_ONLY.md`     |
+-| [`GMAIL_AGENT_24H_SOAK_EVENT.md`](../archive/runbooks/GMAIL_AGENT_24H_SOAK_EVENT.md)             | historyczny (shadow mode)            |
+-| [`DOCUMENT_PARSE_STACK.md`](../archive/runbooks/DOCUMENT_PARSE_STACK.md)                         | implementacja done — szczegóły w LPS |
++Mapa systemu: [`../core/PROJECT_README.md`](../core/PROJECT_README.md).  
++Zasady nadrzędne: [`../core/CONSTITUTION_V2_1.md`](../core/CONSTITUTION_V2_1.md).
+--- a/gmail-agent/docs/runbooks/SIGNAL_ACTIVE_ONLY.md
++++ b/gmail-agent/docs/runbooks/SIGNAL_ACTIVE_ONLY.md
+@@ -1,22 +1,23 @@
+ # gmail-agent — wyłącznie signal-active
+ 
+-**Status:** obowiązująca decyzja operatora (2026-06-02)
+-**Kanon produktu:** [`docs/core/TARGET_PRODUCT_WORKFLOW.md`](../core/TARGET_PRODUCT_WORKFLOW.md)
++**Status:** obowiązujący kontrakt runtime  
++**Ostatni przegląd:** 2026-07-13
+ 
+----
+-
+-## Jedna zasada
+-
+-gmail-agent **nie ma** trybu legacy, shadow ani `SIGNAL_RUNTIME_COMPAT`.
+-Jedyna ścieżka Gmail:
++## Jedna ścieżka Gmail
+ 
+ ```text
+-signal-worker | signal-run → process_snapshot → SignalJournal → reconcile_signal → shared downstream → return
++signal-worker | signal-run
++→ RawObservation / CanonicalSignal
++→ SignalJournal
++→ reconcile_signal
++→ shared downstream
++→ trwały stan Node B
++→ operational feed
+ ```
+ 
+----
++`legacy`, `shadow` oraz `SIGNAL_RUNTIME_COMPAT` nie są wspieranymi alternatywami dla `process_snapshot`. Nie przywracaj ich bez jawnej decyzji architektonicznej.
+ 
+-## Env (minimum)
++## Minimalny profil
+ 
+ ```env
+ SIGNAL_RUNTIME_MODE=active
+@@ -25,82 +26,68 @@
+ GMAIL_CHANGE_DETECTION_ENABLED=1
+ INTAKE_LLM_BEFORE_SIGNAL=0
+ MAILBOX_MEMORY_DATABASE_URL=postgresql://...
+-EVENT_SPINE_PROCESSOR_ENABLED=0
+ DASZEK_V2_PUSH=0
+ ```
+ 
+-`INTAKE_LLM_BEFORE_SIGNAL=0` (domyślnie): **signal → journal → reconcile** bez intake LLM na wejściu (Epik 2).
+-Ustaw `1` tylko do smoke Gate B / porównania z dawnym porządkiem.
++Nie kopiuj wartości sekretów do dokumentacji. `SIGNAL_RUNTIME_MODE` domyślnie pozostaje `active`; wartości historyczne powodują `ConfigError`.
+ 
+-`DASZEK_V2_PUSH=0` + `DASZEK_OPERATIONAL_FEED_AUTO_PUSH=1` (domyślnie przy v2=0): po reconcile worker/intake scala **mailbox memory + projection router overlays** (`ProjectionEnvelope` → `daszek_projection_router`) i POSTuje feed V3 (Epik 3). Ten sam push po `daszek-bridge-drain` (truth-loop). Debounce: `DASZEK_OPERATIONAL_FEED_PUSH_MIN_INTERVAL_SEC` (domyślnie 60s). Ręczny pełny push: `deploy/push_daszek_operational_feed_prod.sh`.
++## Komendy
+ 
+-`SIGNAL_RUNTIME_MODE` można pominąć — domyślnie `active`.
+-Ustawienie `legacy`, `shadow` lub `SIGNAL_RUNTIME_COMPAT=1` → **ConfigError** przy starcie.
++| Cel | Komenda |
++| --- | --- |
++| worker/poll | `python tools/gmail_audit/gmail_intake.py signal-worker` |
++| jednorazowy przebieg | `python tools/gmail_audit/gmail_intake.py signal-run --oneshot --verbose` |
++| replay techniczny | `python tools/gmail_audit/gmail_intake.py signal-replay ...` — tylko na izolowanym rekordzie/proofie |
++| bridge operatora | `python tools/gmail_audit/gmail_intake.py daszek-bridge-drain ...` |
++| doctor | `python tools/gmail_audit/gmail_intake.py doctor --skip-gmail --verbose` |
+ 
+----
++Legacy commands `message`, `period`, `batch`, `shadow-run` nie są ścieżką live Gmail.
+ 
+-## Co uruchamiać
++## Bridge i decyzje
+ 
+-| Cel                | Komenda                                                                   |
+-| ------------------ | ------------------------------------------------------------------------- |
+-| Automat (poll)     | `python tools/gmail_audit/gmail_intake.py signal-worker`                  |
+-| Jednorazowy test   | `python tools/gmail_audit/gmail_intake.py signal-run --oneshot --verbose` |
+-| Feedback operatora | `daszek-bridge-drain` (bez zmian)                                         |
+-| Listy Daszek       | `deploy/push_daszek_operational_feed_prod.sh` (po reconcile)              |
++`daszek-bridge-drain` jest częścią chronionego obiegu decyzji i nie jest „niezmienionym legacy helperem”. Obowiązuje:
+ 
+-**Wyłączone:** `message`, `period`, `batch`, `shadow-run` — CLI odmawia.
++- stabilny `decision_key`/queue identity;
++- auth write routes default-deny;
++- trwały wynik execution przed completion/projection;
++- send/reject replay-safe;
++- retry skutku tylko po `failed_before_execution`;
++- `outcome_unknown` blokuje automatyczny retry;
++- finalny sukces UI dopiero po konwergencji feedu.
+ 
+----
++## Local Docker
+ 
+-## Zdrowie
++Dwa konteksty env:
++
++| Kontekst | Typowy DSN | Źródło env |
++| --- | --- | --- |
++| host dev | `127.0.0.1:54129` | `.env` / jawny `GMAIL_AGENT_ENV_FILE` |
++| kontener | `mailbox-memory-db:5432` | `.env.local-vps` montowany do `/etc/topinstal/gmail-agent.env` |
++
++Wspólny kod Python jest bake’owany zarówno w `gmail-agent-nodeb-api`, jak i `gmail-agent-worker`. Po jego zmianie:
+ 
+ ```powershell
+ cd gmail-agent
+-$env:PYTHONPATH = "tools\gmail_audit"
+-python tools/gmail_audit/scripts/cel_env_audit.py
+-python tools/gmail_audit/gmail_intake.py doctor --skip-gmail --verbose
+-pytest tools/gmail_audit/tests -q
++docker compose --env-file .env.vps -f docker-compose.local-vps.yml build gmail-agent-nodeb-api gmail-agent-worker
++docker compose --env-file .env.vps -f docker-compose.local-vps.yml --profile api --profile worker up -d --force-recreate gmail-agent-nodeb-api gmail-agent-worker
+ ```
+ 
+-`cel_env_audit.py` porównuje **efektywne** `load_settings()` z tabelą CEL (nie zastępuje secrect review `.env`).
++Następnie wykonaj host/container parity, health, restart count i workspace gate.
+ 
+----
+-
+-## Lokalny serwer (Docker Desktop — bez VPS)
+-
+-Masz **dwa** pliki env (nie mylić):
+-
+-| Plik                     | Kto go czyta                                                 | Rola                                                                      |
+-| ------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------------------- |
+-| `tools/gmail_audit/.env` | `load_settings` na hoście (IDE, `signal-run`, pytest)        | Postgres zwykle `127.0.0.1:54129` (`MAILBOX_MEMORY_PG_PORT` w `.env.vps`) |
+-| `.env.local-vps`         | montowany w kontenerze jako `/etc/topinstal/gmail-agent.env` | Postgres `mailbox-memory-db:5432` (sieć Docker)                           |
+-
+-Compose (hasła/porty/komenda workera): `.env.vps` + `docker-compose.local-vps.yml`.
+-
+-**Sieci (2026-06-03):** `gmail-agent-worker` i `gmail-agent-nodeb-api` — `default` + external `mailbox-memory` (`gmail-agent-mailbox-memory_default`); API dodatkowo volume `gmail-agent-blobs` (verify parse w kontenerze API). LPS §Local infra closure.
+-
+-**Synchronizacja repo → lokalny serwer (na koniec zmian):**
++## Kontrole
+ 
+ ```powershell
+-cd gmail-agent
+-# 1) Ten sam blok CEL w obu plikach aplikacji (patrz .env.example § CEL)
+-# 2) Zbuduj / przeładuj worker
+-docker compose --env-file .env.vps -f docker-compose.local-vps.yml build gmail-agent-worker
+-docker compose --env-file .env.vps -f docker-compose.local-vps.yml --profile worker up -d --force-recreate gmail-agent-worker
+-# 3) Weryfikacja
+-$env:PYTHONPATH = "tools\gmail_audit"
+-python tools/gmail_audit/scripts/cel_env_audit.py
+-docker compose --env-file .env.vps -f docker-compose.local-vps.yml --profile worker run --rm gmail-agent-worker python tools/gmail_audit/gmail_intake.py doctor --skip-gmail --verbose
++python -m compileall tools/gmail_audit scripts -q
++python -m pytest tools/gmail_audit/tests -q --tb=line
++python tools/gmail_audit/gmail_intake.py doctor --skip-gmail --verbose
+ ```
+ 
+-Upewnij się, że w `.env.vps` jest:
++Pełny stan proof: [`LAST_PROVEN_STATE.md`](LAST_PROVEN_STATE.md).
+ 
+-`GMAIL_AGENT_WORKER_COMMAND=python tools/gmail_audit/gmail_intake.py signal-worker --loop --verbose`
++## Zakazy
+ 
+----
+-
+-## Czego nie czytać na start
+-
+-- Stare proofy VPS / shadow soak w `LAST_PROVEN_STATE.md` → **historical**
+-- `truth_flow.md` sekcje „legacy vs signal” → architektura historyczna; runtime = tylko active
+-- Checklista CEL migration → zamknięta; operacje = **ten plik**
++- brak realnego replayu wiadomości operatora bez izolacji;
++- brak automatycznego retry `outcome_unknown`;
++- brak `docker cp` jako finalnego deploymentu;
++- brak VPS/prod operacji bez explicit operator resume;
++- brak drugiego intake/reconcile obok signal-active.

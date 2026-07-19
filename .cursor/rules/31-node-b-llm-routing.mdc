@@ -1,0 +1,33 @@
+---
+description: "Node B LLM routing for gmail-agent: structured fallback vs alternation, env ownership, VPS rebuild rule. Use when editing tools/gmail_audit LLM config, groq_client, llm_provider_router, or VPS .env."
+alwaysApply: false
+globs: tools/gmail_audit/config.py,tools/gmail_audit/groq_client.py,tools/gmail_audit/llm_provider_router.py,tools/gmail_audit/.env.example,tools/gmail_audit/gmail_intake.py,tools/gmail_audit/tests/test_llm_provider_fallback.py
+---
+
+# Node B LLM routing (gmail-agent)
+
+## Where settings live
+
+- **Application LLM + Google + Daszek secrets:** `tools/gmail_audit/.env` (in container: `/app/tools/gmail_audit/.env`, often read-only mount from VPS host).
+- **Compose / DB / ports:** repo root `.env.vps` on the VPS — not a substitute for `tools/gmail_audit/.env`.
+
+## Two structured-stage modes (mutually exclusive behavior per call)
+
+1. **Primary + fallback (default when alternation is off)**
+   `LLM_PRIMARY_PROVIDER`, `LLM_FALLBACK_PROVIDERS` (e.g. `groq` + `cerebras`). Router tries primary; on **retryable** errors only, tries fallbacks (429, 402, 404/408, 5xx, timeout, network — not 401/403). Telemetry: `llm_provider_attempts`, `llm_fallback_used`, `llm_fallback_reason`, etc. Implementation: `llm_provider_router.py`, `_structured_providers` in `groq_client.py`.
+
+2. **Strict alternation (default when both keys configured)**
+   `LLM_STRUCTURED_PROVIDER_ALTERNATION` defaults to **on** when `LLM_BACKEND=groq` and Groq + Cerebras credentials are present (`=0` to disable). First slot per `stage_name` alternates `groq` / `cerebras`; `LLM_PRIMARY_PROVIDER` and `LLM_FALLBACK_PROVIDERS` still append to the chain and apply on retryable failures. Telemetry: `llm_structured_provider_alternation`, `llm_alternation_index`, `llm_alternation_slot`. If config is incomplete, `load_settings` forces the flag off and adds `config_warnings`.
+
+## Out of scope
+
+- `request_audit()` / Groq Gmail connector: Groq-only when `LLM_BACKEND=groq` — no alternation/fallback MVP there.
+- Embeddings, Google APIs, Daszek bridge, policy, outbound actions: unchanged by these switches.
+
+## VPS / worker
+
+- Worker image **bakes** `tools/gmail_audit` sources. After changing Python, **rebuild and recreate** `gmail-agent-worker` before claiming runtime parity (`docker-compose.vps.yml`, profile `worker`). See `docs/runbooks/CANONICAL_PRODUCTION_RUNTIME_AND_OPERATIONS.md` and `cursor_vps_codex_style_runbook.md`.
+
+## Tests
+
+- `python -m pytest tools/gmail_audit/tests/test_llm_provider_fallback.py tools/gmail_audit/tests/test_llm_backend_settings.py -q`

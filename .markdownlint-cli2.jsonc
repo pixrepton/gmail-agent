@@ -1,0 +1,19 @@
+{
+  "config": {
+    "default": true,
+    "MD013": false,
+    "MD033": false,
+    "MD036": false,
+    "MD038": false,
+    "MD041": false,
+    "MD060": false,
+    "MD029": false
+  },
+  "globs": ["docs/**/*.md"],
+  "ignores": [
+    "docs/_audit/**",
+    "docs/archive/**",
+    "docs/proof-packs/**",
+    "docs/archive/reference/tekst1.md"
+  ]
+}

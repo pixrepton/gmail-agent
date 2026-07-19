@@ -1,0 +1,60 @@
+{
+  "preclassification_lane": "intake_llm",
+  "intake": {
+    "business_area": "sales",
+    "case_family": "lead_opportunity",
+    "primary_signal_code": "post_offer_question",
+    "primary_signal_name": "Post-offer question",
+    "decision_action": "create_task",
+    "action_rationale": "Customer asks a concrete follow-up question after the offer.",
+    "priority": "medium",
+    "reason": "Post-offer follow-up should stay actionable for the operator.",
+    "review_required": false,
+    "review_flags": [],
+    "confidence": {
+      "signal_confidence": 0.84,
+      "case_link_confidence": 0.22,
+      "decision_confidence": 0.8,
+      "extraction_confidence": 0.7
+    },
+    "state_detected": "post_offer",
+    "is_new_case": false
+  },
+  "expected_case_link": {
+    "decision": "weak_link",
+    "selected_case_key": "thread:offer-thread-000"
+  },
+  "business_reasoning": {
+    "business_interpretation": "Customer asks a practical clarification question after seeing an offer.",
+    "business_area": "lead",
+    "customer_state_guess": "post_offer",
+    "recommended_next_action": "reply",
+    "recommended_action_reason": "A clear operator reply can move the customer forward.",
+    "missing_information": ["decision timing"],
+    "risks": [],
+    "urgency": "normal",
+    "operator_note": "Reply with a precise clarification and invite the customer to confirm the next step.",
+    "confidence": {
+      "business_confidence": 0.82,
+      "action_confidence": 0.79
+    }
+  },
+  "reply_draft": {
+    "draft_enabled": true,
+    "drafts": [
+      {
+        "variant": "customer_friendly",
+        "subject_suggestion": "Re: Pytanie po ofercie",
+        "body": "Dzien dobry, dziekujemy za pytanie. Sprawdzimy, czy bufor jest uwzgledniony w aktualnej ofercie i wrocimy z potwierdzeniem oraz kolejnym krokiem.",
+        "goal": "clarify_offer_question"
+      }
+    ],
+    "do_not_send_reasons": [],
+    "confidence": 0.74
+  },
+  "action_plan": {
+    "primary_action": "prepare_reply",
+    "daszek_projection_mode": "task",
+    "safe_for_live_push": false
+  }
+}

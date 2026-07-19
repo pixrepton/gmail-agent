@@ -1,0 +1,35 @@
+# Canonical Postgres for Mailbox Memory v1 (gmail-agent).
+# Usage:
+#   cp .env.mailbox-memory.example .env.mailbox-memory
+#   # replace the placeholder password
+#   docker compose --env-file .env.mailbox-memory -f docker-compose.mailbox-memory.yml up -d
+#
+# See: docs/archive/mailbox-memory/README.md (hub) and docs/runbooks/MAILBOX_MEMORY_POSTGRES.md
+
+name: gmail-agent-mailbox-memory
+
+services:
+  mailbox-memory-db:
+    image: pgvector/pgvector:pg16
+    container_name: ${MAILBOX_MEMORY_CONTAINER_NAME:-gmail-agent-mailbox-memory}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${MAILBOX_MEMORY_POSTGRES_DB:-mailbox_memory}
+      POSTGRES_USER: ${MAILBOX_MEMORY_POSTGRES_USER:-mailbox_memory}
+      POSTGRES_PASSWORD: ${MAILBOX_MEMORY_POSTGRES_PASSWORD:?MAILBOX_MEMORY_POSTGRES_PASSWORD must be set in .env.mailbox-memory}
+    ports:
+      - "${MAILBOX_MEMORY_PG_PORT:-54129}:5432"
+    volumes:
+      - mailbox-memory-pgdata:/var/lib/postgresql/data
+      # First-time volume only: ensures `vector` exists without manual psql on fresh bring-up.
+      - ./scripts/init-mailbox-memory-pgvector.sql:/docker-entrypoint-initdb.d/01-pgvector.sql:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${MAILBOX_MEMORY_POSTGRES_USER:-mailbox_memory} -d ${MAILBOX_MEMORY_POSTGRES_DB:-mailbox_memory}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  mailbox-memory-pgdata:
+    name: gmail-agent-mailbox-memory-pgdata

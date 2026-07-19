@@ -1,0 +1,45 @@
+name: daszek-static
+
+on:
+  push:
+    paths:
+      - "tools/gmail_audit/tests/test_daszek_v3_*.py"
+      - "tools/gmail_audit/tests/test_agent_hitl_bridge.py"
+      - "tools/gmail_audit/daszek_bridge_queue_drain.py"
+      - "tools/gmail_audit/agent_hitl_bridge.py"
+      - "tools/gmail_audit/daszek_client.py"
+      - "tools/gmail_audit/api_app.py"
+      - "tools/gmail_audit/signal_worker.py"
+      - "tools/gmail_audit/v2_runtime.py"
+      - "tools/gmail_audit/gmail_intake.py"
+      - "tools/gmail_audit/config.py"
+      - "tools/gmail_audit/scripts/daszek_local_133_proof.py"
+      - "deploy/docker-compose.daszek-local.yml"
+      - "deploy/.env.daszek-local.example"
+      - ".github/workflows/daszek-static.yml"
+  pull_request:
+    paths:
+      - "tools/gmail_audit/**"
+      - "deploy/docker-compose.daszek-local.yml"
+      - "deploy/.env.daszek-local.example"
+      - ".github/workflows/daszek-static.yml"
+
+jobs:
+  daszek-static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Pytest Daszek surface + fixtures + HITL
+        working-directory: tools/gmail_audit
+        run: |
+          python -m pytest \
+            tests/test_daszek_v3_surface_static.py \
+            tests/test_daszek_v3_fixtures.py \
+            tests/test_agent_hitl_bridge.py \
+            tests/test_daszek_bridge_queue_drain.py \
+            -q

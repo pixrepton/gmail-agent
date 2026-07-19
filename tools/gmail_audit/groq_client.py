@@ -1,0 +1,1595 @@
+"""Minimal HTTP client for Groq Responses API with safer storage and retries."""
+
+from __future__ import annotations
+
+import json
+import random
+import re
+import sys
+import threading
+import time
+from dataclasses import dataclass
+from typing import Any, Callable
+
+import requests
+
+from config import Settings, normalize_google_access_token
+from llm_provider_router import LLMProvider, LLMRouter, LLMRouterError
+from llm_provider_router import classify_provider_error
+from log_config import get_logger
+from redaction import sanitize_for_storage, sanitize_text
+
+logger = get_logger(__name__)
+
+
+def _unconfigured_structured_provider(
+    *,
+    provider: str,
+    backend: str,
+    model: str,
+    missing_config: str,
+) -> LLMProvider:
+    def _noop_call() -> tuple[dict[str, Any], dict[str, Any]]:
+        return {}, {}
+
+    return LLMProvider(
+        provider=provider,
+        backend=backend,
+        model=model,
+        call=_noop_call,
+        configured=False,
+        missing_config=missing_config,
+    )
+
+
+IMPORTANT_MAILS_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "summary": {"type": "string"},
+            "category": {"type": "string"},
+            "priority": {"type": "string", "enum": ["low", "medium", "high"]},
+            "why_important": {"type": "string"},
+            "sender": {"type": "string"},
+            "subject": {"type": "string"},
+            "date": {"type": "string"},
+        },
+        "required": ["title", "summary", "category", "priority", "why_important"],
+        "additionalProperties": False,
+    },
+}
+
+RETRYABLE_HTTP_STATUSES = {408, 424, 429, 500, 502, 503, 504}
+_RUNTIME_COOLDOWNS: dict[int, float] = {}
+_RUNTIME_THROTTLE_LEVELS: dict[int, int] = {}
+_STRUCTURED_ALT_SEQ = 0
+_STRUCTURED_ALT_LOCK = threading.Lock()
+_STAGE_ALT_SLOTS: dict[str, tuple[int, str]] = {}
+_INTAKE_PIPELINE_STAGES = frozenset({"signal_extraction", "intake_reasoning", "intake_second_pass"})
+
+
+def reset_structured_alternation_counter_for_tests() -> None:
+    """Reset process-local structured LLM alternation counter (tests only)."""
+
+    global _STRUCTURED_ALT_SEQ
+    with _STRUCTURED_ALT_LOCK:
+        _STRUCTURED_ALT_SEQ = 0
+        _STAGE_ALT_SLOTS.clear()
+
+
+def reset_structured_alternation_stage_slots_for_message() -> None:
+    """Clear per-stage slot cache so each mail gets a fresh pipeline assignment."""
+
+    with _STRUCTURED_ALT_LOCK:
+        _STAGE_ALT_SLOTS.clear()
+
+
+def _alternation_stage_key(stage_name: str | None) -> str:
+    key = str(stage_name or "").strip()
+    if key in _INTAKE_PIPELINE_STAGES:
+        return "intake_pipeline"
+    return key
+
+
+def _alternation_slot_for_stage(stage_name: str | None) -> tuple[int, str]:
+    """Reserve one groq/cerebras slot per stage; reuse across input variants.
+
+    Intake-related stages share ``intake_pipeline`` so signal extraction does not
+    steal Groq before ``intake_reasoning``. Calls without ``stage_name`` still bump
+    per request (legacy direct callers).
+    """
+    key = _alternation_stage_key(stage_name)
+    with _STRUCTURED_ALT_LOCK:
+        if key and key in _STAGE_ALT_SLOTS:
+            return _STAGE_ALT_SLOTS[key]
+        global _STRUCTURED_ALT_SEQ
+        idx = _STRUCTURED_ALT_SEQ
+        _STRUCTURED_ALT_SEQ += 1
+        slot = "groq" if (idx % 2 == 0) else "cerebras"
+        if key:
+            _STAGE_ALT_SLOTS[key] = (idx, slot)
+        return idx, slot
+
+
+class GroqClientError(RuntimeError):
+    """Raised for transport, API, or response parsing failures."""
+
+    def __init__(self, message: str, *, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.details = details or {}
+
+
+@dataclass(slots=True)
+class GroqResult:
+    text: str
+    response_json: dict[str, Any]
+    request_meta: dict[str, Any]
+
+
+def request_audit(
+    settings: Settings,
+    prompt: str,
+    *,
+    model: str | None = None,
+    json_schema: dict[str, Any] | None = None,
+    verbose: bool = False,
+) -> GroqResult:
+    """Send a single Responses API request with the official Gmail connector."""
+    if getattr(settings, "llm_backend", "groq") == "openai_chat":
+        raise GroqClientError(
+            "Gmail via Groq connector (`request_audit`) requires LLM_BACKEND=groq. "
+            "For LLM_BACKEND=openai_chat use --gmail-source google_api (direct Gmail API)."
+        )
+    from gmail_auth import GoogleOAuthError, build_google_auth_report, resolve_google_access_token
+
+    try:
+        access_token = resolve_google_access_token(
+            settings,
+            force_refresh=False,
+        )
+    except GoogleOAuthError as exc:
+        raise GroqClientError(sanitize_text(str(exc))) from exc
+
+    if verbose:
+        debug_report = build_google_auth_report(settings)
+        debug_report["connector_authorization_format"] = "raw_access_token"
+        print(
+            "[google-auth] "
+            + json.dumps(debug_report, ensure_ascii=False),
+            file=sys.stderr,
+            flush=True,
+        )
+
+    payload: dict[str, Any] = {
+        "model": model or settings.groq_model,
+        "input": prompt,
+        "tools": [_gmail_connector_tool(access_token)],
+    }
+
+    # Groq currently rejects json_schema mode when combined with tool/MCP calling.
+    _ = json_schema
+
+    response_json, request_meta = _post_responses_payload(settings, payload)
+    return _build_result(response_json, verbose=verbose, request_meta=request_meta)
+
+
+def request_structured_output(
+    settings: Settings,
+    instructions: str,
+    input_data: str | list[dict[str, Any]],
+    *,
+    json_schema: dict[str, Any],
+    schema_name: str = "intake_output_v1",
+    model: str | None = None,
+    verbose: bool = False,
+    input_variants: list[dict[str, Any]] | None = None,
+    stage_name: str | None = None,
+    providers_builder: Callable[[str, Any], list[LLMProvider]] | None = None,
+) -> GroqResult:
+    """Send a schema-guided Responses API request without connector tools.
+
+    ``providers_builder(mode, user_payload)`` replaces the normal named-chain resolution
+    (primary/fallback/alternation) with an explicit provider list rebuilt fresh for each input
+    variant — used by the DeepSeek priority-1 tier (``run_deepseek_structured_stage``) so
+    DeepSeek is never also re-attempted as a member of the pre-existing chain it falls back to,
+    while still degrading through ``input_variants`` like every other provider.
+    """
+    variants = input_variants or [{"mode": "default", "input": input_data, "metadata": {}}]
+    variant_attempts: list[dict[str, Any]] = []
+    degradations: list[dict[str, Any]] = []
+    last_error: GroqClientError | None = None
+
+    for index, variant in enumerate(variants):
+        mode = str(variant.get("mode") or f"variant_{index + 1}")
+        variant_payload = variant.get("input", input_data)
+        try:
+            response_json, request_meta = _post_structured_with_router(
+                settings,
+                instructions=instructions,
+                user_payload=variant_payload,
+                json_schema=json_schema,
+                schema_name=schema_name,
+                model=model,
+                mode=mode,
+                stage_name=stage_name,
+                providers_override=(
+                    providers_builder(mode, variant_payload) if providers_builder is not None else None
+                ),
+            )
+            request_meta["variant_attempts"] = variant_attempts
+            request_meta["degradations"] = degradations
+            request_meta["final_inference_mode"] = mode
+            request_meta["input_metadata"] = sanitize_for_storage(variant.get("metadata") or {})
+            return _build_result(response_json, verbose=verbose, request_meta=request_meta)
+        except GroqClientError as exc:
+            last_error = exc
+            details = dict(getattr(exc, "details", {}) or {})
+            details["input_metadata"] = sanitize_for_storage(variant.get("metadata") or {})
+            variant_attempts.append(
+                {
+                    "mode": mode,
+                    "status": "failed",
+                    "error": sanitize_text(str(exc)),
+                    "details": sanitize_for_storage(details),
+                }
+            )
+            should_degrade = index + 1 < len(variants) and (
+                is_payload_too_large_error_message(str(exc))
+                or is_rate_limit_error_message(str(exc))
+            )
+            if should_degrade:
+                next_mode = str(variants[index + 1].get("mode") or f"variant_{index + 2}")
+                degradations.append(
+                    {
+                        "from_mode": mode,
+                        "to_mode": next_mode,
+                        "reason": "payload_too_large" if is_payload_too_large_error_message(str(exc)) else "throttle_pressure",
+                    }
+                )
+                continue
+            raise
+
+    raise last_error or GroqClientError("Unknown error while calling Groq Responses API.")
+
+
+def run_structured_stage(
+    settings: Settings,
+    *,
+    stage_name: str,
+    instructions: str,
+    prompt_input: dict[str, Any],
+    json_schema: dict[str, Any],
+    schema_name: str,
+    model: str | None = None,
+    verbose: bool = False,
+    input_variants: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Execute a structured stage call and return normalized call telemetry."""
+    started = time.monotonic()
+    serialized_input = json.dumps(prompt_input, indent=2, ensure_ascii=False)
+    result = request_structured_output(
+        settings,
+        instructions,
+        serialized_input,
+        json_schema=json_schema,
+        schema_name=schema_name,
+        model=model,
+        verbose=verbose,
+        input_variants=input_variants,
+        stage_name=stage_name,
+    )
+    latency_ms = int(round((time.monotonic() - started) * 1000))
+    request_meta = sanitize_for_storage(result.request_meta)
+    attempts = int(request_meta.get("attempts_made") or 1)
+    variant_attempts = request_meta.get("variant_attempts") or []
+    fallback_used = bool(variant_attempts) or bool(request_meta.get("degradations")) or bool(request_meta.get("llm_fallback_used"))
+    return {
+        "stage_name": stage_name,
+        "model_name": model or settings.groq_model,
+        "attempt_count": attempts,
+        "latency_ms": latency_ms,
+        "fallback_used": fallback_used,
+        "response_text": result.text,
+        "parse_status": "received",
+        "response_json": sanitize_for_storage(result.response_json),
+        "request_meta": request_meta,
+        "prompt_input": sanitize_for_storage(prompt_input),
+    }
+
+
+def deepseek_configured(settings: Settings) -> bool:
+    """Check if a DeepSeek API key is configured (priority-1 structured-stage provider)."""
+    return bool(str(getattr(settings, "deepseek_api_key", "") or "").strip())
+
+
+def _deepseek_thinking_payload(settings: Settings) -> dict[str, Any]:
+    if not bool(getattr(settings, "deepseek_thinking_enabled", True)):
+        return {}
+    effort = str(getattr(settings, "deepseek_reasoning_effort", "") or "high").strip().lower() or "high"
+    return {"thinking": {"type": "enabled"}, "reasoning_effort": effort}
+
+
+def deepseek_error_allows_fallback(exc: Exception) -> bool:
+    """Return True for DeepSeek provider failures, False for permanent adapter/config bugs."""
+    info = classify_provider_error(exc)
+    if info.retryable:
+        return True
+    text = str(exc).lower()
+    if "invalid request" in text or "unsupported parameter" in text or "tool_choice" in text:
+        return False
+    if "401" in text or "403" in text or "invalid api key" in text or "unauthorized" in text or "forbidden" in text:
+        return True
+    if "empty content" in text or "json" in text and "parse" in text:
+        return True
+    return False
+
+
+def _deepseek_providers(
+    settings: Settings,
+    *,
+    instructions: str,
+    user_payload: Any,
+    schema_name: str,
+    model: str | None,
+    mode: str | None,
+) -> list[LLMProvider]:
+    """Single-provider chain for the DeepSeek priority-1 tier (see run_deepseek_structured_stage)."""
+    provider_model = str(model or getattr(settings, "deepseek_model", "") or "").strip() or "deepseek-v4-flash"
+    deepseek_base_url = str(getattr(settings, "deepseek_base_url", "") or "").strip()
+    deepseek_keys = tuple(getattr(settings, "deepseek_api_keys", ()) or ())
+    if not deepseek_keys and str(getattr(settings, "deepseek_api_key", "") or "").strip():
+        deepseek_keys = (str(settings.deepseek_api_key).strip(),)
+    if not deepseek_keys or not deepseek_base_url:
+        return [
+            _unconfigured_structured_provider(
+                provider="deepseek",
+                backend="openai_compatible",
+                model=provider_model,
+                missing_config="DEEPSEEK_API_KEY",
+            )
+        ]
+    thinking_payload = _deepseek_thinking_payload(settings)
+    providers: list[LLMProvider] = []
+    for key_index, deepseek_api_key in enumerate(deepseek_keys):
+        def call_deepseek(
+            provider_model: str = provider_model,
+            _api_key: str = deepseek_api_key,
+            _key_index: int = key_index,
+        ) -> tuple[dict[str, Any], dict[str, Any]]:
+            synthetic, request_meta = _post_openai_chat_structured(
+                settings,
+                instructions=instructions,
+                user_payload=user_payload,
+                model=provider_model,
+                mode=mode,
+                schema_name=schema_name,
+                base_url=deepseek_base_url,
+                api_key=_api_key,
+                extra_payload=thinking_payload,
+            )
+            request_meta["llm_backend"] = "deepseek"
+            request_meta["llm_api_key_slot"] = _key_index + 1
+            request_meta["llm_deepseek_thinking_enabled"] = bool(thinking_payload)
+            return synthetic, request_meta
+
+        providers.append(
+            LLMProvider(
+                provider="deepseek",
+                backend="openai_compatible",
+                model=provider_model,
+                call=call_deepseek,
+                configured=bool(deepseek_base_url and deepseek_api_key),
+                missing_config="DEEPSEEK_API_KEY",
+            )
+        )
+    return providers
+
+
+def run_deepseek_structured_stage(
+    settings: Settings,
+    *,
+    stage_name: str,
+    instructions: str,
+    prompt_input: dict[str, Any],
+    schema_name: str,
+    model: str | None = None,
+    verbose: bool = False,
+    input_variants: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Priority-1 structured-stage attempt via DeepSeek only.
+
+    Mirrors ``run_structured_stage``'s return shape exactly so callers (central_llm_stage.py)
+    can treat a DeepSeek result identically to a router-chain result. Raises GroqClientError on
+    any failure (including "not configured") — the caller is responsible for falling back to
+    the pre-existing chain, unchanged, exactly as it already does for the Anthropic tier.
+    """
+    started = time.monotonic()
+    serialized_input = json.dumps(prompt_input, indent=2, ensure_ascii=False)
+
+    def _build_deepseek_providers(mode: str, user_payload: Any) -> list[LLMProvider]:
+        return _deepseek_providers(
+            settings,
+            instructions=instructions,
+            user_payload=user_payload,
+            schema_name=schema_name,
+            model=model,
+            mode=mode,
+        )
+
+    result = request_structured_output(
+        settings,
+        instructions,
+        serialized_input,
+        json_schema={},
+        schema_name=schema_name,
+        model=model,
+        verbose=verbose,
+        input_variants=input_variants,
+        stage_name=stage_name,
+        providers_builder=_build_deepseek_providers,
+    )
+    latency_ms = int(round((time.monotonic() - started) * 1000))
+    request_meta = sanitize_for_storage(result.request_meta)
+    attempts = int(request_meta.get("attempts_made") or 1)
+    return {
+        "stage_name": stage_name,
+        "model_name": model or getattr(settings, "deepseek_model", "") or "deepseek-v4-flash",
+        "attempt_count": attempts,
+        "latency_ms": latency_ms,
+        "fallback_used": False,
+        "response_text": result.text,
+        "parse_status": "received",
+        "response_json": sanitize_for_storage(result.response_json),
+        "request_meta": request_meta,
+        "prompt_input": sanitize_for_storage(prompt_input),
+    }
+
+
+def extract_response_text(response_json: dict[str, Any]) -> str:
+    """Extract assistant text from several possible Responses API shapes."""
+    direct = response_json.get("output_text")
+    if isinstance(direct, str) and direct.strip():
+        return direct
+
+    chunks: list[str] = []
+    output = response_json.get("output")
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+
+            if item.get("type") == "message":
+                content = item.get("content")
+                if isinstance(content, list):
+                    for part in content:
+                        if not isinstance(part, dict):
+                            continue
+                        if part.get("type") in {"output_text", "text"}:
+                            text = part.get("text")
+                            if isinstance(text, str):
+                                chunks.append(text)
+                continue
+
+            content = item.get("content")
+            if isinstance(content, str):
+                chunks.append(content)
+
+    return "\n".join(chunk.strip() for chunk in chunks if chunk and chunk.strip()).strip()
+
+
+def extract_mcp_output(response_json: dict[str, Any], *, tool_name: str) -> str:
+    """Return raw output for a specific mcp_call item."""
+    output = response_json.get("output")
+    if not isinstance(output, list):
+        raise GroqClientError("Missing `output` in Groq response.")
+
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") != "mcp_call":
+            continue
+        if str(item.get("name") or "").strip() != tool_name:
+            continue
+        raw = item.get("output")
+        if isinstance(raw, str) and raw.strip():
+            return raw
+
+    raise GroqClientError(f"Missing raw mcp_call output for tool `{tool_name}`.")
+
+
+def parse_important_mails_json(text: str) -> list[dict[str, str]]:
+    """Parse and validate the strict JSON array returned by important-mails."""
+    candidate = extract_json_candidate(text)
+    try:
+        data = json.loads(candidate)
+    except json.JSONDecodeError as exc:
+        raise GroqClientError(f"Model did not return valid JSON: {exc}") from exc
+
+    if not isinstance(data, list):
+        raise GroqClientError("Model returned JSON, but it is not an array of objects.")
+
+    validated: list[dict[str, str]] = []
+    required = {"title", "summary", "category", "priority", "why_important"}
+    optional = {"sender", "subject", "date"}
+    allowed = required | optional
+
+    for index, item in enumerate(data, start=1):
+        if not isinstance(item, dict):
+            raise GroqClientError(f"Element #{index} is not a JSON object.")
+
+        keys = set(item.keys())
+        missing = required - keys
+        extra = keys - allowed
+        if missing:
+            joined = ", ".join(sorted(missing))
+            raise GroqClientError(f"Element #{index} is missing required fields: {joined}.")
+        if extra:
+            joined = ", ".join(sorted(extra))
+            raise GroqClientError(f"Element #{index} contains forbidden fields: {joined}.")
+
+        normalized: dict[str, str] = {}
+        for field in sorted(allowed):
+            if field not in item:
+                continue
+            value = item[field]
+            if not isinstance(value, str):
+                raise GroqClientError(f"Field `{field}` in element #{index} must be a string.")
+            normalized[field] = value.strip()
+
+        if normalized["priority"] not in {"low", "medium", "high"}:
+            raise GroqClientError(
+                f"Field `priority` in element #{index} must be low, medium, or high."
+            )
+
+        validated.append(normalized)
+
+    return validated
+
+
+def summarize_output_types(response_json: dict[str, Any]) -> str:
+    """Return a compact summary of top-level output item types."""
+    output = response_json.get("output")
+    if not isinstance(output, list):
+        return ""
+
+    types: list[str] = []
+    for item in output:
+        if isinstance(item, dict):
+            item_type = item.get("type")
+            if isinstance(item_type, str):
+                types.append(item_type)
+    return ", ".join(types)
+
+
+def extract_json_candidate(text: str) -> str:
+    """Extract the most likely JSON object or array from raw model text."""
+    stripped = _strip_markdown_fences(text).strip()
+    if not stripped:
+        return stripped
+
+    if stripped[0] in "[{":
+        fragment = _extract_balanced_json_fragment(stripped, 0)
+        return fragment or stripped
+
+    starts = [index for index in (stripped.find("{"), stripped.find("[")) if index >= 0]
+    if not starts:
+        return stripped
+
+    for start in sorted(starts):
+        fragment = _extract_balanced_json_fragment(stripped, start)
+        if fragment:
+            return fragment
+
+    return stripped[min(starts):].strip()
+
+
+def is_auth_error_message(message: str) -> bool:
+    """Return True when an error message looks like config/auth failure."""
+    lowered = message.lower()
+    return any(
+        token in lowered
+        for token in (
+            "401 unauthorized",
+            "403 forbidden",
+            "invalid credentials",
+            "token expired",
+            "access token expired",
+            "refresh token",
+            "invalid_grant",
+            "invalid_rapt",
+            "invalid_client",
+            "invalid api key",
+            "missing permissions",
+            "gmail.readonly scope",
+            "google oauth",
+            "token refresh",
+            "csrf",
+            "daszek login failed",
+        )
+    )
+
+
+def is_rate_limit_error_message(message: str) -> bool:
+    """Return True when an error is caused by rate limiting or throttling."""
+    lowered = message.lower()
+    return "429" in lowered or "too many requests" in lowered or "rate limit" in lowered
+
+
+def is_payload_too_large_error_message(message: str) -> bool:
+    """Return True when an error indicates the request payload is too large."""
+    lowered = message.lower()
+    return "413" in lowered or "request too large" in lowered or "reduce your message size" in lowered
+
+
+def format_connector_tool_error(raw_text: str, *, tool_name: str) -> str:
+    """Translate raw connector tool errors into operator-friendly guidance."""
+    message = sanitize_text(raw_text.strip())
+    lowered = message.lower()
+    prefix = f"{tool_name} failed:"
+    if (
+        ("401" in lowered and "invalid credentials" in lowered)
+        or "token expired" in lowered
+        or "access token expired" in lowered
+    ):
+        return (
+            f"{prefix} Gmail access token is invalid or expired. "
+            "Either refresh GOOGLE_ACCESS_TOKEN manually or configure GOOGLE_CLIENT_ID "
+            "and GOOGLE_REFRESH_TOKEN, plus GOOGLE_CLIENT_SECRET when your OAuth client uses one, then rerun "
+            "`python tools/gmail_audit/gmail_intake.py doctor`."
+        )
+    if "missing required authentication credential" in lowered or "unauthorized" in lowered:
+        return (
+            f"{prefix} Gmail access token is missing, invalid, or expired. "
+            "Provide a fresh GOOGLE_ACCESS_TOKEN with gmail.readonly scope or enable refresh-token flow, "
+            "then rerun doctor."
+        )
+    if "403" in lowered:
+        return (
+            f"{prefix} Gmail connector refused access. "
+            "Check that the active Google OAuth token has "
+            "https://www.googleapis.com/auth/gmail.readonly scope."
+        )
+    return f"{prefix} {message}"
+
+
+def _build_result(
+    response_json: dict[str, Any],
+    *,
+    verbose: bool,
+    request_meta: dict[str, Any] | None = None,
+) -> GroqResult:
+    text = extract_response_text(response_json)
+    if not text.strip():
+        output_types = summarize_output_types(response_json)
+        raise GroqClientError(
+            "Groq response does not contain final assistant text. "
+            f"Detected output types: {output_types or 'none'}."
+        )
+
+    if verbose:
+        output_types = summarize_output_types(response_json)
+        if output_types:
+            print(f"[verbose] Response output types: {output_types}", file=sys.stderr, flush=True)
+
+    return GroqResult(
+        text=text,
+        response_json=response_json,
+        request_meta=request_meta or {},
+    )
+
+
+def _post_structured_with_router(
+    settings: Settings,
+    *,
+    instructions: str,
+    user_payload: Any,
+    json_schema: dict[str, Any],
+    schema_name: str,
+    model: str | None,
+    mode: str | None,
+    stage_name: str | None = None,
+    providers_override: list[LLMProvider] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    providers = (
+        providers_override
+        if providers_override is not None
+        else _structured_providers(
+            settings,
+            instructions=instructions,
+            user_payload=user_payload,
+            json_schema=json_schema,
+            schema_name=schema_name,
+            model=model,
+            mode=mode,
+            stage_name=stage_name,
+        )
+    )
+    router = LLMRouter(providers)
+    try:
+        return router.run()
+    except LLMRouterError as exc:
+        raise GroqClientError(str(exc), details=sanitize_for_storage(exc.details)) from exc
+
+
+def _structured_provider_plan(
+    settings: Settings,
+    *,
+    stage_name: str | None = None,
+) -> tuple[list[str], dict[str, Any] | None]:
+    """Return ordered provider names for one structured LLM request.
+
+    When ``llm_structured_provider_alternation`` is enabled, the alternation slot is the
+    first provider for this stage; ``LLM_FALLBACK_PROVIDERS`` still apply on transient
+    failures (429, 5xx, timeout) so structured stages use the same multi-key chain as
+    the agent planner.
+    """
+
+    primary = getattr(settings, "llm_primary_provider", "") or _legacy_primary_provider(settings)
+    fallback_providers = tuple(getattr(settings, "llm_fallback_providers", ()) or ())
+    alt_meta: dict[str, Any] | None = None
+    ordered: tuple[str, ...]
+    if getattr(settings, "llm_structured_provider_alternation", False):
+        idx, slot = _alternation_slot_for_stage(stage_name)
+        alt_meta = {
+            "llm_structured_provider_alternation": True,
+            "llm_alternation_index": idx,
+            "llm_alternation_slot": slot,
+        }
+        ordered = (slot, primary, *fallback_providers)
+    else:
+        ordered = (primary, *fallback_providers)
+    names: list[str] = []
+    for name in ordered:
+        provider = str(name or "").strip().lower()
+        if provider and provider not in names:
+            names.append(provider)
+    return names, alt_meta
+
+
+def _structured_model_for_provider(
+    settings: Settings,
+    provider: str,
+    model: str | None,
+) -> str:
+    """Resolve the model id for one structured provider.
+
+    Callers often pass ``settings.groq_model`` (e.g. ``openai/gpt-oss-120b``). That slug is
+    valid on Groq but returns 404 on Cerebras/NVIDIA — map to each provider's native model env.
+    """
+    explicit = str(model or "").strip()
+    groq_model = str(settings.groq_model or "").strip()
+
+    if provider == "openai_chat":
+        return explicit or groq_model
+
+    native = ""
+    if provider == "groq":
+        # groq_model is backend-context-dependent (settings.groq_model can be resolved from
+        # OPENAI_COMPAT_MODEL when llm_backend=openai_chat — see config.py) and must never be
+        # sent to the real Groq API directly. groq_native_model is always resolved from
+        # GROQ_MODEL regardless of llm_backend, same pattern as cerebras/nvidia below.
+        native = str(getattr(settings, "groq_native_model", "") or "").strip()
+    elif provider == "cerebras":
+        native = str(getattr(settings, "cerebras_model", "") or "").strip()
+    elif provider == "nvidia":
+        native = str(getattr(settings, "nvidia_model", "") or "").strip()
+
+    if explicit and explicit != groq_model and not explicit.startswith("openai/"):
+        return explicit
+    return native or groq_model
+
+
+def _structured_providers(
+    settings: Settings,
+    *,
+    instructions: str,
+    user_payload: Any,
+    json_schema: dict[str, Any],
+    schema_name: str,
+    model: str | None,
+    mode: str | None,
+    stage_name: str | None = None,
+) -> list[LLMProvider]:
+    names, alt_meta = _structured_provider_plan(settings, stage_name=stage_name)
+    providers: list[LLMProvider] = []
+    for provider in names:
+        if provider == "groq":
+            provider_model = _structured_model_for_provider(settings, "groq", model)
+            groq_keys = tuple(getattr(settings, "groq_api_keys", ()) or ())
+            if not groq_keys and str(settings.groq_api_key or "").strip():
+                groq_keys = (str(settings.groq_api_key).strip(),)
+            if not groq_keys:
+                providers.append(
+                    _unconfigured_structured_provider(
+                        provider="groq",
+                        backend="groq_responses",
+                        model=provider_model,
+                        missing_config="GROQ_API_KEY",
+                    )
+                )
+                continue
+            for key_index, groq_key in enumerate(groq_keys):
+                def call_groq(
+                    provider_model: str = provider_model,
+                    _groq_key: str = groq_key,
+                    _key_index: int = key_index,
+                ) -> tuple[dict[str, Any], dict[str, Any]]:
+                    payload: dict[str, Any] = {
+                        "model": provider_model,
+                        "instructions": instructions,
+                        "input": user_payload,
+                        "text": {
+                            "format": {
+                                "type": "json_schema",
+                                "name": schema_name,
+                                "schema": json_schema,
+                            }
+                        },
+                    }
+                    response_json, request_meta = _post_responses_payload(
+                        settings,
+                        payload,
+                        mode=mode,
+                        api_key=_groq_key,
+                    )
+                    request_meta["llm_backend"] = "groq"
+                    request_meta["llm_api_key_slot"] = _key_index + 1
+                    if alt_meta:
+                        request_meta.update(alt_meta)
+                    return response_json, request_meta
+
+                providers.append(
+                    LLMProvider(
+                        provider="groq",
+                        backend="groq_responses",
+                        model=provider_model,
+                        call=call_groq,
+                        configured=bool(groq_key),
+                        missing_config="GROQ_API_KEY",
+                    )
+                )
+            continue
+
+        if provider == "openai_chat":
+            provider_model = _structured_model_for_provider(settings, "openai_chat", model)
+
+            def call_openai_compat(provider_model: str = provider_model) -> tuple[dict[str, Any], dict[str, Any]]:
+                synthetic, request_meta = _post_openai_chat_structured(
+                    settings,
+                    instructions=instructions,
+                    user_payload=user_payload,
+                    model=provider_model,
+                    mode=mode,
+                    schema_name=schema_name,
+                )
+                if alt_meta:
+                    request_meta.update(alt_meta)
+                return synthetic, request_meta
+
+            providers.append(
+                LLMProvider(
+                    provider="openai_chat",
+                    backend="openai_compatible",
+                    model=provider_model,
+                    call=call_openai_compat,
+                    configured=bool(str(settings.openai_compat_base_url or "").strip()),
+                    missing_config="OPENAI_COMPAT_BASE_URL",
+                )
+            )
+            continue
+
+        if provider == "cerebras":
+            provider_model = _structured_model_for_provider(settings, "cerebras", model)
+            cerebras_base_url = str(getattr(settings, "cerebras_base_url", "") or "").strip()
+            cerebras_keys = tuple(getattr(settings, "cerebras_api_keys", ()) or ())
+            if not cerebras_keys and str(getattr(settings, "cerebras_api_key", "") or "").strip():
+                cerebras_keys = (str(settings.cerebras_api_key).strip(),)
+            if not cerebras_keys:
+                providers.append(
+                    _unconfigured_structured_provider(
+                        provider="cerebras",
+                        backend="openai_compatible",
+                        model=provider_model,
+                        missing_config="CEREBRAS_API_KEY",
+                    )
+                )
+                continue
+            for key_index, cerebras_api_key in enumerate(cerebras_keys):
+                def call_cerebras(
+                    provider_model: str = provider_model,
+                    _api_key: str = cerebras_api_key,
+                    _key_index: int = key_index,
+                ) -> tuple[dict[str, Any], dict[str, Any]]:
+                    synthetic, request_meta = _post_openai_chat_structured(
+                        settings,
+                        instructions=instructions,
+                        user_payload=user_payload,
+                        model=provider_model,
+                        mode=mode,
+                        schema_name=schema_name,
+                        base_url=cerebras_base_url,
+                        api_key=_api_key,
+                    )
+                    request_meta["llm_api_key_slot"] = _key_index + 1
+                    if alt_meta:
+                        request_meta.update(alt_meta)
+                    return synthetic, request_meta
+
+                providers.append(
+                    LLMProvider(
+                        provider="cerebras",
+                        backend="openai_compatible",
+                        model=provider_model,
+                        call=call_cerebras,
+                        configured=bool(cerebras_base_url and cerebras_api_key),
+                        missing_config="CEREBRAS_API_KEY",
+                    )
+                )
+            continue
+
+        if provider == "openrouter":
+            provider_model = _structured_model_for_provider(settings, "openai_chat", model)
+            openrouter_base_url = str(getattr(settings, "openrouter_base_url", "") or "").strip()
+            openrouter_model = str(getattr(settings, "openrouter_model", "") or "").strip() or provider_model
+            openrouter_keys = tuple(getattr(settings, "openrouter_api_keys", ()) or ())
+            if not openrouter_keys and str(getattr(settings, "openai_compat_api_key", "") or "").strip():
+                openrouter_keys = (str(settings.openai_compat_api_key).strip(),)
+            if not openrouter_keys:
+                providers.append(
+                    _unconfigured_structured_provider(
+                        provider="openrouter",
+                        backend="openai_compatible",
+                        model=openrouter_model,
+                        missing_config="OPENROUTER_API_KEY",
+                    )
+                )
+                continue
+            for key_index, openrouter_api_key in enumerate(openrouter_keys):
+                def call_openrouter(
+                    provider_model: str = openrouter_model,
+                    _api_key: str = openrouter_api_key,
+                    _key_index: int = key_index,
+                ) -> tuple[dict[str, Any], dict[str, Any]]:
+                    synthetic, request_meta = _post_openai_chat_structured(
+                        settings,
+                        instructions=instructions,
+                        user_payload=user_payload,
+                        model=provider_model,
+                        mode=mode,
+                        schema_name=schema_name,
+                        base_url=openrouter_base_url,
+                        api_key=_api_key,
+                    )
+                    request_meta["llm_api_key_slot"] = _key_index + 1
+                    if alt_meta:
+                        request_meta.update(alt_meta)
+                    return synthetic, request_meta
+
+                providers.append(
+                    LLMProvider(
+                        provider="openrouter",
+                        backend="openai_compatible",
+                        model=openrouter_model,
+                        call=call_openrouter,
+                        configured=bool(openrouter_base_url and openrouter_api_key),
+                        missing_config="OPENROUTER_API_KEY",
+                    )
+                )
+            continue
+
+        if provider == "nvidia":
+            provider_model = _structured_model_for_provider(settings, "nvidia", model)
+            nvidia_base_url = str(getattr(settings, "nvidia_base_url", "") or "").strip()
+            nvidia_keys = tuple(getattr(settings, "nvidia_api_keys", ()) or ())
+            if not nvidia_keys and str(getattr(settings, "nvidia_api_key", "") or "").strip():
+                nvidia_keys = (str(settings.nvidia_api_key).strip(),)
+            if not nvidia_keys:
+                providers.append(
+                    _unconfigured_structured_provider(
+                        provider="nvidia",
+                        backend="openai_compatible",
+                        model=provider_model,
+                        missing_config="NVIDIA_API_KEY",
+                    )
+                )
+                continue
+            for key_index, nvidia_api_key in enumerate(nvidia_keys):
+                def call_nvidia(
+                    provider_model: str = provider_model,
+                    _api_key: str = nvidia_api_key,
+                    _key_index: int = key_index,
+                ) -> tuple[dict[str, Any], dict[str, Any]]:
+                    synthetic, request_meta = _post_openai_chat_structured(
+                        settings,
+                        instructions=instructions,
+                        user_payload=user_payload,
+                        model=provider_model,
+                        mode=mode,
+                        schema_name=schema_name,
+                        base_url=nvidia_base_url,
+                        api_key=_api_key,
+                    )
+                    request_meta["llm_api_key_slot"] = _key_index + 1
+                    if alt_meta:
+                        request_meta.update(alt_meta)
+                    return synthetic, request_meta
+
+                providers.append(
+                    LLMProvider(
+                        provider="nvidia",
+                        backend="openai_compatible",
+                        model=provider_model,
+                        call=call_nvidia,
+                        configured=bool(nvidia_base_url and nvidia_api_key),
+                        missing_config="NVIDIA_API_KEY",
+                    )
+                )
+            continue
+    return providers
+
+
+def _legacy_primary_provider(settings: Settings) -> str:
+    if getattr(settings, "llm_backend", "groq") != "openai_chat":
+        return "groq"
+    base = str(getattr(settings, "openai_compat_base_url", "") or "").lower()
+    if "cerebras.ai" in base:
+        return "cerebras"
+    return "openai_chat"
+
+
+def _synthetic_responses_shape_from_chat_text(content: str) -> dict[str, Any]:
+    """Normalize OpenAI Chat Completions content into a Responses-shaped dict for shared parsing."""
+    return {
+        "output_text": content,
+        "output": [
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": content}],
+            }
+        ],
+    }
+
+
+def _extract_openai_chat_message_text(response_json: dict[str, Any]) -> str:
+    choices = response_json.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise GroqClientError("OpenAI-compatible response missing `choices`.")
+    first = choices[0]
+    if not isinstance(first, dict):
+        raise GroqClientError("OpenAI-compatible response has invalid `choices[0]`.")
+    msg = first.get("message")
+    if not isinstance(msg, dict):
+        raise GroqClientError("OpenAI-compatible response missing `message`.")
+    content = msg.get("content")
+    if isinstance(content, str) and content.strip():
+        return content.strip()
+    raise GroqClientError("OpenAI-compatible response has empty `message.content`.")
+
+
+def _openai_chat_completions_url(base_url: str | None) -> str:
+    raw = (base_url or "").strip().rstrip("/")
+    if not raw:
+        return ""
+    if raw.endswith("/v1"):
+        return f"{raw}/chat/completions"
+    return f"{raw}/v1/chat/completions"
+
+
+def _format_openai_chat_http_error(status_code: int, response_json: dict[str, Any]) -> str:
+    err = response_json.get("error")
+    if isinstance(err, dict):
+        message = sanitize_text(str(err.get("message") or "").strip())
+        err_type = sanitize_text(str(err.get("type") or "").strip())
+        if message:
+            return f"{status_code} OpenAI-compatible API: {message}" + (f" ({err_type})" if err_type else "")
+    return f"{status_code} OpenAI-compatible Chat Completions error."
+
+
+def _post_openai_chat_structured(
+    settings: Settings,
+    *,
+    instructions: str,
+    user_payload: Any,
+    model: str | None,
+    mode: str | None,
+    schema_name: str,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    extra_payload: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """POST Chat Completions and return Responses-compatible JSON for `_build_result`.
+
+    ``extra_payload`` merges additional top-level request fields (e.g. DeepSeek's
+    ``thinking``/``reasoning_effort``) without changing the request shape for existing
+    providers, which never pass it.
+    """
+    if isinstance(user_payload, list):
+        user_content = json.dumps(user_payload, ensure_ascii=False)
+    else:
+        user_content = str(user_payload)
+    system_content = (
+        instructions.strip()
+        + f"\n\nSchema name: {schema_name}. "
+        "Reply with a single JSON value (object or array only). No markdown fences, no text outside JSON."
+    )
+    body: dict[str, Any] = {
+        "model": model or settings.groq_model,
+        "messages": [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_content},
+        ],
+        "temperature": 0,
+        "stream": False,
+    }
+    if extra_payload:
+        body.update(extra_payload)
+    response_json, request_meta = _post_openai_chat_payload(
+        settings,
+        body,
+        mode=mode,
+        base_url=base_url,
+        api_key=api_key,
+    )
+    # DeepSeek thinking mode returns chain-of-thought reasoning in a separate
+    # `reasoning_content` field alongside `content` — only `content` (the final answer) is
+    # ever extracted here, so reasoning never leaks into the structured JSON business output.
+    text = _extract_openai_chat_message_text(response_json)
+    synthetic = _synthetic_responses_shape_from_chat_text(text)
+    return synthetic, request_meta
+
+
+def _post_openai_chat_payload(
+    settings: Settings,
+    body: dict[str, Any],
+    *,
+    mode: str | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    url = _openai_chat_completions_url(base_url) if base_url is not None else settings.openai_chat_completions_url
+    if not url:
+        raise GroqClientError("OPENAI_COMPAT_BASE_URL is not configured.")
+
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    key = (settings.openai_compat_api_key if api_key is None else api_key or "").strip()
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+
+    last_error: GroqClientError | None = None
+    attempts = max(1, settings.http_max_retries)
+    retry_events: list[dict[str, Any]] = []
+    mode_name = mode or "default"
+
+    for attempt in range(1, attempts + 1):
+        _wait_for_runtime_cooldown(settings)
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                json=body,
+                timeout=settings.http_timeout,
+            )
+        except requests.Timeout as exc:
+            last_error = GroqClientError(
+                f"HTTP timeout ({settings.http_timeout}s) while calling OpenAI-compatible chat endpoint.",
+                details={
+                    "mode": mode_name,
+                    "attempt": attempt,
+                    "retry_events": retry_events,
+                },
+            )
+            if attempt >= attempts:
+                raise last_error from exc
+            _sleep_before_retry(settings, attempt, reason="timeout", retry_events=retry_events)
+            continue
+        except requests.RequestException as exc:
+            last_error = GroqClientError(
+                f"Failed to connect to OpenAI-compatible chat endpoint: {sanitize_text(str(exc))}",
+                details={
+                    "mode": mode_name,
+                    "attempt": attempt,
+                    "retry_events": retry_events,
+                },
+            )
+            if attempt >= attempts:
+                raise last_error from exc
+            _sleep_before_retry(settings, attempt, reason="network", retry_events=retry_events)
+            continue
+
+        try:
+            response_json = _parse_http_json(response)
+        except GroqClientError as exc:
+            last_error = exc
+            if response.status_code in RETRYABLE_HTTP_STATUSES and attempt < attempts:
+                if _should_fast_fallback_status(response.status_code):
+                    raise exc
+                _sleep_before_retry(
+                    settings,
+                    attempt,
+                    reason=f"http-{response.status_code}",
+                    response=response,
+                    retry_events=retry_events,
+                )
+                continue
+            raise
+
+        if response.status_code >= 400:
+            message = _format_openai_chat_http_error(response.status_code, response_json)
+            last_error = GroqClientError(
+                message,
+                details={
+                    "mode": mode_name,
+                    "attempt": attempt,
+                    "status_code": response.status_code,
+                    "retry_events": retry_events,
+                },
+            )
+            if _should_fast_fallback_status(response.status_code):
+                raise last_error
+            if _should_retry_status(response.status_code) and attempt < attempts:
+                _sleep_before_retry(
+                    settings,
+                    attempt,
+                    reason=f"http-{response.status_code}",
+                    response=response,
+                    message=message,
+                    retry_events=retry_events,
+                )
+                continue
+            raise last_error
+
+        _decay_runtime_throttle(settings)
+        return response_json, {
+            "mode": mode_name,
+            "attempts_made": attempt,
+            "retry_events": retry_events,
+            "llm_backend": "openai_chat",
+        }
+
+    raise last_error or GroqClientError("Unknown error while calling OpenAI-compatible Chat Completions API.")
+
+
+def _gmail_connector_tool(access_token: str) -> dict[str, Any]:
+    normalized_access_token, _ = normalize_google_access_token(access_token)
+    return {
+        "type": "mcp",
+        "server_label": "Gmail",
+        "server_description": (
+            "Read-only Gmail connector for profiling, searching, and reading mailbox messages. "
+            "Use it to audit mailbox contents safely and never modify email state."
+        ),
+        "connector_id": "connector_gmail",
+        "authorization": normalized_access_token,
+        "require_approval": "never",
+    }
+
+
+def _post_responses_payload(
+    settings: Settings,
+    payload: dict[str, Any],
+    *,
+    mode: str | None = None,
+    api_key: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    key = str(api_key or settings.groq_api_key or "").strip()
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+
+    last_error: GroqClientError | None = None
+    attempts = max(1, settings.http_max_retries)
+    retry_events: list[dict[str, Any]] = []
+    mode_name = mode or "default"
+
+    for attempt in range(1, attempts + 1):
+        _wait_for_runtime_cooldown(settings)
+        try:
+            response = requests.post(
+                settings.responses_url,
+                headers=headers,
+                json=payload,
+                timeout=settings.http_timeout,
+            )
+        except requests.Timeout as exc:
+            last_error = GroqClientError(
+                f"HTTP timeout ({settings.http_timeout}s) while calling Groq.",
+                details={
+                    "mode": mode_name,
+                    "attempt": attempt,
+                    "retry_events": retry_events,
+                },
+            )
+            if attempt >= attempts:
+                raise last_error from exc
+            _sleep_before_retry(settings, attempt, reason="timeout", retry_events=retry_events)
+            continue
+        except requests.RequestException as exc:
+            last_error = GroqClientError(
+                f"Failed to connect to Groq Responses API: {sanitize_text(str(exc))}",
+                details={
+                    "mode": mode_name,
+                    "attempt": attempt,
+                    "retry_events": retry_events,
+                },
+            )
+            if attempt >= attempts:
+                raise last_error from exc
+            _sleep_before_retry(settings, attempt, reason="network", retry_events=retry_events)
+            continue
+
+        try:
+            response_json = _parse_http_json(response)
+        except GroqClientError as exc:
+            last_error = exc
+            if response.status_code in RETRYABLE_HTTP_STATUSES and attempt < attempts:
+                if _should_fast_fallback_status(response.status_code):
+                    raise exc
+                _sleep_before_retry(
+                    settings,
+                    attempt,
+                    reason=f"http-{response.status_code}",
+                    response=response,
+                    retry_events=retry_events,
+                )
+                continue
+            raise
+
+        if response.status_code >= 400:
+            message = _format_api_error(response.status_code, response_json)
+            last_error = GroqClientError(
+                message,
+                details={
+                    "mode": mode_name,
+                    "attempt": attempt,
+                    "status_code": response.status_code,
+                    "retry_events": retry_events,
+                },
+            )
+            if _should_fast_fallback_status(response.status_code):
+                raise last_error
+            if _should_retry_status(response.status_code) and attempt < attempts:
+                _sleep_before_retry(
+                    settings,
+                    attempt,
+                    reason=f"http-{response.status_code}",
+                    response=response,
+                    message=message,
+                    retry_events=retry_events,
+                )
+                continue
+            raise last_error
+
+        _decay_runtime_throttle(settings)
+        return response_json, {
+            "mode": mode_name,
+            "attempts_made": attempt,
+            "retry_events": retry_events,
+        }
+
+    raise last_error or GroqClientError("Unknown error while calling Groq Responses API.")
+
+
+def _parse_http_json(response: requests.Response) -> dict[str, Any]:
+    try:
+        data = response.json()
+    except ValueError as exc:
+        body_preview = sanitize_text(response.text[:500].strip())
+        raise GroqClientError(
+            "Groq returned a response that could not be parsed as JSON. "
+            f"HTTP status: {response.status_code}. Body: {body_preview!r}",
+            details={"status_code": response.status_code},
+        ) from exc
+
+    if not isinstance(data, dict):
+        raise GroqClientError(
+            "Groq returned an unexpected JSON root; expected an object.",
+            details={"status_code": response.status_code},
+        )
+
+    return data
+
+
+def _format_api_error(status_code: int, response_json: dict[str, Any]) -> str:
+    error = response_json.get("error")
+    message = ""
+    error_type = ""
+    error_code = ""
+
+    if isinstance(error, dict):
+        message = sanitize_text(str(error.get("message") or "").strip())
+        error_type = sanitize_text(str(error.get("type") or "").strip())
+        error_code = sanitize_text(str(error.get("code") or "").strip())
+
+    details = " | ".join(part for part in [message, error_type, error_code] if part)
+    suffix = f" Details: {details}" if details else ""
+
+    if status_code == 401:
+        lowered = f"{message} {error_type} {error_code}".lower()
+        if "invalid api key" in lowered or "invalid_api_key" in lowered:
+            return "401 Unauthorized: GROQ_API_KEY was rejected by Groq." + suffix
+        if "invalid credentials" in lowered or "gmail" in lowered or "connector" in lowered:
+            return (
+                "401 Unauthorized: Google OAuth token for the Gmail connector is invalid or expired. "
+                "Refresh GOOGLE_ACCESS_TOKEN manually or configure refresh-token flow, then rerun doctor."
+            ) + suffix
+        return "401 Unauthorized: check GROQ_API_KEY or Google OAuth token validity." + suffix
+    if status_code == 403:
+        return (
+            "403 Forbidden: missing permissions or Google token lacks gmail.readonly scope."
+        ) + suffix
+    if status_code == 424:
+        lowered = f"{message} {error_type} {error_code}".lower()
+        if "401" in lowered and "invalid credentials" in lowered:
+            return (
+                "424 Failed Dependency: Gmail connector could not read the mailbox because "
+                "the active Google OAuth token is invalid or expired."
+            ) + suffix
+        if "403" in lowered:
+            return (
+                "424 Failed Dependency: Gmail connector access was denied. "
+                "Check Google OAuth scope and mailbox permissions."
+            ) + suffix
+        return "424 Failed Dependency: Groq could not execute the Gmail connector call." + suffix
+    if status_code == 429:
+        return "429 Too Many Requests: rate limit or connector quota exceeded." + suffix
+    if status_code >= 500:
+        return f"{status_code} Server Error: Groq or connector-side problem." + suffix
+    return f"{status_code} API Error." + suffix
+
+
+def _sleep_before_retry(
+    settings: Settings,
+    attempt: int,
+    *,
+    reason: str,
+    response: requests.Response | None = None,
+    message: str | None = None,
+    retry_events: list[dict[str, Any]] | None = None,
+) -> None:
+    delay = _compute_retry_delay(settings, attempt, response=response, message=message)
+    delay = min(delay, 600.0)
+    if response is not None and response.status_code == 429:
+        _increase_runtime_throttle(settings, delay)
+    elif reason in {"timeout", "network"}:
+        _increase_runtime_throttle(settings, delay / 2)
+    if retry_events is not None:
+        retry_events.append(
+            {
+                "attempt": attempt,
+                "reason": reason,
+                "delay_seconds": round(delay, 5),
+                "status_code": response.status_code if response is not None else None,
+            }
+        )
+    print(
+        f"[retry] Groq call failed ({reason}). Sleeping {delay:.1f}s before retry {attempt + 1}.",
+        file=sys.stderr,
+        flush=True,
+    )
+    time.sleep(delay)
+
+
+def _compute_retry_delay(
+    settings: Settings,
+    attempt: int,
+    *,
+    response: requests.Response | None = None,
+    message: str | None = None,
+) -> float:
+    retry_after = None
+    if response is not None:
+        header_value = response.headers.get("Retry-After")
+        if header_value:
+            try:
+                retry_after = float(header_value)
+            except ValueError:
+                retry_after = None
+
+    if retry_after is None and message:
+        retry_after = _extract_retry_after_seconds(message)
+
+    if retry_after is not None and retry_after > 0:
+        # Groq may return multi-hour Retry-After; cap so Gate B / sequential ingress can finish.
+        capped = min(float(retry_after), 600.0)
+        return round(max(1.0, capped) + random.uniform(0.1, 0.8), 1)
+
+    exponent = max(0, attempt - 1)
+    base_delay = settings.http_retry_base_delay * (4 ** exponent)
+    return round(base_delay + random.uniform(0.2, base_delay * 0.35 + 0.2), 1)
+
+
+def _extract_retry_after_seconds(message: str) -> float | None:
+    match = re.search(r"try again in ([0-9]+(?:\.[0-9]+)?)s", message, flags=re.IGNORECASE)
+    if not match:
+        return None
+    return float(match.group(1)) + 0.5
+
+
+def _should_retry_status(status_code: int) -> bool:
+    return status_code in RETRYABLE_HTTP_STATUSES
+
+
+def _should_fast_fallback_status(status_code: int) -> bool:
+    """Rate/quota limits: skip long in-provider sleep; let LLMRouter try next provider."""
+    return status_code in {402, 429}
+
+
+def _runtime_key(settings: Settings) -> int:
+    return id(settings)
+
+
+def _wait_for_runtime_cooldown(settings: Settings) -> None:
+    remaining = _RUNTIME_COOLDOWNS.get(_runtime_key(settings), 0.0) - time.monotonic()
+    if remaining > 0:
+        print(
+            f"[cooldown] Groq runtime cooldown active. Sleeping {remaining:.1f}s before next request.",
+            file=sys.stderr,
+            flush=True,
+        )
+        time.sleep(remaining)
+
+
+def _increase_runtime_throttle(settings: Settings, delay: float) -> None:
+    key = _runtime_key(settings)
+    level = min(_RUNTIME_THROTTLE_LEVELS.get(key, 0) + 1, 5)
+    _RUNTIME_THROTTLE_LEVELS[key] = level
+    cooldown = max(delay, settings.http_retry_base_delay * (1 + level * 0.5))
+    _RUNTIME_COOLDOWNS[key] = time.monotonic() + cooldown
+
+
+def _decay_runtime_throttle(settings: Settings) -> None:
+    key = _runtime_key(settings)
+    level = _RUNTIME_THROTTLE_LEVELS.get(key, 0)
+    if level <= 1:
+        _RUNTIME_THROTTLE_LEVELS.pop(key, None)
+        _RUNTIME_COOLDOWNS.pop(key, None)
+        return
+    _RUNTIME_THROTTLE_LEVELS[key] = level - 1
+
+
+def _strip_markdown_fences(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if len(lines) >= 3 and lines[-1].strip() == "```":
+            return "\n".join(lines[1:-1]).strip()
+    return stripped
+
+
+def _extract_balanced_json_fragment(text: str, start_index: int) -> str:
+    opening = text[start_index]
+    if opening not in "{[":
+        return ""
+
+    closing = "}" if opening == "{" else "]"
+    depth = 0
+    in_string = False
+    escape = False
+
+    for index in range(start_index, len(text)):
+        char = text[index]
+
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+            continue
+
+        if char == opening:
+            depth += 1
+        elif char == closing:
+            depth -= 1
+            if depth == 0:
+                return text[start_index:index + 1].strip()
+
+    return ""

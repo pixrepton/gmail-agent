@@ -1,0 +1,21 @@
+[Unit]
+Description=TOP-INSTAL event spine processor (shadow batch, short-lived)
+Documentation=file:///opt/gmail-agent/current/docs/dev/P1_EVENT_SPINE_ACTIVE_PROCESSOR_PLAN.md
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/gmail-agent/current
+EnvironmentFile=-/etc/topinstal/gmail-agent.env
+# Shadow only — never active on production via this unit.
+Environment=EVENT_SPINE_PROCESSOR_ENABLED=1
+Environment=EVENT_SPINE_PROCESSOR_MODE=shadow
+ExecStart=/usr/bin/docker compose --env-file /opt/gmail-agent/current/.env.vps -f /opt/gmail-agent/current/docker-compose.vps.yml exec -T -e EVENT_SPINE_PROCESSOR_ENABLED=1 -e EVENT_SPINE_PROCESSOR_MODE=shadow gmail-agent-worker python tools/gmail_audit/gmail_intake.py event-spine-processor --max-iterations 100 --verbose
+StandardOutput=append:/var/log/topinstal/event-processor.log
+StandardError=append:/var/log/topinstal/event-processor.log
+SyslogIdentifier=topinstal-event-processor
+
+[Install]
+WantedBy=multi-user.target

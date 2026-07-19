@@ -1,0 +1,19 @@
+# Rendered on VPS: deploy/render-nodeb-caddy.sh
+# Exposes Node B read API to trusted hosts (RAG + WordPress) via IP allowlist + Bearer.
+
+{
+	auto_https off
+}
+
+:8443 {
+	@trusted_ip remote_ip {RAG_ALLOW_IP} {WP_ALLOW_IP}
+	@registry_token header Authorization "Bearer {NODE_B_REGISTRY_TOKEN}"
+
+	handle @trusted_ip {
+		reverse_proxy 127.0.0.1:8765
+	}
+	handle @registry_token {
+		reverse_proxy 127.0.0.1:8765
+	}
+	respond "Forbidden" 403
+}

@@ -1,0 +1,17 @@
+// PLACEHOLDER — design-stage bounded ops MCP. Do not enable until Stage 3 just/CLI wrappers are canonical
+// and allowlist promotes this pattern from future → pilot/active.
+// Tools must mirror narrow rows in AGENT_CONTEXT_BUDGET_POLICY.md (doctor, test, bounded reads, etc.).
+// Forbidden: arbitrary shell, secret materialization, superuser Postgres.
+//
+// Example shape only — real server id and command come from implementation PR:
+{
+  "topinstal-ops-readonly": {
+    "command": "...",
+    "args": [
+      "..."
+    ],
+    "env": {}
+  }
+}
+//
+// Provenance: operator | cwd: (local) | updated: YYYY-MM-DD

@@ -1,0 +1,53 @@
+{
+  "preclassification_lane": "intake_llm",
+  "intake": {
+    "business_area": "service",
+    "case_family": "platform_service_security",
+    "primary_signal_code": "service_follow_up",
+    "primary_signal_name": "Service follow-up",
+    "decision_action": "append_to_existing_case",
+    "action_rationale": "Existing service case follow-up should update the current case.",
+    "priority": "high",
+    "reason": "Customer follows up on an existing service case.",
+    "review_required": false,
+    "review_flags": [],
+    "confidence": {
+      "signal_confidence": 0.9,
+      "case_link_confidence": 0.92,
+      "decision_confidence": 0.86,
+      "extraction_confidence": 0.76
+    },
+    "state_detected": "service_follow_up",
+    "is_new_case": false
+  },
+  "expected_case_link": {
+    "decision": "linked",
+    "selected_case_key": "CASE-2026-001"
+  },
+  "business_reasoning": {
+    "business_interpretation": "Active service case follow-up asking for visit confirmation.",
+    "business_area": "service",
+    "customer_state_guess": "active_case",
+    "recommended_next_action": "update_case",
+    "recommended_action_reason": "The customer is continuing an existing service thread.",
+    "missing_information": [],
+    "risks": ["visit_date_needs_confirmation"],
+    "urgency": "normal",
+    "operator_note": "Update the case and confirm the visit window.",
+    "confidence": {
+      "business_confidence": 0.91,
+      "action_confidence": 0.87
+    }
+  },
+  "reply_draft": {
+    "draft_enabled": false,
+    "drafts": [],
+    "do_not_send_reasons": ["update_case_preferred"],
+    "confidence": 0.0
+  },
+  "action_plan": {
+    "primary_action": "update_case",
+    "daszek_projection_mode": "case_update",
+    "safe_for_live_push": false
+  }
+}

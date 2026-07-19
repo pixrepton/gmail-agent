@@ -1,0 +1,30 @@
+{
+  "lead": {
+    "description": "New commercial inquiry or early qualification stage.",
+    "important_signals": ["scope", "address", "floor area", "phone", "timeline"]
+  },
+  "installation": {
+    "description": "Active installation, delivery, or execution coordination.",
+    "important_signals": ["installation date", "site access", "crew coordination", "materials", "handoff"]
+  },
+  "service": {
+    "description": "Service, fault, complaint, or post-install support.",
+    "important_signals": ["fault symptoms", "urgency", "location", "existing customer", "contact phone"]
+  },
+  "finance": {
+    "description": "Invoice, payment, settlement, or payable flow.",
+    "important_signals": ["invoice number", "amount", "payment status", "due date", "counterparty"]
+  },
+  "supplier": {
+    "description": "Supplier, procurement, order, or delivery coordination.",
+    "important_signals": ["order number", "delivery", "availability", "price change", "logistics"]
+  },
+  "admin": {
+    "description": "Low-risk admin or operational support traffic.",
+    "important_signals": ["documents", "confirmation", "scheduling", "reference information"]
+  },
+  "internal": {
+    "description": "Internal coordination or owner-forwarded message requiring operator judgment.",
+    "important_signals": ["forward", "owner note", "handoff", "follow-up", "unclear ask"]
+  }
+}

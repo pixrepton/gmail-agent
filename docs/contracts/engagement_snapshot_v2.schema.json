@@ -1,0 +1,517 @@
+{
+  "$defs": {
+    "ActionItem": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "payload_pl": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Payload Pl"
+        },
+        "disabled_reason_pl": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Disabled Reason Pl"
+        }
+      },
+      "required": [
+        "id",
+        "enabled"
+      ],
+      "title": "ActionItem",
+      "type": "object"
+    },
+    "AgentMemory": {
+      "additionalProperties": false,
+      "properties": {
+        "reasoning_trace": {
+          "items": {
+            "$ref": "#/$defs/ReasoningTraceItem"
+          },
+          "title": "Reasoning Trace",
+          "type": "array"
+        },
+        "tool_calls": {
+          "items": {
+            "$ref": "#/$defs/ToolCallItem"
+          },
+          "title": "Tool Calls",
+          "type": "array"
+        },
+        "constitution_sections_used": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Constitution Sections Used",
+          "type": "array"
+        },
+        "materialize_proposals": {
+          "items": {
+            "$ref": "#/$defs/MaterializeProposalItem"
+          },
+          "title": "Materialize Proposals",
+          "type": "array"
+        }
+      },
+      "title": "AgentMemory",
+      "type": "object"
+    },
+    "CaseUnderstandingProjection": {
+      "additionalProperties": false,
+      "description": "Compact, projection-safe read of case_intelligence_result/understanding_output\nfor the CURRENT turn's signal only (A1). Written atomically with the rest of\nthe snapshot in the same CAS save, so its presence is by construction fresh\nand correlated: graph._ground_current_signal sets it only when a correlated\nUnderstanding was computed for this exact turn's signal, and clears it\n(never leaves it) when that turn had none — see agent_runtime/graph.py.",
+      "properties": {
+        "source_signal_id": {
+          "default": "",
+          "title": "Source Signal Id",
+          "type": "string"
+        },
+        "generated_at": {
+          "default": "",
+          "title": "Generated At",
+          "type": "string"
+        },
+        "essence_pl": {
+          "default": "",
+          "title": "Essence Pl",
+          "type": "string"
+        },
+        "what_changed_pl": {
+          "default": "",
+          "title": "What Changed Pl",
+          "type": "string"
+        },
+        "why_pl": {
+          "default": "",
+          "title": "Why Pl",
+          "type": "string"
+        },
+        "missing_critical_fields": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Missing Critical Fields",
+          "type": "array"
+        },
+        "risks": {
+          "items": {
+            "$ref": "#/$defs/UnderstandingRiskItem"
+          },
+          "title": "Risks",
+          "type": "array"
+        },
+        "recommended_next_step_pl": {
+          "default": "",
+          "title": "Recommended Next Step Pl",
+          "type": "string"
+        }
+      },
+      "title": "CaseUnderstandingProjection",
+      "type": "object"
+    },
+    "GapItem": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "title": "Field",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "blocking",
+            "warning"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "ask_pl": {
+          "title": "Ask Pl",
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "severity",
+        "ask_pl"
+      ],
+      "title": "GapItem",
+      "type": "object"
+    },
+    "HitlGate": {
+      "additionalProperties": false,
+      "properties": {
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "reason": {
+          "default": "",
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "required"
+      ],
+      "title": "HitlGate",
+      "type": "object"
+    },
+    "HvacLocation": {
+      "additionalProperties": false,
+      "properties": {
+        "city": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "City"
+        },
+        "postal_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Postal Code"
+        }
+      },
+      "title": "HvacLocation",
+      "type": "object"
+    },
+    "HvacProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "heated_area_m2": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Heated Area M2"
+        },
+        "location": {
+          "$ref": "#/$defs/HvacLocation"
+        },
+        "building_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Building Type"
+        },
+        "heat_pump_series_hint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Heat Pump Series Hint"
+        },
+        "thermal_demand_kw": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thermal Demand Kw"
+        },
+        "cp2025_eligible": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cp2025 Eligible"
+        }
+      },
+      "title": "HvacProfile",
+      "type": "object"
+    },
+    "MaterializeProposalItem": {
+      "additionalProperties": false,
+      "properties": {
+        "proposal_id": {
+          "title": "Proposal Id",
+          "type": "string"
+        },
+        "proposal_type": {
+          "enum": [
+            "link_existing",
+            "create_case",
+            "create_artifact",
+            "defer_operator",
+            "composite_plan"
+          ],
+          "title": "Proposal Type",
+          "type": "string"
+        },
+        "payload_json": {
+          "additionalProperties": true,
+          "title": "Payload Json",
+          "type": "object"
+        },
+        "status": {
+          "default": "pending",
+          "enum": [
+            "pending",
+            "approved",
+            "rejected"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "proposal_id",
+        "proposal_type"
+      ],
+      "title": "MaterializeProposalItem",
+      "type": "object"
+    },
+    "OperationalStatus": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "enum": [
+            "raw_inquiry",
+            "enriching",
+            "ready_for_quote",
+            "pending_operator",
+            "node_a_error"
+          ],
+          "title": "Code",
+          "type": "string"
+        },
+        "steps_remaining": {
+          "minimum": 0,
+          "title": "Steps Remaining",
+          "type": "integer"
+        },
+        "blocking": {
+          "default": false,
+          "title": "Blocking",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "steps_remaining"
+      ],
+      "title": "OperationalStatus",
+      "type": "object"
+    },
+    "ReasoningTraceItem": {
+      "additionalProperties": false,
+      "properties": {
+        "turn": {
+          "minimum": 0,
+          "title": "Turn",
+          "type": "integer"
+        },
+        "summary_pl": {
+          "default": "",
+          "title": "Summary Pl",
+          "type": "string"
+        }
+      },
+      "required": [
+        "turn"
+      ],
+      "title": "ReasoningTraceItem",
+      "type": "object"
+    },
+    "ToolCallItem": {
+      "additionalProperties": false,
+      "properties": {
+        "tool": {
+          "title": "Tool",
+          "type": "string"
+        },
+        "status": {
+          "default": "idle",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool"
+      ],
+      "title": "ToolCallItem",
+      "type": "object"
+    },
+    "UnderstandingRiskItem": {
+      "additionalProperties": false,
+      "properties": {
+        "risk_type": {
+          "default": "",
+          "title": "Risk Type",
+          "type": "string"
+        },
+        "severity": {
+          "default": "medium",
+          "title": "Severity",
+          "type": "string"
+        },
+        "summary_pl": {
+          "default": "",
+          "title": "Summary Pl",
+          "type": "string"
+        }
+      },
+      "title": "UnderstandingRiskItem",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "engagement_id": {
+      "title": "Engagement Id",
+      "type": "string"
+    },
+    "case_id": {
+      "title": "Case Id",
+      "type": "string"
+    },
+    "version": {
+      "minimum": 1,
+      "title": "Version",
+      "type": "integer"
+    },
+    "signal_id": {
+      "default": "",
+      "title": "Signal Id",
+      "type": "string"
+    },
+    "trace_id": {
+      "default": "",
+      "title": "Trace Id",
+      "type": "string"
+    },
+    "operational_status": {
+      "$ref": "#/$defs/OperationalStatus"
+    },
+    "hvac_profile": {
+      "$ref": "#/$defs/HvacProfile"
+    },
+    "gaps": {
+      "items": {
+        "$ref": "#/$defs/GapItem"
+      },
+      "title": "Gaps",
+      "type": "array"
+    },
+    "agent_memory": {
+      "$ref": "#/$defs/AgentMemory"
+    },
+    "actions": {
+      "items": {
+        "$ref": "#/$defs/ActionItem"
+      },
+      "title": "Actions",
+      "type": "array"
+    },
+    "user_instruction": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "User Instruction"
+    },
+    "hitl_gate": {
+      "$ref": "#/$defs/HitlGate"
+    },
+    "case_kind": {
+      "default": "niezaklasyfikowane",
+      "enum": [
+        "wycena_oferta",
+        "awaria_naprawa",
+        "przeglad_konserwacja",
+        "faktura_sprzedaz",
+        "zapytanie_klienta",
+        "ksiegowosc",
+        "faktura_zakup",
+        "zakupy_materialow",
+        "szkolenie",
+        "inne",
+        "niezaklasyfikowane"
+      ],
+      "title": "Case Kind",
+      "type": "string"
+    },
+    "case_understanding": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CaseUnderstandingProjection"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "engagement_id",
+    "case_id",
+    "version",
+    "operational_status"
+  ],
+  "title": "EngagementSnapshotV2",
+  "type": "object"
+}

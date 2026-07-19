@@ -1,0 +1,14 @@
+{
+  "manifest_version": "v2.1",
+  "release_label": "",
+  "source_label": "",
+  "generated_at_utc": "",
+  "tree_type": "thin_export",
+  "gate_a": {
+    "commands": [],
+    "status": "unknown"
+  },
+  "artifacts": [],
+  "notes": [],
+  "limitations": []
+}

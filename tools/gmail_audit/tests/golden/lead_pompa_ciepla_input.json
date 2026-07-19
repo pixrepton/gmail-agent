@@ -1,0 +1,63 @@
+{
+  "schema_version": "1.0",
+  "source": {
+    "channel": "gmail",
+    "mailbox": "inbox",
+    "observed_at": "2026-07-01T09:00:00+00:00"
+  },
+  "message": {
+    "message_id": "golden-lead-001",
+    "date": "2026-07-01T09:00:00+00:00",
+    "sender": "klient@przyklad.pl",
+    "to": [
+      "sales@topinstal.pl"
+    ],
+    "subject": "Pompa ciepla 12kW",
+    "body": "Dzien dobry, prosze o wycene pompy ciepla o mocy 12kW do domu jednorodzinnego. Pozdrawiam, Jan Kowalski"
+  },
+  "thread": {
+    "thread_id": "t-golden-001",
+    "thread_position": "new_thread",
+    "is_reply_or_forward": false,
+    "thread_summary": ""
+  },
+  "business_area": "",
+  "primary_signal": {
+    "code": "",
+    "name": "",
+    "description": "",
+    "business_significance": ""
+  },
+  "secondary_signals": [],
+  "case_assessment": {
+    "case_family": "",
+    "is_new_case": false,
+    "state_detected": "",
+    "state_change": {
+      "detected": false
+    }
+  },
+  "decision": {
+    "action": "",
+    "action_rationale": ""
+  },
+  "priority": "medium",
+  "confidence": {
+    "signal_confidence": 0.0,
+    "case_link_confidence": 0.0,
+    "decision_confidence": 0.0,
+    "extraction_confidence": 0.0
+  },
+  "review": {
+    "required": false,
+    "flags": []
+  },
+  "reason": "",
+  "extracted_data": {
+    "entities": {},
+    "dates": [],
+    "amounts": [],
+    "references": {},
+    "deadlines": []
+  }
+}

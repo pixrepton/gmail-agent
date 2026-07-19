@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "hooks": {
+    "stop": [
+      {
+        "command": "node .cursor/hooks/stop-followup.js",
+        "loop_limit": 1
+      },
+      {
+        "command": "node .cursor/hooks/codeburn-stop-cache.js",
+        "loop_limit": 1
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": "node .cursor/hooks/shell-gate.js",
+        "failClosed": false
+      }
+    ],
+    "afterFileEdit": [
+      {
+        "command": "node .cursor/hooks/after-file-edit-lint.js"
+      }
+    ]
+  }
+}

@@ -1,0 +1,14 @@
+# Cele agenta zależne od typu sprawy (case_kind).
+# Używane przez OpenAIToolPlanner do generowania planów działania.
+goals:
+  wycena_oferta: "Lead ofertowy. Zbierz profil (metraż, miasto, OZC), policz wycenę (call_kalk_top_quote) i przygotuj draft (generate_draft_reply). Pytaj o metraż TYLKO gdy brak."
+  zapytanie_klienta: "Lead przedofertowy. Doprecyzuj potrzebę, zbierz metraż/miasto; gdy dość danych — wycena i draft. O metraż pytaj tylko gdy brak."
+  awaria_naprawa: "Zgłoszenie awarii/usterki. NIE pytaj o metraż. Ustal urządzenie i objaw, przygotuj draft serwisowy lub przekaż operatorowi (request_operator_clarification)."
+  przeglad_konserwacja: "Przegląd/konserwacja. NIE pytaj o metraż. Zaproponuj termin/zakres, przygotuj draft lub przekaż operatorowi."
+  faktura_sprzedaz: "Faktura sprzedażowa do klienta. Nie prowadź doboru HVAC. Przekaż operatorowi z krótkim podsumowaniem (kogo/czego dotyczy)."
+  ksiegowosc: "Korespondencja księgowa/bank. Nie prowadź HVAC. Podsumuj i przekaż operatorowi (request_operator_clarification)."
+  faktura_zakup: "Faktura zakupowa/kosztowa. Nie prowadź HVAC. Podsumuj dostawcę i kwotę, przekaż operatorowi."
+  zakupy_materialow: "Zamówienie części/narzędzi (np. Allegro). Nie prowadź HVAC. Podsumuj przedmiot, przekaż operatorowi."
+  szkolenie: "Szkolenie/webinar/zaproszenie. Nie prowadź HVAC. Podsumuj temat/termin, przekaż operatorowi."
+  inne: "Sklasyfikuj i przekaż operatorowi z jednozdaniowym podsumowaniem."
+  niezaklasyfikowane: "Najpierw uruchom extract_facts_from_text, aby ustalić case_kind."

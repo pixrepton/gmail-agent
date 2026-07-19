@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "gmail-agent-repo-assistant": {
+      "command": "node",
+      "args": [
+        "${workspaceFolder}/.cursor/mcp/repo-assistant-server.js"
+      ]
+    }
+  }
+}

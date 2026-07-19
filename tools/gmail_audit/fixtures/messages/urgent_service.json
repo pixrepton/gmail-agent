@@ -1,0 +1,15 @@
+{
+  "mailbox": "ops@topinstal.local",
+  "source_message": {
+    "message_id": "fixture-urgent-service-001",
+    "thread_id": "urgent-service-001",
+    "date": "2026-04-01T12:05:00+02:00",
+    "from": "serwis@klient.pl",
+    "to": ["ops@topinstal.local"],
+    "subject": "Pilne: awaria pompy ciepla",
+    "snippet": "Pompa nie grzeje od rana.",
+    "body": "Pilne. Pompa ciepla nie grzeje od rana i dom szybko sie wychladza. Prosze o pilny kontakt dzisiaj. Numer telefonu 600700800.",
+    "labels": ["INBOX"]
+  },
+  "context_messages": []
+}

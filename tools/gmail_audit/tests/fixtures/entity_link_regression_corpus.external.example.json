@@ -1,0 +1,65 @@
+{
+  "schema_version": "entity_link_regression_corpus.v2",
+  "status": "external_anonymized_template",
+  "description": "Template for an operator-approved anonymized production-shaped entity-link cohort. Keep the real cohort outside the repo unless rows are explicitly scrubbed for commit.",
+  "thresholds": {
+    "min_confidence_fuzzy": 0.85,
+    "min_confidence_deterministic": 1.0
+  },
+  "quality_gates": {
+    "cohort_update_procedure": "Review misses with runtime/product owners, anonymize evidence, then update the external cohort or the redacted repo-safe slice.",
+    "owner_engineering": "gmail-agent",
+    "owner_runtime_product": "operator / product owner",
+    "gate_a_status_rule": "Synthetic corpus may stay green while Gate A remains blocked until this cohort exists and thresholds are accepted."
+  },
+  "cases": [
+    {
+      "id": "replace-with-stable-case-id",
+      "cohort": "wrong_link|duplicate|ambiguous|drive_only|media_only|conflict",
+      "harness_kind": "entity_link",
+      "store_fixture": {
+        "cases": [
+          {
+            "case_id": "case-redacted-1",
+            "case_key": "TOP-REDACTED-1",
+            "metadata": {
+              "nip": "0000000000"
+            },
+            "facts": []
+          }
+        ]
+      },
+      "signal_payload": {
+        "signal_kind": "gmail_message_observed",
+        "source_kind": "gmail",
+        "source_ref": {
+          "message_id": "redacted-message-id"
+        },
+        "observed_at": "2026-04-19T10:00:00+02:00",
+        "effective_at": null,
+        "case_key_hint": null,
+        "thread_key_hint": null,
+        "business_lane": "intake_llm",
+        "signal_summary_pl": "Zanonimizowany przypadek kohorty",
+        "payload": {
+          "snapshot": {},
+          "intake_result_final": {
+            "extracted_data": {
+              "references": {}
+            }
+          }
+        },
+        "artifacts": {},
+        "revision_marker": "redacted-revision",
+        "created_by_runtime": "entity-link-template"
+      },
+      "expect": {
+        "link_status": "VERIFIED",
+        "phase": "deterministic",
+        "case_id": "case-redacted-1",
+        "case_key": "TOP-REDACTED-1",
+        "min_confidence": 1.0
+      }
+    }
+  ]
+}

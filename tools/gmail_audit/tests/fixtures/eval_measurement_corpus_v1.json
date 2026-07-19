@@ -1,0 +1,129 @@
+{
+  "schema_version": "eval_measurement_corpus.v1",
+  "cases": [
+    {
+      "case_id": "EVAL-1/DEC-01",
+      "ground_truth": {
+        "extraction": {
+          "required_facts": [
+            {
+              "id": "business_area",
+              "path": "business_area",
+              "expected": "service"
+            },
+            {
+              "id": "case_family",
+              "path": "case_assessment.case_family",
+              "expected": "service_emergency"
+            },
+            {
+              "id": "priority",
+              "path": "priority",
+              "expected": "high"
+            },
+            {
+              "id": "review_required",
+              "path": "review.required",
+              "expected": true
+            }
+          ],
+          "forbidden_hallucinations": [
+            {
+              "id": "visit_scheduled",
+              "term": "umowiona wizyta"
+            },
+            {
+              "id": "fixed_price",
+              "term": "48000 zl"
+            }
+          ],
+          "min_score": 0.8
+        },
+        "understanding": {
+          "dimensions": {
+            "essence": {
+              "must_include": [
+                "awaria",
+                "piec"
+              ]
+            },
+            "customer_intent": {
+              "must_include": [
+                "pomoc serwisowa"
+              ],
+              "aliases": [
+                "serwis"
+              ]
+            },
+            "current_situation_change": {
+              "must_include": [
+                "nie dziala"
+              ]
+            },
+            "gaps": {
+              "must_include": [
+                "model urzadzenia",
+                "adres"
+              ]
+            },
+            "risks": {
+              "must_include": [
+                "pilne"
+              ]
+            },
+            "contradictions": {
+              "must_include": [
+                "brak sprzecznosci"
+              ]
+            },
+            "recommended_next_step": {
+              "must_include": [
+                "eskalacja do operatora",
+                "kontakt serwisowy"
+              ],
+              "must_not_include": [
+                "wyslij klientowi bez zatwierdzenia"
+              ]
+            }
+          },
+          "unsafe_terms": [
+            "wyslij klientowi bez zatwierdzenia",
+            "gwarantujemy"
+          ],
+          "min_score": 0.8
+        },
+        "draft": {
+          "required_facts": [
+            "awaria pieca",
+            "kontakt serwisowy"
+          ],
+          "missing_required_information": [
+            "model urzadzenia",
+            "adres"
+          ],
+          "relevance_terms": [
+            "serwis",
+            "awaria"
+          ],
+          "forbidden_claims": [
+            {
+              "id": "visit_scheduled",
+              "term": "umowiona wizyta"
+            },
+            {
+              "id": "fixed_price",
+              "term": "48000 zl"
+            }
+          ],
+          "unsafe_terms": [
+            "gwarantujemy",
+            "jutro zamontujemy"
+          ],
+          "requires_operator_approval": true,
+          "operator_edit_required": false,
+          "min_score": 0.8
+        }
+      }
+    }
+  ]
+}

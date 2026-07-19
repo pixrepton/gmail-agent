@@ -1,0 +1,47 @@
+---
+description: Pydantic mutation safety — EngagementSnapshotV2 jest zamrożonym modelem, mutacja bezpośrednia jest cichym błędem
+globs: tools/gmail_audit/agent_runtime/**/*.py
+alwaysApply: false
+---
+
+# Pydantic snapshot mutation invariant
+
+`EngagementSnapshotV2` jest modelem Pydantic z `model_config = ConfigDict(frozen=True)` lub podobnym.
+Bezpośrednia mutacja pola (`snapshot.hvac_profile.heated_area_m2 = 120`) nie rzuci błędu w runtime,
+ale zmiana nie zostanie utrwalona — obiekt zachowa poprzednią wartość. To cichy błąd bez stack trace.
+
+## Poprawne wzorce
+
+```python
+# model_copy z update — dla prostych pól
+new_snapshot = snapshot.model_copy(update={"version": snapshot.version + 1})
+
+# apply_snapshot_delta — dla zagnieżdżonych zmian (preferowane w agent_runtime)
+new_snapshot = apply_snapshot_delta(snapshot, {
+    "hvac_profile": {"heated_area_m2": 120},
+    "operational_status": {"code": "enriching"},
+})
+```
+
+## Niepoprawne wzorce
+
+```python
+# Bezpośrednia mutacja — cichy błąd
+snapshot.hvac_profile.heated_area_m2 = 120
+
+# model_dump() + rekonstrukcja bez potrzeby — użyj model_copy zamiast tego
+data = snapshot.model_dump()
+data["version"] += 1
+new_snapshot = EngagementSnapshotV2(**data)  # akceptowalne tylko gdy brakuje model_copy
+```
+
+## snapshot_delta — format
+
+```python
+# Zagnieżdżony dict zgodny ze schematem modelu — nie płaski
+{
+    "hvac_profile": {"heated_area_m2": 120, "location": {"city": "Rybnik"}},
+    "operational_status": {"code": "enriching"},
+    "gaps": [{"field": "thermal_demand_kw", "severity": "blocking", "ask_pl": "..."}],
+}
+```

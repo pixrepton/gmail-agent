@@ -1,0 +1,23 @@
+Analyze the following Gmail intake snapshot and return only valid JSON matching the required schema.
+
+Prompt version: intake-v1
+Schema version: 1.0
+Mailbox: {{MAILBOX}}
+Observed at: {{OBSERVED_AT}}
+Inference mode: {{INFERENCE_MODE}}
+Compaction notes: {{INFERENCE_NOTES}}
+
+Important operating rules:
+- When `inference_enrichment` is present, use `attachment_evidence_envelope` and `prior_thread_context_envelope` as bounded operational hints (not raw dumps). They may contain thread memory from prior desk state or short attachment summaries; stay conservative if evidence is incomplete.
+- Base your conclusion on the message body and provided context, not only sender or subject.
+- Distinguish new case vs existing case update.
+- Distinguish action-required vs reference-only vs watchlist vs ignore.
+- Use review when the decision is not safe.
+- Do not invent data.
+- The payload below is compacted for inference. If body text ends with `[truncated]` or quoted/footer noise was removed, reason conservatively from the remaining evidence.
+- Follow the exact schema vocabulary for business_area, case_family, decision.action, priority, and review.flags.
+- Return [] when secondary_signals or review.flags are empty.
+- Only use case_key inside thread.linked_case_candidates.
+
+Source snapshot JSON:
+{{SOURCE_SNAPSHOT_JSON}}

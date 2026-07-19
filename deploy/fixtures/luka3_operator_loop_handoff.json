@@ -1,0 +1,19 @@
+{
+  "actionable": true,
+  "proof_dir": "runs/operator-loop-luka3",
+  "item": {
+    "note_id": "note_d93ebe601f0f",
+    "case_id": "case_d93ebe601f0f",
+    "signal_id": "sig_d213669729aedf42cf241943",
+    "source_message_id": "msg_bridge_feedback_proof_20260505T010113Z",
+    "title_pl": "TEST: kliknij Zła sprawa",
+    "policy_status": "accepted_projection",
+    "store_readback": "found",
+    "handoff_actionable": true,
+    "allowed_operator_actions": [
+      "zla_sprawa"
+    ]
+  },
+  "candidates_checked": 1,
+  "blockers": []
+}

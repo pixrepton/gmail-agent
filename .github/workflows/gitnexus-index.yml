@@ -1,0 +1,24 @@
+name: GitNexus Index
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  index:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install GitNexus
+        run: npm install -g gitnexus@latest
+      - name: Build knowledge graph
+        run: gitnexus analyze --force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gitnexus-graph
+          path: .gitnexus/
+          if-no-files-found: error

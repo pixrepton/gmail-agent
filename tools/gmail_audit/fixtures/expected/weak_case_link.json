@@ -1,0 +1,53 @@
+{
+  "preclassification_lane": "intake_llm",
+  "intake": {
+    "business_area": "operations",
+    "case_family": "internal_coordination",
+    "primary_signal_code": "schedule_follow_up",
+    "primary_signal_name": "Schedule follow-up",
+    "decision_action": "review",
+    "action_rationale": "Weak case-link follow-up should stay in review until the link is confirmed.",
+    "priority": "medium",
+    "reason": "The message may continue an older installation thread but the link is weak.",
+    "review_required": true,
+    "review_flags": ["insufficient_thread_context"],
+    "confidence": {
+      "signal_confidence": 0.78,
+      "case_link_confidence": 0.5,
+      "decision_confidence": 0.71,
+      "extraction_confidence": 0.68
+    },
+    "state_detected": "follow_up",
+    "is_new_case": false
+  },
+  "expected_case_link": {
+    "decision": "weak_link",
+    "selected_case_key": "thread:legacy-weak-001"
+  },
+  "business_reasoning": {
+    "business_interpretation": "Possible continuation of an installation thread, but the case link is still weak.",
+    "business_area": "installation",
+    "customer_state_guess": "active_case",
+    "recommended_next_action": "update_case",
+    "recommended_action_reason": "The operator likely needs to continue the thread, but should confirm the link first.",
+    "missing_information": ["confirmed case reference"],
+    "risks": ["weak_case_link"],
+    "urgency": "normal",
+    "operator_note": "Confirm the case link before treating this as a case update.",
+    "confidence": {
+      "business_confidence": 0.7,
+      "action_confidence": 0.64
+    }
+  },
+  "reply_draft": {
+    "draft_enabled": false,
+    "drafts": [],
+    "do_not_send_reasons": ["case_confirmation_first"],
+    "confidence": 0.0
+  },
+  "action_plan": {
+    "primary_action": "create_review",
+    "daszek_projection_mode": "review",
+    "safe_for_live_push": false
+  }
+}

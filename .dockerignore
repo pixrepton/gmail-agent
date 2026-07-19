@@ -1,0 +1,23 @@
+.git
+.venv
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.playwright-mcp/
+.gitnexus/
+-out/
+
+# Local secrets / operator env
+.env
+.env.*
+!*.example
+tools/gmail_audit/.env
+tools/gmail_audit/.env.*
+!tools/gmail_audit/.env.example
+
+# Runtime artifacts copied/mounted separately on VPS
+tools/gmail_audit/runs/
+tools/gmail_audit/reports/
+tools/gmail_audit/data/mailbox_memory/blobs/
+tools/gmail_audit/data/mailbox_memory/signal_runtime/
+Daszek/uploads/

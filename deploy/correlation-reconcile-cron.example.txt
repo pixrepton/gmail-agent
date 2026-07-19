@@ -1,0 +1,12 @@
+## Example crontab entry (Node B / VPS)
+#
+# Daily delta reconcile for P0 correlation registry.
+# Assumptions:
+# - gmail-agent deployed to /opt/gmail-agent/current
+# - env file at /etc/topinstal/gmail-agent.env contains MAILBOX_MEMORY_DATABASE_URL
+# - venv at /opt/gmail-agent/current/.venv
+#
+# Logs: /var/log/topinstal/correlation-reconcile.log
+#
+# Minute Hour DayOfMonth Month DayOfWeek Command
+30 2 * * * set -a && . /etc/topinstal/gmail-agent.env && set +a && cd /opt/gmail-agent/current/tools/gmail_audit && /opt/gmail-agent/current/.venv/bin/python scripts/backfill_correlation_registry.py --cron --delta-hours 24 >> /var/log/topinstal/correlation-reconcile.log 2>&1

@@ -1,0 +1,15 @@
+{
+  "mailbox": "ops@topinstal.local",
+  "source_message": {
+    "message_id": "fixture-supplier-001",
+    "thread_id": "supplier-thread-001",
+    "date": "2026-04-01T13:20:00+02:00",
+    "from": "logistyka@dostawca.pl",
+    "to": ["ops@topinstal.local"],
+    "subject": "Dostawa materialow do zamowienia ZAM-8842",
+    "snippet": "Prosze potwierdzic okno dostawy.",
+    "body": "W sprawie zamowienia ZAM-8842 prosze potwierdzic okno dostawy na czwartek oraz osobe kontaktowa na miejscu.",
+    "labels": ["INBOX"]
+  },
+  "context_messages": []
+}

@@ -1,0 +1,41 @@
+{
+  "source_file_count": 29,
+  "changed_file_count": 18,
+  "unchanged_file_count": 11,
+  "changed_files": [
+    "daszek/docs/core/PROJECT_README.md",
+    "gmail-agent/AGENTS.md",
+    "gmail-agent/docs/README.md",
+    "gmail-agent/docs/core/AGENT_CONSTITUTION.md",
+    "gmail-agent/docs/core/AGENT_CONSTITUTION.md.sha256",
+    "gmail-agent/docs/core/AGENT_RUNTIME_ARCHITECTURE.md",
+    "gmail-agent/docs/core/ARCHITECTURE_AUTHORITY_V2_1.json",
+    "gmail-agent/docs/core/ARCHITECTURE_PRECEDENCE.md",
+    "gmail-agent/docs/core/CONSTITUTION_V2_1.md",
+    "gmail-agent/docs/core/EVENT_CATALOG.md",
+    "gmail-agent/docs/core/PHYSICAL_TOPOLOGY.md",
+    "gmail-agent/docs/core/PROJECT_README.md",
+    "gmail-agent/docs/dev/ENV_LOADING.md",
+    "gmail-agent/docs/runbooks/GMAIL_AGENT_DAILY_OPS.md",
+    "gmail-agent/docs/runbooks/LAST_PROVEN_STATE.md",
+    "gmail-agent/docs/runbooks/MAILBOX_MEMORY_POSTGRES.md",
+    "gmail-agent/docs/runbooks/README.md",
+    "gmail-agent/docs/runbooks/SIGNAL_ACTIVE_ONLY.md"
+  ],
+  "unchanged_files": [
+    "daszek/docs/ROUTE_MANIFEST.json",
+    "gmail-agent/README.md",
+    "gmail-agent/docs/contracts/engagement_snapshot_v2.schema.json",
+    "gmail-agent/docs/core/CORRELATION_REGISTRY_P0_CONTRACT.md",
+    "gmail-agent/docs/core/LLM_PROVIDER_MAP.md",
+    "gmail-agent/docs/dev/mcp/snippets/agent-runtime.placeholder.jsonc",
+    "gmail-agent/docs/dev/mcp/snippets/custom-ops-mirror.placeholder.jsonc",
+    "gmail-agent/docs/dev/mcp/snippets/serena.placeholder.jsonc",
+    "gmail-agent/docs/runbooks/PACKAGING_AND_SECRETS.md",
+    "gmail-agent/docs/runbooks/SIGNAL_RUNTIME_OPERATOR.md",
+    "gmail-agent/docs/runbooks/templates/release-manifest-export-tree.template.json"
+  ],
+  "runtime_modified": false,
+  "route_manifest_regenerated": false,
+  "route_manifest_reason": "No route registration source files in supplied package; reported changes were semantic, not route additions/removals."
+}

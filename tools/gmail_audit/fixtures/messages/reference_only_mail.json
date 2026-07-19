@@ -1,0 +1,15 @@
+{
+  "mailbox": "ops@topinstal.local",
+  "source_message": {
+    "message_id": "fixture-reference-only-001",
+    "thread_id": "reference-thread-001",
+    "date": "2026-04-01T16:45:00+02:00",
+    "from": "tracking@kurier.pl",
+    "to": ["ops@topinstal.local"],
+    "subject": "Potwierdzenie dostawy do zamowienia 7781",
+    "snippet": "Dostawa zostala zrealizowana.",
+    "body": "Potwierdzenie dostawy do zamowienia 7781. Dostawa zostala zrealizowana dzisiaj o 14:22.",
+    "labels": ["INBOX"]
+  },
+  "context_messages": []
+}

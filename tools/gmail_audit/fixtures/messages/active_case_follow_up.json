@@ -1,0 +1,27 @@
+{
+  "mailbox": "ops@topinstal.local",
+  "source_message": {
+    "message_id": "fixture-active-case-001",
+    "thread_id": "service-thread-001",
+    "date": "2026-04-01T10:15:00+02:00",
+    "from": "marek.nowak@example.com",
+    "to": ["ops@topinstal.local"],
+    "subject": "Re: CASE-2026-001 Termin serwisu",
+    "snippet": "Wracam do sprawy CASE-2026-001.",
+    "body": "Wracam do sprawy CASE-2026-001. Czy potwierdzicie prosze termin serwisu na jutro po 12:00?",
+    "labels": ["INBOX"]
+  },
+  "context_messages": [
+    {
+      "message_id": "fixture-active-case-context-001",
+      "thread_id": "service-thread-001",
+      "date": "2026-03-31T13:00:00+02:00",
+      "from": "ops@topinstal.local",
+      "to": ["marek.nowak@example.com"],
+      "subject": "Re: CASE-2026-001 Termin serwisu",
+      "snippet": "Potwierdzamy przyjecie zgloszenia.",
+      "body": "Dzien dobry, przyjelismy zgloszenie CASE-2026-001 i damy znac z terminem serwisu.",
+      "labels": ["SENT"]
+    }
+  ]
+}

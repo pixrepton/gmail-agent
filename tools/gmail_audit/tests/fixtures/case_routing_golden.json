@@ -1,0 +1,118 @@
+[
+  {
+    "id": "golden_lead_cieplo",
+    "subject": "Zapytanie: dom jednorodzinny parterowy (150 mkw.) Tychy",
+    "sender": "dozorca@cieplo.app",
+    "body": "Nowe zapytanie o pompę ciepła. Proszę o ofertę i dobór urządzenia.",
+    "labels": [
+      "INBOX"
+    ],
+    "expected_case_type": "lead_oferta",
+    "expected_is_task": true,
+    "expected_upsert": true
+  },
+  {
+    "id": "golden_zus",
+    "subject": "ZUS",
+    "sender": "marta.jelen@markasbiuro.pl",
+    "body": "ZUS za kwiecień: 2 237,12 zł PIT-4: 2 430,00 zł",
+    "labels": [
+      "INBOX"
+    ],
+    "expected_case_type": "ksiegowosc_podatki",
+    "expected_is_task": true,
+    "expected_case_family": "accounting"
+  },
+  {
+    "id": "golden_serwis",
+    "subject": "Awaria pompy ciepła",
+    "sender": "klient@gmail.com",
+    "body": "Pompa nie działa od wczoraj, proszę o serwis i naprawę.",
+    "labels": [
+      "INBOX"
+    ],
+    "expected_case_type": "serwis",
+    "expected_is_task": true,
+    "expected_case_family": "service"
+  },
+  {
+    "id": "golden_noise_newsletter",
+    "subject": "Newsletter promocja rabat",
+    "sender": "newsletter@noreply.example.com",
+    "body": "Black Friday outlet marketing webinar wypisz się",
+    "labels": [
+      "INBOX"
+    ],
+    "expected_case_type": "noise",
+    "expected_is_task": false,
+    "expected_upsert": false
+  },
+  {
+    "id": "golden_panasonic_brand_noise",
+    "subject": "Pompa ciepła w 100-letnim domu!",
+    "sender": "panasonicproclub.com@crlsrv.com",
+    "body": "Newsletter Panasonic Pro Club. Unsubscribe from this list. Promocja marketingowa.",
+    "labels": [
+      "CATEGORY_PROMOTIONS",
+      "INBOX"
+    ],
+    "expected_case_type": "noise",
+    "expected_is_task": false,
+    "expected_upsert": false
+  },
+  {
+    "id": "golden_supplier_opportunity",
+    "subject": "Gorące ceny — nowa promocja dla instalatorów",
+    "sender": "marketing@schiessl.pl",
+    "body": "SCHIESSL POLSKA — rabat i nowa promocja dla instalatorów. Sprawdź cennik hurtowni.",
+    "labels": [
+      "CATEGORY_PROMOTIONS",
+      "INBOX"
+    ],
+    "expected_case_type": "supplier_opportunity",
+    "expected_is_task": true,
+    "expected_case_family": "supplier"
+  },
+  {
+    "id": "golden_cieplo_admin_noise",
+    "subject": "Ostatni dzwonek dla odnowienia subskrypcji",
+    "sender": "dozorca@cieplo.app",
+    "body": "Przypomnienie o subskrypcji Cieplo.app admin.",
+    "labels": [
+      "INBOX"
+    ],
+    "expected_case_type": "noise",
+    "expected_is_task": false,
+    "expected_upsert": false
+  },
+  {
+    "id": "golden_manual_task",
+    "source_kind": "manual",
+    "export_case_type": "operations",
+    "expected_case_family": "operations",
+    "expected_is_task": true,
+    "expected_requires_action": true
+  },
+  {
+    "id": "golden_dokumenty",
+    "subject": "Dokument projektu",
+    "sender": "architekt@example.com",
+    "body": "W załączniku dokument projektu i rzut do przejrzenia.",
+    "labels": [
+      "INBOX"
+    ],
+    "expected_case_type": "dokumenty",
+    "expected_is_task": true
+  },
+  {
+    "id": "golden_dofinansowanie",
+    "subject": "Dotacja Czyste Powietrze",
+    "sender": "bok@dotacje.email",
+    "body": "Informacja o dofinansowaniu i dotacji termomodernizacji.",
+    "labels": [
+      "INBOX"
+    ],
+    "expected_case_type": "dofinansowanie",
+    "expected_is_task": true
+  }
+]

@@ -1,0 +1,20 @@
+[Unit]
+Description=TOP-INSTAL Daszek operational feed push (Node B to Node A)
+Documentation=file:///opt/gmail-agent/current/docs/runbooks/GMAIL_AGENT_DAILY_OPS.md
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/gmail-agent/current
+Environment=GMAIL_ROOT=/opt/gmail-agent/current
+EnvironmentFile=-/etc/topinstal/gmail-agent.env
+# B2 routine: no DESK_NOTES_JSON (see deploy/DASZEK_BADBAD_DEPRECATED.md)
+ExecStart=/bin/bash /opt/gmail-agent/current/deploy/push_daszek_operational_feed_prod.sh
+StandardOutput=append:/var/log/topinstal/daszek-feed-push.log
+StandardError=append:/var/log/topinstal/daszek-feed-push.log
+SyslogIdentifier=topinstal-daszek-feed-push
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,15 @@
+{
+  "mailbox": "ops@topinstal.local",
+  "source_message": {
+    "message_id": "fixture-new-lead-001",
+    "thread_id": "lead-thread-001",
+    "date": "2026-04-01T09:00:00+02:00",
+    "from": "anna.kowalska@example.com",
+    "to": ["ops@topinstal.local"],
+    "subject": "Zapytanie o pompe ciepla do domu 180 m2",
+    "snippet": "Prosze o kontakt w sprawie nowej instalacji.",
+    "body": "Dzien dobry, prosze o wycene pompy ciepla do domu 180 m2 pod Warszawa. Nie mam jeszcze projektu, ale chcialabym poznac kolejny krok.",
+    "labels": ["INBOX"]
+  },
+  "context_messages": []
+}

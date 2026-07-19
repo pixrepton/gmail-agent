@@ -1,0 +1,53 @@
+{
+  "preclassification_lane": "intake_llm",
+  "intake": {
+    "business_area": "supplier_commercial",
+    "case_family": "procurement_delivery",
+    "primary_signal_code": "supplier_delivery_update",
+    "primary_signal_name": "Supplier delivery update",
+    "decision_action": "create_task",
+    "action_rationale": "Supplier coordination should stay actionable for operations.",
+    "priority": "medium",
+    "reason": "Supplier asks for delivery confirmation and site contact.",
+    "review_required": false,
+    "review_flags": [],
+    "confidence": {
+      "signal_confidence": 0.83,
+      "case_link_confidence": 0.16,
+      "decision_confidence": 0.78,
+      "extraction_confidence": 0.72
+    },
+    "state_detected": "supplier_delivery",
+    "is_new_case": false
+  },
+  "expected_case_link": {
+    "decision": "no_link",
+    "selected_case_key": ""
+  },
+  "business_reasoning": {
+    "business_interpretation": "Supplier logistics message asking for confirmation of the delivery window.",
+    "business_area": "supplier",
+    "customer_state_guess": "supplier_thread",
+    "recommended_next_action": "create_task",
+    "recommended_action_reason": "Operations should confirm delivery timing and the on-site contact.",
+    "missing_information": ["on-site contact"],
+    "risks": [],
+    "urgency": "normal",
+    "operator_note": "Create a task for delivery confirmation and owner assignment.",
+    "confidence": {
+      "business_confidence": 0.8,
+      "action_confidence": 0.77
+    }
+  },
+  "reply_draft": {
+    "draft_enabled": false,
+    "drafts": [],
+    "do_not_send_reasons": ["internal_coordination_first"],
+    "confidence": 0.0
+  },
+  "action_plan": {
+    "primary_action": "create_task",
+    "daszek_projection_mode": "task",
+    "safe_for_live_push": false
+  }
+}
