@@ -371,15 +371,41 @@ def validate_business_reasoning_result(obj: dict[str, Any] | None) -> dict[str, 
     return normalized
 
 
+# Narrow normalization boundary for RC-D1: the LLM reliably emits a small set of
+# semantically-equivalent alternate serializations of the same canonical draft
+# contract (a nested single-key envelope such as "reply_draft_v1", and "subject"
+# instead of "subject_suggestion"). These are recognized structurally, not by a
+# large keyword taxonomy, and never fabricate content — they only relocate a
+# value the model already produced under its intended field name.
+def _unwrap_reply_draft_envelope(obj: dict[str, Any]) -> dict[str, Any]:
+    if "drafts" in obj:
+        return obj
+    if len(obj) == 1:
+        (only_key, only_value), = obj.items()
+        if isinstance(only_value, dict) and "drafts" in only_value:
+            return only_value
+    return obj
+
+
+def _normalize_reply_draft_item_keys(draft: dict[str, Any]) -> dict[str, Any]:
+    if "subject_suggestion" not in draft or not str(draft.get("subject_suggestion") or "").strip():
+        subject = draft.get("subject")
+        if isinstance(subject, str) and subject.strip():
+            draft = {**draft, "subject_suggestion": subject}
+    return draft
+
+
 def validate_reply_draft_result(obj: dict[str, Any] | None) -> dict[str, Any]:
     """Validate the reply-drafter stage contract."""
     if not isinstance(obj, dict):
         raise GroqClientError("ReplyDraftResult must be a JSON object.")
+    obj = _unwrap_reply_draft_envelope(obj)
 
     drafts: list[dict[str, Any]] = []
     for draft in obj.get("drafts") or []:
         if not isinstance(draft, dict):
             continue
+        draft = _normalize_reply_draft_item_keys(draft)
         variant = _normalize_choice(
             draft.get("variant"),
             REPLY_DRAFT_VARIANTS,

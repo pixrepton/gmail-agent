@@ -289,6 +289,16 @@ def _normalize_action_item(obj: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalize_grounding(obj: Any) -> dict[str, Any]:
+    o = obj if isinstance(obj, dict) else {}
+    return {
+        "grounded": bool(o.get("grounded")),
+        "basis": _string_or_default(o.get("basis"), default="business_reasoner_hypothesis")[:80],
+        "supporting_fact_pl": str(o.get("supporting_fact_pl") or "")[:240],
+        "evidence_refs": [r for r in (o.get("evidence_refs") or []) if isinstance(r, dict)][:8],
+    }
+
+
 def _normalize_risk_item(obj: dict[str, Any]) -> dict[str, Any]:
     risk_type = _string_or_default(obj.get("risk_type"), default="interpretation_risk")
     if risk_type not in RISK_TYPES:
@@ -302,6 +312,7 @@ def _normalize_risk_item(obj: dict[str, Any]) -> dict[str, Any]:
         "reason_pl": _string_or_default(obj.get("reason_pl"), default="Brak uzasadnienia ryzyka."),
         "confidence": _bounded_float(obj.get("confidence"), default=0.0),
         "what_to_watch_for": _string_or_default(obj.get("what_to_watch_for"), default=""),
+        "grounding": _normalize_grounding(obj.get("grounding")),
     }
 
 

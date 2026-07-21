@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from central_llm_stage import resolve_case_id, run_central_structured_stage
@@ -130,10 +131,111 @@ def run_reply_drafter(
             errors = (stage_call.get("request_meta") or {}).get("pydantic_errors")
             logger.warning("[reply_drafter] Pydantic ValidationError: %s", errors)
         parsed = parse_and_validate_reply_draft(stage_call["response_text"])
+        parsed = gate_reply_draft_commitments(parsed, case_state=_draft_case_state(intake_result, business_result))
         parsed["execution_metadata"] = stage_call
         return parsed
     except GroqClientError as exc:
         return fallback_reply_drafter(reason=sanitize_text(str(exc)))
+
+
+def _draft_case_state(intake_result: dict[str, Any], business_result: dict[str, Any]) -> dict[str, Any]:
+    """Authoritative case-state signals available at shadow-draft time.
+
+    ``reply_drafter`` runs before any mutation is executed (it is a shadow
+    proposal, not a confirmed action), so today there is no field anywhere in
+    the intake/business payload that marks a visit as actually scheduled or an
+    action as actually completed. That absence IS the authoritative state: a
+    draft claiming otherwise at this stage is never supported. Explicit,
+    forward-compatible flags are still honored if a caller ever supplies them.
+    """
+    return {
+        "visit_confirmed": bool(intake_result.get("visit_confirmed") or business_result.get("visit_confirmed")),
+        "action_completed": bool(intake_result.get("action_completed") or business_result.get("action_completed")),
+        "deadline_confirmed": bool(intake_result.get("deadline_confirmed") or business_result.get("deadline_confirmed")),
+    }
+
+
+# Each entry: (compiled pattern, case_state key that must be True to leave the
+# match intact, safe non-committal replacement used when unsupported). Patterns
+# detect a specific committing CLAIM (visit already arranged, action already
+# done, categorical guarantee, concrete delivery/installation deadline) — the
+# gate then defers the allow/rewrite DECISION to case_state, so this is not a
+# blacklist verdict: the same phrase is kept when the state actually supports it.
+_COMMITMENT_PATTERNS: tuple[tuple[re.Pattern[str], str, str], ...] = (
+    (
+        re.compile(r"gwarantujemy|na pewno|sto procent pewn\w*", re.IGNORECASE),
+        "",  # a categorical guarantee is never supported deterministically
+        "postaramy sie zapewnic najlepsze rozwiazanie",
+    ),
+    (
+        re.compile(r"wizyta jest (?:juz )?umowion\w+|umowion\w+ wizyt\w+", re.IGNORECASE),
+        "visit_confirmed",
+        "zaproponujemy termin wizyty i potwierdzimy go z Panstwem",
+    ),
+    (
+        re.compile(r"juz (?:wyslalismy|zamontowalismy|zrealizowalismy|dostarczylismy)", re.IGNORECASE),
+        "action_completed",
+        "przygotowujemy to dla Panstwa",
+    ),
+    (
+        re.compile(r"jutro (?:zamontujemy|dostarczymy|przyjedziemy|wyslemy)", re.IGNORECASE),
+        "deadline_confirmed",
+        "wkrotce, po ustaleniu szczegolow",
+    ),
+)
+
+
+def _gate_commitment_text(text: str, *, case_state: dict[str, Any]) -> tuple[str, list[str]]:
+    reasons: list[str] = []
+    out = text
+    for pattern, required_state_key, replacement in _COMMITMENT_PATTERNS:
+        supported = bool(case_state.get(required_state_key)) if required_state_key else False
+        if supported:
+            continue
+
+        def _replace(match: "re.Match[str]", _replacement: str = replacement) -> str:
+            return _replacement
+
+        new_out = pattern.sub(_replace, out)
+        if new_out != out:
+            reasons.append(f"unsupported_commitment_rewritten:{required_state_key or 'guarantee'}")
+        out = new_out
+    return out, reasons
+
+
+def gate_reply_draft_commitments(parsed: dict[str, Any], *, case_state: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Rewrite unsupported commitment/promise claims in every drafted body.
+
+    A commitment is left intact only when ``case_state`` actually supports it
+    (see ``_draft_case_state``); otherwise the specific offending fragment —
+    never the whole message — is replaced with accurate, non-committal wording.
+    """
+    state = case_state or {}
+    drafts = list(parsed.get("drafts") or [])
+    any_rewritten = False
+    new_drafts: list[dict[str, Any]] = []
+    for draft in drafts:
+        if not isinstance(draft, dict):
+            new_drafts.append(draft)
+            continue
+        body = str(draft.get("body") or "")
+        new_body, reasons = _gate_commitment_text(body, case_state=state)
+        if reasons:
+            any_rewritten = True
+            draft = {**draft, "body": new_body}
+        new_drafts.append(draft)
+    if not any_rewritten:
+        return parsed
+    reasons_all: list[str] = []
+    for draft in drafts:
+        if isinstance(draft, dict):
+            _, reasons = _gate_commitment_text(str(draft.get("body") or ""), case_state=state)
+            reasons_all.extend(reasons)
+    out = dict(parsed)
+    out["drafts"] = new_drafts
+    out["requires_manual_edit"] = True
+    out["do_not_send_reasons"] = list(dict.fromkeys(list(parsed.get("do_not_send_reasons") or []) + reasons_all))
+    return out
 
 
 def parse_and_validate_reply_draft(raw_text: str) -> dict[str, Any]:

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from log_config import get_logger
 import threading
+import re
+import unicodedata
 from dataclasses import dataclass, field
 
 from agent_runtime.constitution import AgentConstitution
@@ -35,6 +37,27 @@ AGENT_TURN_TIMEOUT_SECONDS = 45
 MAX_TOOL_CALLS_PER_TURN = 8
 
 _READ_ONCE_AFTER_OK_TOOLS = frozenset({"search_gmail_thread"})
+
+_RAG_QUERY_PREFIX = "RAG query="
+_RAG_QUERY_STOPWORDS = frozenset(
+    {
+        "case",
+        "recovery",
+        "klient",
+        "sprawa",
+        "oferta",
+        "pompa",
+        "ciepla",
+        "ciepła",
+        "szczegoly",
+        "szczegóły",
+        "tresc",
+        "treść",
+        "sprawy",
+        "wiadomosci",
+        "wiadomości",
+    }
+)
 
 logger = get_logger(__name__)
 
@@ -181,16 +204,21 @@ class AgentGraphEngine:
                     )
                     sub_agent = "general"
                 else:
-                    sub_agent = select_sub_agent(tool_name=plan.tool_name, snapshot=current)
-                    logger.info(
-                        "agent_tool_shadow engagement=%s tool=%s sub_agent=%s",
-                        current.engagement_id,
-                        plan.tool_name,
-                        sub_agent,
-                    )
-                    result = self._execute_tool_with_timeout(
-                        plan, ctx, sub_agent=sub_agent, operator_scope=operator_scope
-                    )
+                    duplicate_research = _duplicate_rag_research_result(current, plan)
+                    if duplicate_research is not None:
+                        result = duplicate_research
+                        sub_agent = "general"
+                    else:
+                        sub_agent = select_sub_agent(tool_name=plan.tool_name, snapshot=current)
+                        logger.info(
+                            "agent_tool_shadow engagement=%s tool=%s sub_agent=%s",
+                            current.engagement_id,
+                            plan.tool_name,
+                            sub_agent,
+                        )
+                        result = self._execute_tool_with_timeout(
+                            plan, ctx, sub_agent=sub_agent, operator_scope=operator_scope
+                        )
             tool_call_count += 1
             if result.status == "ok" and plan.tool_name in _READ_ONCE_AFTER_OK_TOOLS:
                 completed_read_once_tools.add(plan.tool_name)
@@ -453,6 +481,98 @@ def _filter_completed_read_once_tools(
     )
 
 
+def _duplicate_rag_research_result(
+    snapshot: EngagementSnapshotV2,
+    plan: ToolCallPlan,
+) -> ToolResult | None:
+    if plan.tool_name != "search_rag_knowledge":
+        return None
+    query = str(plan.arguments.get("query") or "").strip()
+    objective = _rag_research_objective(query)
+    if not objective:
+        return None
+    if objective not in _completed_rag_research_objectives(snapshot):
+        return None
+    return ToolResult(
+        status="error",
+        turn_summary_pl=(
+            "Research RAG dla tego celu informacyjnego jest juz pokryty "
+            f"w tym runie: {objective}."
+        ),
+        snapshot_delta={
+            "operational_status": {"code": "pending_operator", "blocking": True},
+            "hitl_gate": {"required": True, "reason": f"duplicate_rag_research:{objective}"},
+            "agent_memory": {
+                "reasoning_trace": [
+                    {
+                        "turn": 0,
+                        "summary_pl": (
+                            "RAG research stop: objective already covered; "
+                            f"query={query[:120]}; objective={objective}"
+                        ),
+                    }
+                ],
+            },
+        },
+    )
+
+
+def _completed_rag_research_objectives(snapshot: EngagementSnapshotV2) -> set[str]:
+    objectives: set[str] = set()
+    for item in snapshot.agent_memory.reasoning_trace:
+        summary = str(item.summary_pl or "")
+        if not summary.startswith(_RAG_QUERY_PREFIX):
+            continue
+        query = summary[len(_RAG_QUERY_PREFIX):].split(";", 1)[0].strip()
+        objective = _rag_research_objective(query)
+        if objective:
+            objectives.add(objective)
+    return objectives
+
+
+def _rag_research_objective(query: str) -> str:
+    normalized = _normalize_rag_query(query)
+    if not normalized:
+        return ""
+    if _has_any(
+        normalized,
+        ("wywoz", "demontaz", "utyliz", "stary piec", "starego pieca", "starego kotla"),
+    ):
+        return "old_heater_removal_scope"
+    if _has_any(normalized, ("rabat", "negocjac", "konkurenc", "taniej", "cen", "koszt", "kwot")):
+        return "price_negotiation"
+    if _has_any(normalized, ("zerwanie", "umowy", "opoznienie", "opoznienia", "harmonogram")):
+        return "contract_delay"
+    if _has_any(normalized, ("akceptuje", "akceptacja", "zaliczk", "faktur", "montaz")):
+        return "offer_acceptance"
+    if _has_any(normalized, ("awaria", "serwis", "ogrzewania", "pilne")):
+        return "service_issue"
+    if _has_any(normalized, ("delivery", "status", "notification", "dostarcz")):
+        return "delivery_status"
+    if _has_any(normalized, ("tresc", "wiadomosc", "wiadomosci", "oryginalna", "zapytanie", "temat")):
+        return "source_message_content"
+    if _has_any(normalized, ("metraz", "metraż", "lokalizacja", "budynek", "adres", "telefon", "dane")):
+        return "case_details"
+    if _has_any(normalized, ("kontekst", "sprawy")):
+        return "case_context"
+    tokens = [token for token in normalized.split() if token not in _RAG_QUERY_STOPWORDS]
+    return " ".join(tokens[:6]) or "case_context"
+
+
+def _normalize_rag_query(query: str) -> str:
+    text = str(query or "").lower().replace("ł", "l")
+    text = "".join(
+        char for char in unicodedata.normalize("NFKD", text) if not unicodedata.combining(char)
+    )
+    text = re.sub(r"case_recovery_[a-z0-9-]+", "case", text)
+    text = re.sub(r"[^0-9a-z\s]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _has_any(text: str, needles: tuple[str, ...]) -> bool:
+    return any(needle in text for needle in needles)
+
+
 def _apply_snapshot_delta_blocking(
     snapshot: EngagementSnapshotV2,
     reason: str,
@@ -494,8 +614,20 @@ def _apply_tool_result(
         return updated.model_copy(
             update={"hitl_gate": HitlGate(required=True, reason="node_a_error")}
         )
+    delta = result.snapshot_delta
+    incoming_trace = (
+        ((delta or {}).get("agent_memory") or {}).get("reasoning_trace")
+        if isinstance(delta, dict)
+        else None
+    )
+    if isinstance(incoming_trace, list) and incoming_trace:
+        delta = dict(delta or {})
+        memory_delta = dict(delta.get("agent_memory") or {})
+        existing_trace = [item.model_dump(mode="python") for item in snapshot.agent_memory.reasoning_trace]
+        memory_delta["reasoning_trace"] = existing_trace + list(incoming_trace)
+        delta["agent_memory"] = memory_delta
     try:
-        updated = apply_snapshot_delta(snapshot, result.snapshot_delta)
+        updated = apply_snapshot_delta(snapshot, delta)
     except Exception as exc:  # noqa: BLE001 â€” niespĂłjna delta narzÄ™dzia nie moĹĽe wywaliÄ‡ caĹ‚ego runu
         logger.warning("apply_snapshot_delta_rejected tool=%s: %s", plan.tool_name, exc)
         updated = snapshot

@@ -63,13 +63,7 @@ def build_understanding_output(
     )
     essence = operator_feed_plain_summary(summary_seed, fallback="Sygnał wymaga oceny operatora.")[:700]
 
-    intent_seed = (
-        str(cu.get("customer_intent_pl") or "")
-        or str(business.get("customer_intent") or "")
-        or str(intake.get("business_area") or "")
-        or str((intake.get("decision") or {}).get("action") or "")
-    )
-    intent = operator_feed_plain_summary(intent_seed, fallback="Intencja wymaga potwierdzenia.")[:300]
+    intent = _customer_intent_pl(cu, business, intake)
 
     missing_fields = _missing_fields(missing, business)
     for q in tm.get("unresolved_questions") or []:
@@ -77,11 +71,12 @@ def build_understanding_output(
         if s:
             missing_fields.append(s[:240])
     conflicts = _conflicts(pack)
-    risk_items = _risks(risk, business)
-    for flag in ai.get("combined_risk_flags") or []:
-        s = operator_feed_plain_summary(flag, fallback="")
-        if s:
-            risk_items.append({"risk_type": "attachment_signal", "severity": "medium", "summary_pl": s[:320]})
+    # Operator-facing risks are per-risk grounded only. Risks from risk_assessment
+    # already carry their own grounding (attachment findings, concrete unresolved
+    # question, missing-critical lead, detected delivery state, aging). Concrete
+    # contradictions with evidence are surfaced as grounded contradiction risks.
+    risk_items = _risks(risk)
+    risk_items.extend(_contradiction_risks(pack))
     evidence_refs = _evidence_refs(ci, pack)
     confidence = _confidence(intake, ci, pack)
     nba = ci.get("next_best_action") if isinstance(ci.get("next_best_action"), dict) else {}
@@ -150,13 +145,14 @@ def build_understanding_output(
         "open_loops": [operator_feed_plain_summary(x, fallback="")[:240] for x in (tm.get("open_tasks_from_thread") or []) if str(x).strip()][:20],
         "commitments": [operator_feed_plain_summary(x, fallback="")[:240] for x in (tm.get("commitments_made") or []) if str(x).strip()][:20],
         "deadlines": [],
-        "thread_delta": {
-            "new_facts": [operator_feed_plain_summary(x, fallback="")[:240] for x in (cu.get("key_facts_hot") or []) if str(x).strip()][:8],
-            "new_missing_info": missing_fields[:12],
-            "new_conflicts": [str(x.get("title_pl") or x.get("content_pl") or "")[:240] for x in conflicts[:8] if isinstance(x, dict)],
-            "operator_visible_delta_summary": operator_feed_plain_summary(cu.get("latest_meaningful_change") or "", fallback="")[:400],
-            "risk_change": bool(risk_items),
-        },
+        "thread_delta": _thread_delta(
+            cu=cu,
+            pack=pack,
+            tm=tm,
+            ai=ai,
+            missing_fields=missing_fields,
+            risk_items=risk_items,
+        ),
         "context_quality": context_quality,
         "source_quality": source_quality,
         "retrieval_support": _retrieval_support(pack),
@@ -217,7 +213,18 @@ def validate_understanding_invariants(raw: dict[str, Any]) -> tuple[dict[str, An
                 fallback="Ryzyko wymaga weryfikacji operatora.",
             )[:320],
         }
-        if not obj.get("source_signal_id"):
+        grounding = risk.get("grounding") if isinstance(risk.get("grounding"), dict) else None
+        if grounding is not None:
+            safe["grounding"] = {
+                "grounded": bool(grounding.get("grounded")),
+                "basis": str(grounding.get("basis") or "")[:80],
+                "supporting_fact_pl": str(grounding.get("supporting_fact_pl") or "")[:240],
+                "evidence_refs": normalize_evidence_refs(grounding.get("evidence_refs") or [])[:8],
+            }
+        # A risk is supported only when it carries per-risk grounding. A generic
+        # source_signal_id alone does not support a specific risk claim.
+        supported = bool(grounding is not None and grounding.get("grounded"))
+        if not supported:
             safe["unsupported"] = True
         risks.append(safe)
     obj["risks"] = risks[:12]
@@ -307,10 +314,22 @@ def _conflicts(pack: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def _risks(risk: dict[str, Any], business: dict[str, Any]) -> list[dict[str, Any]]:
+def _risks(risk: dict[str, Any]) -> list[dict[str, Any]]:
+    """Materialize ONLY per-risk-grounded risks for the operator.
+
+    A risk is material only when its own grounding ties it to a specific case
+    fact or deterministic state (see ``build_risk_assessment``). Generic
+    business-reasoner hypotheses are never promoted merely because the case is
+    urgent or the risk was tagged high severity — neither is per-risk evidence.
+    ``business.risks`` are not re-materialized here: they already flow through
+    ``build_risk_assessment`` (RC-U2 removed that duplicate projection).
+    """
     out: list[dict[str, Any]] = []
     for item in risk.get("risks") or []:
         if not isinstance(item, dict):
+            continue
+        grounding = item.get("grounding") if isinstance(item.get("grounding"), dict) else {}
+        if not grounding.get("grounded"):
             continue
         out.append(
             {
@@ -320,13 +339,114 @@ def _risks(risk: dict[str, Any], business: dict[str, Any]) -> list[dict[str, Any
                     item.get("reason_pl") or item.get("summary_pl") or item.get("watch") or "",
                     fallback="Ryzyko wymaga weryfikacji operatora.",
                 )[:320],
+                "grounding": {
+                    "grounded": True,
+                    "basis": str(grounding.get("basis") or "")[:80],
+                    "supporting_fact_pl": str(grounding.get("supporting_fact_pl") or "")[:240],
+                    "evidence_refs": normalize_evidence_refs(grounding.get("evidence_refs") or [])[:8],
+                },
             }
         )
-    for item in business.get("risks") or []:
-        s = operator_feed_plain_summary(item, fallback="")
-        if s:
-            out.append({"risk_type": "business_signal", "severity": "medium", "summary_pl": s[:320]})
     return out
+
+
+def _conflict_delta_rows(pack: dict[str, Any]) -> list[dict[str, Any]]:
+    """Raw conflicting facts projected as change rows (a conflict IS a changed fact)."""
+    rows = pack.get("conflicting_facts") if isinstance(pack.get("conflicting_facts"), list) else []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        summary = operator_feed_plain_summary(
+            row.get("summary_pl") or row.get("summary") or row.get("field_name") or "", fallback=""
+        )
+        if not summary:
+            continue
+        out.append(
+            {
+                "change_type": "changed_or_conflicting_fact",
+                "field": str(row.get("field_name") or row.get("fact_key") or row.get("predicate") or "")[:120],
+                "summary_pl": summary[:240],
+                "evidence_refs": normalize_evidence_refs(row.get("evidence_refs") or row.get("source_refs") or [])[:8],
+            }
+        )
+    return out
+
+
+def _thread_delta(
+    *,
+    cu: dict[str, Any],
+    pack: dict[str, Any],
+    tm: dict[str, Any],
+    ai: dict[str, Any],
+    missing_fields: list[str],
+    risk_items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Materialize what actually CHANGED in the case.
+
+    The delta is computed from real case state (conflicting/changed facts, new
+    key facts, document/attachment findings, new commitments) rather than from
+    the intake decision-action label. The canned "new operational topic" string
+    is only used when no concrete change can be established (true last resort).
+    """
+    changes: list[dict[str, Any]] = _conflict_delta_rows(pack)
+    for fact in (cu.get("key_facts_hot") or [])[:6]:
+        s = operator_feed_plain_summary(fact, fallback="")
+        if s:
+            changes.append({"change_type": "new_fact", "field": "", "summary_pl": s[:240], "evidence_refs": []})
+    for flag in (ai.get("combined_risk_flags") or [])[:4]:
+        s = operator_feed_plain_summary(flag, fallback="")
+        if s:
+            changes.append({"change_type": "new_document_signal", "field": "", "summary_pl": s[:240], "evidence_refs": []})
+    for commitment in (tm.get("commitments_made") or [])[:3]:
+        s = operator_feed_plain_summary(commitment, fallback="")
+        if s:
+            changes.append({"change_type": "new_commitment", "field": "", "summary_pl": s[:240], "evidence_refs": []})
+
+    new_conflicts = [row["summary_pl"] for row in changes if row["change_type"] == "changed_or_conflicting_fact"][:8]
+    if changes:
+        delta_summary = "; ".join(row["summary_pl"] for row in changes[:2])[:400]
+    else:
+        delta_summary = operator_feed_plain_summary(cu.get("latest_meaningful_change") or "", fallback="")[:400]
+    return {
+        "new_facts": [operator_feed_plain_summary(x, fallback="")[:240] for x in (cu.get("key_facts_hot") or []) if str(x).strip()][:8],
+        "new_missing_info": missing_fields[:12],
+        "new_conflicts": new_conflicts,
+        "changes": changes[:12],
+        "operator_visible_delta_summary": delta_summary,
+        "risk_change": bool(risk_items),
+    }
+
+
+def _contradiction_risks(pack: dict[str, Any]) -> list[dict[str, Any]]:
+    """Surface concrete contradictions (conflicting facts that carry evidence)
+    as grounded contradiction risks. A contradiction with no evidence reference
+    is not promoted to a material risk."""
+    rows = pack.get("conflicting_facts") if isinstance(pack.get("conflicting_facts"), list) else []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        refs = normalize_evidence_refs(row.get("evidence_refs") or row.get("source_refs") or [])
+        if not refs:
+            continue
+        summary = operator_feed_plain_summary(row.get("summary_pl") or row.get("field_name") or "", fallback="")
+        if not summary:
+            continue
+        out.append(
+            {
+                "risk_type": "contradiction_risk",
+                "severity": "high",
+                "summary_pl": summary[:320],
+                "grounding": {
+                    "grounded": True,
+                    "basis": "conflicting_facts",
+                    "supporting_fact_pl": summary[:240],
+                    "evidence_refs": refs[:8],
+                },
+            }
+        )
+    return out[:6]
 
 
 def _evidence_refs(ci: dict[str, Any], pack: dict[str, Any]) -> list[dict[str, Any]]:
@@ -340,22 +460,88 @@ def _evidence_refs(ci: dict[str, Any], pack: dict[str, Any]) -> list[dict[str, A
     return refs
 
 
+# Bounded projection of the business reasoner's customer_state_guess enum into a
+# short operator-facing intent phrase. This is a controlled-vocabulary map (7
+# enum values), not a free-text keyword taxonomy. "unclear" is intentionally
+# absent so a genuinely ambiguous case stays honestly unknown.
+_CUSTOMER_STATE_INTENT_PL = {
+    "new_lead": "Nowy lead — klient jest zainteresowany oferta lub wspolpraca.",
+    "waiting_for_data": "Klient czeka na dane albo ma dostarczyc brakujace informacje.",
+    "post_offer": "Klient odnosi sie do zlozonej oferty.",
+    "active_case": "Klient kontynuuje aktywna sprawe.",
+    "finance_flow": "Sprawa dotyczy rozliczen lub platnosci klienta.",
+    "supplier_thread": "Watek dotyczy dostawcy, nie klienta koncowego.",
+}
+
+_BUSINESS_INTERPRETATION_UNAVAILABLE = "business interpretation unavailable."
+
+
+def _customer_intent_pl(cu: dict[str, Any], business: dict[str, Any], intake: dict[str, Any]) -> str:
+    """Express the customer's current intent by REUSING existing business
+    intelligence, in order of authority. Falls back to an honest "unknown" only
+    when no interpretation and no state signal exist — clear evidence must not
+    collapse to unknown, but genuine ambiguity may."""
+    for candidate in (cu.get("customer_intent_pl"), business.get("customer_intent")):
+        s = operator_feed_plain_summary(candidate or "", fallback="")
+        if s:
+            return s[:300]
+    interpretation = operator_feed_plain_summary(business.get("business_interpretation") or "", fallback="")
+    if interpretation and interpretation.strip().lower() != _BUSINESS_INTERPRETATION_UNAVAILABLE:
+        return interpretation[:300]
+    label = _CUSTOMER_STATE_INTENT_PL.get(str(business.get("customer_state_guess") or "").strip())
+    if label:
+        return label
+    reason = operator_feed_plain_summary(
+        (intake.get("decision") or {}).get("reason") or intake.get("reason") or "", fallback=""
+    )
+    if reason:
+        return reason[:300]
+    return "Intencja wymaga potwierdzenia."
+
+
 def _confidence(intake: dict[str, Any], ci: dict[str, Any], pack: dict[str, Any]) -> float:
-    candidates = []
+    """Return an authoritative confidence value, never a fabricated one.
+
+    Candidates are tried in order of how broad/authoritative the aggregate is:
+    (1) case_understanding.confidence_overall — already averages the four real
+    upstream signals (case_link/decision/business/action confidence); (2)-(3)
+    narrower confidence_domains/context_quality aggregates where present; (4)
+    intake.confidence_score, an explicit override when supplied; (5)
+    intake.classification_confidence — a genuine, always-populated intake-stage
+    signal (validate_intake_result) that was previously never read here, a real
+    loss-point fix, not a new signal invented for this projection.
+
+    The first candidate that is a real positive value wins and is returned
+    UNCHANGED — a stronger upstream value is never diluted or replaced by a
+    later, weaker candidate. Whatever value an authoritative source reports —
+    including an explicit 0.0 — is preserved as-is; it is not overwritten.
+
+    KNOWN CONTRACT LIMITATION: when no candidate carries any real positive
+    value, this float-only contract cannot distinguish "no confidence signal
+    exists at all" from "an authoritative source explicitly reported 0.0" — both
+    collapse to 0.0. That is the correct, honest value in EITHER case: this
+    function does not invent a placeholder floor merely because unrelated
+    fields (customer_intent_pl, business_interpretation) are non-empty. Semantic
+    understanding and confidence in that understanding are different signals;
+    a clear intent string must not manufacture a confidence number.
+    """
+    cu = ci.get("case_understanding") if isinstance(ci.get("case_understanding"), dict) else {}
+    candidates: list[Any] = [cu.get("confidence_overall")]
     cd = ci.get("confidence_domains") if isinstance(ci.get("confidence_domains"), dict) else {}
     for key in ("confidence", "confidence_overall", "confidence_case_link"):
         candidates.append(cd.get(key))
     cq = pack.get("context_quality") if isinstance(pack.get("context_quality"), dict) else {}
     candidates.append(cq.get("confidence"))
     candidates.append(intake.get("confidence_score"))
+    candidates.append(intake.get("classification_confidence"))
     for value in candidates:
         try:
             f = float(value)
         except (TypeError, ValueError):
             continue
-        if 0.0 <= f <= 1.0:
-            return f
-    return 0.5
+        if 0.0 < f <= 1.0:
+            return round(f, 4)
+    return 0.0
 
 
 def _unsupported_claims(pack: dict[str, Any]) -> list[str]:

@@ -75,6 +75,15 @@ def _load_agent_goals() -> dict[str, str]:
 _GOAL_BY_KIND = _load_agent_goals()
 
 
+def _completed_rag_research(snapshot: Any) -> list[str]:
+    items: list[str] = []
+    for step in getattr(snapshot.agent_memory, "reasoning_trace", []) or []:
+        summary = str(getattr(step, "summary_pl", "") or "").strip()
+        if summary.startswith("RAG query="):
+            items.append(summary[:320])
+    return items[-8:]
+
+
 def _compact_view(snapshot: Any) -> dict[str, Any]:
     """Kompaktowy widok stanu dla plannera — bez pełnego dumpa (oszczędność tokenów)."""
     return {
@@ -84,6 +93,7 @@ def _compact_view(snapshot: Any) -> dict[str, Any]:
         "hvac_profile": snapshot.hvac_profile.model_dump(exclude_none=True),
         "gaps": [g.model_dump() for g in snapshot.gaps][:6],
         "actions": [a.model_dump() for a in snapshot.actions][:4],
+        "completed_rag_research": _completed_rag_research(snapshot),
         "recent_steps": [r.summary_pl for r in snapshot.agent_memory.reasoning_trace[-3:]],
     }
 
@@ -280,6 +290,8 @@ class OpenAIToolPlanner:
             f"Język odpowiedzi operatora: {constitution.language}.\n"
             f"Typ sprawy (case_kind): {snapshot.case_kind}. {goal}\n"
             "Wybierz dokładnie jedno narzędzie z allowlisty na tę turę. "
+            "Kolejnego narzedzia read/search uzyj tylko wtedy, gdy potrafisz wskazac konkretny brak informacji niepokryty przez completed_rag_research lub recent_steps. "
+            "Nie powtarzaj research objective, dla ktorego istnieje successful RAG evidence. Gdy dowody wystarczaja, przejdz do draftu, clarification albo stopu. "
             f"{draft_instruction}"
             "o metraż pytaj tylko dla spraw ofertowych (wycena_oferta / zapytanie_klienta).\n"
             "WAŻNE: Jeśli case_id jest już ustawione (nie jest puste ani '(nowy lead)') — to jest FOLLOW-UP na istniejącej sprawie. "

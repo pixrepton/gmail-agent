@@ -11,7 +11,7 @@ if str(TOOL_DIR) not in sys.path:
 
 from agent_runtime.constitution import load_constitution
 from agent_runtime.graph import AgentGraphEngine
-from agent_runtime.openai_agent_client import OpenAIAgentPlannerError
+from agent_runtime.openai_agent_client import OpenAIAgentPlannerError, _compact_view
 from agent_runtime.planner import HeuristicMockPlanner, MockSequencePlanner
 from agent_runtime.store import InMemoryOperatorEngagementStore, build_initial_snapshot
 from agent_runtime.tool_result import ToolCallPlan, ToolResult
@@ -68,6 +68,95 @@ class _IgnoresAvailableToolsPlanner:
     def plan_next_tool(self, *, snapshot, available_tools, constitution):  # noqa: D401
         self.calls += 1
         return ToolCallPlan(tool_name="search_gmail_thread", arguments={"thread_id": snapshot.case_id})
+
+
+class _CaptureResearchStatePlanner:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.compact_by_turn: list[dict] = []
+
+    def plan_next_tool(self, *, snapshot, available_tools, constitution):  # noqa: D401
+        self.calls += 1
+        self.compact_by_turn.append(_compact_view(snapshot))
+        if self.calls == 1:
+            return ToolCallPlan(
+                tool_name="search_rag_knowledge",
+                arguments={"query": "case_recovery_DEC-02 oferta cena negocjacja"},
+            )
+        if self.calls == 2:
+            return ToolCallPlan(
+                tool_name="search_rag_knowledge",
+                arguments={"query": "case_recovery_DEC-02 szczegoly oferty klient"},
+            )
+        return ToolCallPlan(tool_name="request_operator_clarification", arguments={"ask_pl": "decyzja"})
+
+
+class _DuplicateRagObjectivePlanner:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def plan_next_tool(self, *, snapshot, available_tools, constitution):  # noqa: D401
+        self.calls += 1
+        if self.calls == 1:
+            return ToolCallPlan(
+                tool_name="search_rag_knowledge",
+                arguments={"query": "case_recovery_DEC-02 oferta rabat negocjacja ceny"},
+            )
+        return ToolCallPlan(
+            tool_name="search_rag_knowledge",
+            arguments={"query": "case_recovery_DEC-02 oferta cena konkurencji rabat"},
+        )
+
+
+class _DuplicateMi02OldHeaterPlanner:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def plan_next_tool(self, *, snapshot, available_tools, constitution):  # noqa: D401
+        self.calls += 1
+        if self.calls == 1:
+            return ToolCallPlan(
+                tool_name="search_rag_knowledge",
+                arguments={"query": "oferta wywoz starego pieca wliczony w cene warunki oferty"},
+            )
+        return ToolCallPlan(
+            tool_name="search_rag_knowledge",
+            arguments={"query": "case_recovery_MI-02 oferta warunki cena wywoz pieca stary koszt"},
+        )
+
+
+class _DuplicateInt06ContextPlanner:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def plan_next_tool(self, *, snapshot, available_tools, constitution):  # noqa: D401
+        self.calls += 1
+        if self.calls == 1:
+            return ToolCallPlan(
+                tool_name="search_rag_knowledge",
+                arguments={"query": "case_recovery_INT-06 sprawa kontekst"},
+            )
+        return ToolCallPlan(
+            tool_name="search_rag_knowledge",
+            arguments={"query": "case_recovery_INT-06 kontekst sprawy klient"},
+        )
+
+
+class _DuplicateInt06MessageContentPlanner:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def plan_next_tool(self, *, snapshot, available_tools, constitution):  # noqa: D401
+        self.calls += 1
+        if self.calls == 1:
+            return ToolCallPlan(
+                tool_name="search_rag_knowledge",
+                arguments={"query": "case_recovery_INT-06 tresc wiadomosci klienta"},
+            )
+        return ToolCallPlan(
+            tool_name="search_rag_knowledge",
+            arguments={"query": "case_recovery_INT-06 oryginalna wiadomosc klienta tresc"},
+        )
 
 
 def test_load_constitution_has_allowlist() -> None:
@@ -317,6 +406,241 @@ def test_successful_distinct_rag_queries_remain_allowed() -> None:
         "search_rag_knowledge",
     ]
     assert executed_queries == ["warunki dotacji", "polityka gwarancyjna"]
+
+
+def test_successful_rag_research_accumulates_for_next_planner_turn() -> None:
+    constitution = load_constitution()
+    planner = _CaptureResearchStatePlanner()
+
+    def _rag(plan, _ctx):
+        query = str(plan.arguments["query"])
+        return ToolResult(
+            status="ok",
+            turn_summary_pl="RAG: 1 fragmentow dla zapytania.",
+            snapshot_delta={
+                "agent_memory": {
+                    "reasoning_trace": [
+                        {
+                            "turn": 0,
+                            "summary_pl": (
+                                f"RAG query={query}; hits=1; "
+                                f"evidence=chunk-{len(query)}; top=fixture result"
+                            ),
+                        }
+                    ],
+                },
+            },
+        )
+
+    engine = AgentGraphEngine(
+        planner=planner,
+        constitution=constitution,
+        tool_registry=AgentToolRegistry(
+            handlers={
+                "search_rag_knowledge": _rag,
+                "request_operator_clarification": lambda _plan, _ctx: ToolResult(
+                    status="ok",
+                    turn_summary_pl="stop",
+                    snapshot_delta={
+                        "operational_status": {"code": "pending_operator", "blocking": True},
+                        "hitl_gate": {"required": True, "reason": "agent_stopped"},
+                    },
+                ),
+            }
+        ),
+    )
+    snapshot = build_initial_snapshot(
+        case_id="case_research_stop",
+        engagement_id="eng_research_stop",
+        trace_id="sig_research_stop",
+    )
+
+    engine.run(snapshot)
+
+    third_turn_view = planner.compact_by_turn[2]
+    completed = "\n".join(third_turn_view.get("completed_rag_research", []))
+    assert "case_recovery_DEC-02 oferta cena negocjacja" in completed
+    assert "case_recovery_DEC-02 szczegoly oferty klient" in completed
+
+
+def test_semantic_duplicate_rag_objective_is_blocked_after_success() -> None:
+    constitution = load_constitution()
+    planner = _DuplicateRagObjectivePlanner()
+    executed_queries: list[str] = []
+
+    def _rag(plan, _ctx):
+        query = str(plan.arguments["query"])
+        executed_queries.append(query)
+        return ToolResult(
+            status="ok",
+            turn_summary_pl="RAG: 1 fragmentow dla zapytania.",
+            snapshot_delta={
+                "agent_memory": {
+                    "reasoning_trace": [
+                        {
+                            "turn": 0,
+                            "summary_pl": (
+                                f"RAG query={query}; hits=1; "
+                                "evidence=case_recovery_DEC-02_chunk_0; top=rabat fixture"
+                            ),
+                        }
+                    ],
+                },
+            },
+        )
+
+    engine = AgentGraphEngine(
+        planner=planner,
+        constitution=constitution,
+        tool_registry=AgentToolRegistry(handlers={"search_rag_knowledge": _rag}),
+    )
+    snapshot = build_initial_snapshot(
+        case_id="case_duplicate_rag",
+        engagement_id="eng_duplicate_rag",
+        trace_id="sig_duplicate_rag",
+    )
+
+    result = engine.run(snapshot)
+
+    assert executed_queries == ["case_recovery_DEC-02 oferta rabat negocjacja ceny"]
+    assert [turn.tool_name for turn in result.turns] == [
+        "search_rag_knowledge",
+        "search_rag_knowledge",
+    ]
+    assert result.turns[1].tool_status == "error"
+    assert result.snapshot.hitl_gate.reason == "duplicate_rag_research:price_negotiation"
+
+
+def test_mi02_old_heater_removal_research_objective_is_blocked_after_success() -> None:
+    constitution = load_constitution()
+    planner = _DuplicateMi02OldHeaterPlanner()
+    executed_queries: list[str] = []
+
+    def _rag(plan, _ctx):
+        query = str(plan.arguments["query"])
+        executed_queries.append(query)
+        return ToolResult(
+            status="ok",
+            turn_summary_pl="RAG: 1 fragmentow dla zapytania.",
+            snapshot_delta={
+                "agent_memory": {
+                    "reasoning_trace": [
+                        {
+                            "turn": 0,
+                            "summary_pl": (
+                                f"RAG query={query}; hits=1; "
+                                "evidence=case_recovery_MI-02_chunk_0; top=wywoz pieca fixture"
+                            ),
+                        }
+                    ],
+                },
+            },
+        )
+
+    engine = AgentGraphEngine(
+        planner=planner,
+        constitution=constitution,
+        tool_registry=AgentToolRegistry(handlers={"search_rag_knowledge": _rag}),
+    )
+    snapshot = build_initial_snapshot(
+        case_id="case_duplicate_mi02",
+        engagement_id="eng_duplicate_mi02",
+        trace_id="sig_duplicate_mi02",
+    )
+
+    result = engine.run(snapshot)
+
+    assert executed_queries == ["oferta wywoz starego pieca wliczony w cene warunki oferty"]
+    assert result.turns[1].tool_status == "error"
+    assert result.snapshot.hitl_gate.reason == "duplicate_rag_research:old_heater_removal_scope"
+
+
+def test_int06_generic_context_research_objective_is_blocked_after_success() -> None:
+    constitution = load_constitution()
+    planner = _DuplicateInt06ContextPlanner()
+    executed_queries: list[str] = []
+
+    def _rag(plan, _ctx):
+        query = str(plan.arguments["query"])
+        executed_queries.append(query)
+        return ToolResult(
+            status="ok",
+            turn_summary_pl="RAG: 1 fragmentow dla zapytania.",
+            snapshot_delta={
+                "agent_memory": {
+                    "reasoning_trace": [
+                        {
+                            "turn": 0,
+                            "summary_pl": (
+                                f"RAG query={query}; hits=1; "
+                                "evidence=case_recovery_INT-06_chunk_0; top=context fixture"
+                            ),
+                        }
+                    ],
+                },
+            },
+        )
+
+    engine = AgentGraphEngine(
+        planner=planner,
+        constitution=constitution,
+        tool_registry=AgentToolRegistry(handlers={"search_rag_knowledge": _rag}),
+    )
+    snapshot = build_initial_snapshot(
+        case_id="case_duplicate_int06",
+        engagement_id="eng_duplicate_int06",
+        trace_id="sig_duplicate_int06",
+    )
+
+    result = engine.run(snapshot)
+
+    assert executed_queries == ["case_recovery_INT-06 sprawa kontekst"]
+    assert result.turns[1].tool_status == "error"
+    assert result.snapshot.hitl_gate.reason == "duplicate_rag_research:case_context"
+
+
+def test_int06_source_message_content_research_objective_is_blocked_after_success() -> None:
+    constitution = load_constitution()
+    planner = _DuplicateInt06MessageContentPlanner()
+    executed_queries: list[str] = []
+
+    def _rag(plan, _ctx):
+        query = str(plan.arguments["query"])
+        executed_queries.append(query)
+        return ToolResult(
+            status="ok",
+            turn_summary_pl="RAG: 1 fragmentow dla zapytania.",
+            snapshot_delta={
+                "agent_memory": {
+                    "reasoning_trace": [
+                        {
+                            "turn": 0,
+                            "summary_pl": (
+                                f"RAG query={query}; hits=1; "
+                                "evidence=case_recovery_INT-06_chunk_0; top=message content fixture"
+                            ),
+                        }
+                    ],
+                },
+            },
+        )
+
+    engine = AgentGraphEngine(
+        planner=planner,
+        constitution=constitution,
+        tool_registry=AgentToolRegistry(handlers={"search_rag_knowledge": _rag}),
+    )
+    snapshot = build_initial_snapshot(
+        case_id="case_duplicate_int06_msg",
+        engagement_id="eng_duplicate_int06_msg",
+        trace_id="sig_duplicate_int06_msg",
+    )
+
+    result = engine.run(snapshot)
+
+    assert executed_queries == ["case_recovery_INT-06 tresc wiadomosci klienta"]
+    assert result.turns[1].tool_status == "error"
+    assert result.snapshot.hitl_gate.reason == "duplicate_rag_research:source_message_content"
 
 
 def test_graph_rejects_tool_not_offered_this_turn_after_read_once() -> None:
