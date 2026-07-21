@@ -199,7 +199,10 @@ def test_legacy_must_must_not_extraction_is_scored() -> None:
         "id": "INT-01",
         "extraction": {
             "profile": {"heated_area_m2": 150},
+            "building_type": "dom jednorodzinny",
+            "current_heating_source": "nowy budynek w budowie, brak obecnego zrodla",
             "intent": "wycena pompa ciepla",
+            "hvac_intent": "wycena pompa ciepla",
         },
     }
 
@@ -207,6 +210,18 @@ def test_legacy_must_must_not_extraction_is_scored() -> None:
 
     assert result["score_status"] == "scored"
     assert result["component_scores"]["extraction"]["passed"] is True
+
+
+def test_legacy_extraction_key_value_null_is_missing_not_matched() -> None:
+    truth = {"extraction": {"must": ["heated_area_m2=150"]}}
+    output = {"id": "INT-01", "extraction": {"profile": {"heated_area_m2": None}}}
+
+    result = score_case(output, truth)
+
+    details = result["component_scores"]["extraction"]["details"]
+    assert result["component_scores"]["extraction"]["passed"] is False
+    assert details[0]["id"] == "heated_area_m2"
+    assert details[0]["status"] == "missing_unknown"
 
 
 def test_legacy_understanding_uses_flattened_semantic_terms() -> None:
@@ -227,6 +242,34 @@ def test_legacy_understanding_uses_flattened_semantic_terms() -> None:
 
     assert result["component_scores"]["understanding"]["passed"] is True
     assert "legacy_semantic" in result["component_scores"]["understanding"]["dimensions"]
+
+
+def test_legacy_understanding_uses_frozen_judge_when_supplied() -> None:
+    truth = {"understanding": {"must": ["rozpoznanie odroczenia, nie odmowy ani akceptacji"]}}
+    output = {"id": "FU-05", "understanding": {"summary": "Re: Oferta"}}
+    judge = {
+        "understanding": {
+            "status": "SCORED",
+            "overall_verdict": "BORDERLINE",
+            "unsafe_misinterpretation": False,
+            "dimensions": {
+                "essence": {
+                    "applicable": True,
+                    "verdict": "BORDERLINE",
+                    "score": 0.65,
+                    "status": "failed",
+                    "scorer_type": "llm_judged",
+                }
+            },
+        }
+    }
+
+    result = score_case(output, truth, llm_judge=judge)
+
+    score = result["component_scores"]["understanding"]
+    assert score["scorer_type"] == "llm_judge"
+    assert score["overall_verdict"] == "BORDERLINE"
+    assert score["score"] == 0.65
 
 
 def test_legacy_planner_capacity_is_not_quality_scored() -> None:

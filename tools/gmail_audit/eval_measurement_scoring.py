@@ -185,6 +185,9 @@ def score_understanding(
     legacy_required = list(ground_truth.get("must") or [])
     legacy_forbidden = list(ground_truth.get("must_not") or [])
     if not dimensions and (legacy_required or legacy_forbidden):
+        judged = _judge_overall_score(llm_judge)
+        if judged is not None:
+            return judged
         spec = _dimension_spec(
             {
                 "must_include": legacy_required,
@@ -426,9 +429,25 @@ def _fact_spec(fact: Any) -> dict[str, Any]:
     if isinstance(fact, dict):
         spec = dict(fact)
     else:
-        spec = {"expected": fact}
+        spec = _legacy_fact_spec(str(fact or ""))
     spec["id"] = str(spec.get("id") or spec.get("path") or spec.get("term") or spec.get("expected") or "fact")
     return spec
+
+
+def _legacy_fact_spec(text: str) -> dict[str, Any]:
+    raw = text.strip()
+    if "=" not in raw:
+        return {"expected": raw}
+    key, expected = raw.split("=", 1)
+    key = key.strip()
+    expected = expected.strip()
+    aliases = [item.strip() for item in re.split(r"\s*/\s*", expected) if item.strip()]
+    return {
+        "id": key or raw,
+        "key": key,
+        "expected": expected,
+        "aliases": aliases if len(aliases) > 1 else [],
+    }
 
 
 def _dimension_spec(spec: Any, *, default_weight: float) -> dict[str, Any]:
@@ -447,9 +466,35 @@ def _extract_fact_value(actual: dict[str, Any], spec: dict[str, Any]) -> Any:
     path = spec.get("path")
     if path:
         return _get_path(actual, str(path))
+    key = spec.get("key")
+    if key:
+        values = _find_values_by_key(actual, str(key))
+        if not values:
+            return None
+        if len(values) == 1:
+            return values[0]
+        return values
     if "term" in spec:
         return _flatten_text(actual)
-    return _flatten_text_with_keys(actual)
+    return _flatten_text(actual)
+
+
+def _find_values_by_key(payload: Any, key: str) -> list[Any]:
+    wanted = _normalize_key(key)
+    found: list[Any] = []
+    if isinstance(payload, dict):
+        for item_key, value in payload.items():
+            if _normalize_key(str(item_key)) == wanted:
+                found.append(value)
+            found.extend(_find_values_by_key(value, key))
+    elif isinstance(payload, (list, tuple, set)):
+        for item in payload:
+            found.extend(_find_values_by_key(item, key))
+    return found
+
+
+def _normalize_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", _normalize_text(value))
 
 
 def _get_path(payload: Any, path: str) -> Any:
@@ -583,6 +628,40 @@ def _judge_dimension_score(llm_judge: dict[str, Any] | None, name: str) -> dict[
     out = dict(item)
     out["score"] = float(out.get("score") or 0.0)
     return out
+
+
+def _judge_overall_score(llm_judge: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(llm_judge, dict):
+        return None
+    status = str(llm_judge.get("status") or "").strip().upper()
+    if status in {"JUDGE_ERROR", "JUDGE_UNAVAILABLE"}:
+        return {
+            "score_type": "understanding_semantic",
+            "scorer_type": "llm_judge",
+            "score": None,
+            "dimensions": {},
+            "unsafe_hit_count": 0,
+            "needs_llm_judge": False,
+            "judge_status": status,
+            "passed": False,
+        }
+    overall = str(llm_judge.get("overall_verdict") or "").strip().upper()
+    if overall not in {"CLEAR_PASS", "BORDERLINE", "CLEAR_FAIL"}:
+        return None
+    score = 1.0 if overall == "CLEAR_PASS" else 0.65 if overall == "BORDERLINE" else 0.0
+    dimensions = llm_judge.get("dimensions") if isinstance(llm_judge.get("dimensions"), dict) else {}
+    unsafe = bool(llm_judge.get("unsafe_misinterpretation"))
+    return {
+        "score_type": "understanding_semantic",
+        "scorer_type": "llm_judge",
+        "score": score,
+        "dimensions": dimensions,
+        "unsafe_hit_count": int(unsafe),
+        "needs_llm_judge": False,
+        "judge_status": status or "SCORED",
+        "overall_verdict": overall,
+        "passed": overall == "CLEAR_PASS" and not unsafe,
+    }
 
 
 def _merge_judge_dimensions(dimensions: dict[str, dict[str, Any]], llm_judge: dict[str, Any] | None) -> None:
