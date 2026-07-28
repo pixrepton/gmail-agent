@@ -1,0 +1,31 @@
+{
+  "schema_version": "measurement-contract-fixture.v1",
+  "status": "FROZEN_BYTE_IDENTICAL_COPY",
+  "source_artifact": "ai-os-final-capability-recovery-20260723T105617",
+  "files": {
+    "corpus-v1.json": {
+      "bytes": 34933,
+      "sha256": "04d1d7d2922f3a75f1be299b61bfe43fe7857734104fc2973dedb0e90ef514b8"
+    },
+    "fresh-full38-results.json": {
+      "bytes": 670035,
+      "sha256": "c04f295293e750856548ac35b4a9126d5946da4e74b6b5df4efebaea33bf736c"
+    },
+    "FRESH-FINAL-judge.json": {
+      "bytes": 71755,
+      "sha256": "688c725aff45699fc76807df330c02c59e04e3de814b2c6746f017b99a26ea99"
+    },
+    "FRESH-FINAL-rescore.json": {
+      "bytes": 143966,
+      "sha256": "10152efe655dc78d399ec1334ed4ff7971e75fa947cc82f3bd9ecdc2cbb35b56"
+    },
+    "corpus-v2.json": {
+      "bytes": 42760,
+      "sha256": "6550a075d5180d492a35b983a4cdc30624756d80cc3b398ae75fa310c470c043"
+    },
+    "FROZEN-v2-rescore.json": {
+      "bytes": 147231,
+      "sha256": "bb1b568ebcb06e7132085b77ecc969d1d34e329a4034106203ae6b101bea1c23"
+    }
+  }
+}

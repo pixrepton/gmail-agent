@@ -78,7 +78,11 @@ from daszek_push_policy import evaluate_live_push_policy
 from exceptions import IntakeError
 from policy_action_proposal import attach_policy_and_proposals, attach_policy_evaluation_to_results
 from decision_pipeline import run_decision_pipeline
-from understanding_output import build_understanding_output, validate_understanding_invariants
+from understanding_output import (
+    build_case_understanding_provenance,
+    build_understanding_output,
+    validate_understanding_invariants,
+)
 from mailbox_memory_health import (
     build_vector_retrieval_readiness_check,
     check_mailbox_memory_database,
@@ -136,7 +140,7 @@ from groq_client import (
     is_rate_limit_error_message,
     request_structured_output,
 )
-from signal_extractor import build_signal_extraction_query, run_signal_extraction
+from signal_extractor import build_signal_extraction_query, run_signal_extraction, signal_extraction_failed
 from llm_contracts.intake_reasoning import IntakeReasoningResult
 from inference_enrichment import enrich_snapshot_for_inference, envelopes_for_telemetry
 from intake_payload import (
@@ -2547,7 +2551,19 @@ def run_intake_reasoning(
             snapshot=snapshot,
             context_bundle=context_bundle,
         )
-        if hvac_signals:
+        # SLICE-1: run_signal_extraction returns a TRUTHY marker dict on failure
+        # ({"parse_status": "extraction_failed"|"empty_result", "error_reason": ...}), so a bare
+        # `if hvac_signals` previously injected an internal error string into the Intake prompt as
+        # if it were extracted evidence — absence and failure were indistinguishable to the model.
+        # A failed extraction is a blocking gap, never evidence (operator decision 2026-06-09:
+        # provider-chain exhaustion must surface as an error, never be rescued by a heuristic).
+        # The reason is preserved for telemetry; it just never enters the prompt.
+        if signal_extraction_failed(hvac_signals):
+            stage_payload["hvac_signals_error"] = {
+                "parse_status": str(hvac_signals.get("parse_status") or ""),
+                "error_reason": str(hvac_signals.get("error_reason") or "")[:300],
+            }
+        elif hvac_signals:
             stage_payload["hvac_signals"] = hvac_signals
 
     case_link_result = config.get("case_link_result") if isinstance(config.get("case_link_result"), dict) else {}
@@ -3090,6 +3106,23 @@ def build_case_intelligence_layer(
         )
         understanding_output, _uo_errors = validate_understanding_invariants(understanding_output)
         intelligence["understanding_output"] = understanding_output
+        # SLICE-2A: the validator's findings were discarded here, so a contract violation it had
+        # to correct was unreportable. Bounded error CODES only (no message body, no case data)
+        # into the canonical Brain 1 metadata envelope. An empty list is explicit, never omitted,
+        # so "validator ran and found nothing" is distinguishable from "validator did not run".
+        _uo_meta = intelligence.get("execution_metadata")
+        if not isinstance(_uo_meta, dict):
+            _uo_meta = {}
+            intelligence["execution_metadata"] = _uo_meta
+        _uo_meta["understanding_validation_errors"] = [str(code)[:120] for code in (_uo_errors or [])][:20]
+        # SLICE-3A: the planner's structured hand-off needs to know HOW this Understanding was
+        # produced, not just what it says. This is the only point where all three inputs coexist:
+        # the Understanding, the reasoning metadata that fed it, and the validator's findings.
+        _uo_meta["case_understanding_provenance"] = build_case_understanding_provenance(
+            understanding_output=understanding_output,
+            business_execution_metadata=(business_result or {}).get("execution_metadata"),
+            validation_errors=_uo_errors,
+        )
 
     if decision_pipeline_enabled:
         dp = run_decision_pipeline(

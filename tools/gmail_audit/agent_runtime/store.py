@@ -92,8 +92,14 @@ def build_snapshot_from_signal(
     engagement_id: str,
     signal_id: str | None = None,
     trace_id: str | None = None,
+    feed_visibility: Any | None = None,
 ) -> EngagementSnapshotV2:
-    """Pure factory — does not persist (PR-A checklist)."""
+    """Pure factory — does not persist (PR-A checklist).
+
+    SLICE-2B1: `feed_visibility` is forwarded. Before this it was silently dropped here while the
+    dry-run branch of `ensure_engagement_snapshot` did pass it, so the real case-bound production
+    path wrote every snapshot with no classification at all.
+    """
     eid = str(engagement_id or "").strip()
     cid = str(case_id or "").strip()
     if not eid or not cid:
@@ -103,6 +109,7 @@ def build_snapshot_from_signal(
         engagement_id=eid,
         signal_id=str(signal_id or signal.get("signal_id") or "").strip(),
         trace_id=_resolve_trace_id(signal, trace_id),
+        feed_visibility=feed_visibility,
     )
 
 
@@ -111,8 +118,12 @@ def build_staging_snapshot(
     engagement_id: str,
     signal_id: str = "",
     trace_id: str,
+    feed_visibility: Any | None = None,
 ) -> EngagementSnapshotV2:
+    """SLICE-2B: `feed_visibility` is optional routing metadata. Omitting it keeps the previous
+    behaviour exactly (the field stays None and the reader applies the legacy main_feed fallback)."""
     return EngagementSnapshotV2(
+        feed_visibility=feed_visibility,
         engagement_id=engagement_id,
         case_id="",
         version=1,
@@ -136,8 +147,10 @@ def build_initial_snapshot(
     engagement_id: str,
     signal_id: str = "",
     trace_id: str,
+    feed_visibility: Any | None = None,
 ) -> EngagementSnapshotV2:
     return EngagementSnapshotV2(
+        feed_visibility=feed_visibility,
         engagement_id=engagement_id,
         case_id=case_id,
         version=1,

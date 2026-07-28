@@ -345,6 +345,15 @@ def _validate_output_model(
                 extra={"x": {"output_model": output_model.__name__, "error_type": "root_type_error"}},
             )
             return None, [{"type": "root_type_error", "msg": "top-level JSON must be an object, got array"}]
+        if (
+            output_model.__name__ == "BusinessReasoningResult"
+            and str(getattr(output_model, "__module__", "")).endswith("llm_contracts.business_reasoning")
+        ):
+            from intake_schema import validate_business_reasoning_result
+
+            candidate = json.loads(json_text)
+            normalized = validate_business_reasoning_result(candidate)
+            return output_model.model_validate(normalized), None
         return output_model.model_validate_json(json_text), None
     except ValidationError as exc:
         if output_model.__name__ == "IntakeReasoningResult":
@@ -536,6 +545,7 @@ def run_central_structured_stage(
                     stage_name=stage_name,
                     instructions=system,
                     prompt_input=prompt_input,
+                    json_schema=json_schema,
                     schema_name=schema_name,
                     model=model,
                     verbose=verbose,

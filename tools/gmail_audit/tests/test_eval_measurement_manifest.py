@@ -44,4 +44,10 @@ def test_measurement_manifest_hashes_frozen_components(tmp_path: Path) -> None:
     assert manifest["rules"]["manual_scoring_required"] is False
     assert manifest["components"]["corpus_sha256"]
     assert manifest["manifest_sha256"]
+    assert set(manifest["scorer_files"]) == {
+        "eval_measurement_scoring.py",
+        "eval_final_rescore.py",
+        "eval_final_rescore_versioned.py",
+        "eval_understanding_judge.py",
+    }
     assert [item["path"] for item in manifest["harness"]["files"]] == ["run_recovery.py"]

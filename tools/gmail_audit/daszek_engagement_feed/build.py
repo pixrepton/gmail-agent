@@ -265,6 +265,39 @@ def build_engagement_feed_envelope(
     return envelope
 
 
+#: hard ceiling on how far back the overfetch walks, so a mailbox full of noise can never turn one
+#: feed build into an unbounded scan
+_MAIN_FEED_MAX_SCAN = 1000
+
+
+def _list_main_feed_snapshots(list_fn: Any, *, limit: int) -> list[EngagementSnapshotV2]:
+    """SLICE-2B: return `limit` MAIN-FEED-QUALIFYING snapshots, newest first.
+
+    Membership must be applied BEFORE the effective limit. Fetching `LIMIT n` and filtering
+    afterwards would let n recent noise snapshots push older, genuinely qualifying cases out of the
+    operator's feed entirely -- the exact failure the routing proof exposed.
+
+    Bounded overfetch is used rather than a SQL predicate deliberately: the rule (stored routing
+    classification + CURRENT executive-state override) lives in one pure Python function, and
+    duplicating it in SQL would create two sources of truth for the same contract. The scan is
+    capped by `_MAIN_FEED_MAX_SCAN` and stops as soon as the store is exhausted.
+    """
+    from feed_visibility import is_main_feed_member
+
+    fetch = max(1, int(limit))
+    seen_rows = 0
+    while True:
+        rows = list_fn(limit=fetch) or []
+        qualifying = [snap for snap in rows if is_main_feed_member(snap)]
+        if len(qualifying) >= limit:
+            return qualifying[:limit]
+        if len(rows) <= seen_rows or len(rows) < fetch or fetch >= _MAIN_FEED_MAX_SCAN:
+            # store exhausted, or the scan ceiling reached: return everything that qualifies
+            return qualifying[:limit]
+        seen_rows = len(rows)
+        fetch = min(fetch * 4, _MAIN_FEED_MAX_SCAN)
+
+
 def build_operational_feed_from_engagement_store(
     operator_store: OperatorEngagementStore,
     *,
@@ -278,11 +311,12 @@ def build_operational_feed_from_engagement_store(
     limit = max(1, int(case_limit))
     snapshots: list[EngagementSnapshotV2] = []
     if case_ids:
+        # An explicit case query is a direct lookup, not the main feed: membership does not apply.
         snapshots = operator_store.load_snapshots_for_case_ids(case_ids[:limit])
     else:
         list_fn = getattr(operator_store, "list_recent_snapshots", None)
         if callable(list_fn):
-            snapshots = list_fn(limit=limit)
+            snapshots = _list_main_feed_snapshots(list_fn, limit=limit)
     meta = _message_meta_by_case(mailbox_store, snapshots)
     feed_core = build_feed_from_engagement_snapshots(
         snapshots,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import time
 from datetime import datetime
@@ -16,6 +17,8 @@ from event_spine.emitter import publish_os_event
 from event_spine.gmail_telemetry import publish_gmail_feed_push_event
 from hitl_gmail_send import execute_hitl_gmail_send
 from mailbox_memory_runtime import build_mailbox_memory_runtime
+
+logger = logging.getLogger(__name__)
 
 _HITL_SEND_STATE_KEY = "agent_hitl_send_states"
 
@@ -93,6 +96,46 @@ def _read_hitl_state(mailbox_store: Any, *, case_id: str, decision_key: str) -> 
     return _hitl_state_from_case(row, decision_key)
 
 
+def _snapshot_action_parent_refs(snapshot: Any, action_id: str) -> dict[str, str]:
+    for action in getattr(snapshot, "actions", []) or []:
+        if str(getattr(action, "id", "") or "") != str(action_id or ""):
+            continue
+        return {
+            "parent_policy_decision_id": str(
+                getattr(action, "parent_policy_decision_id", "") or ""
+            ),
+            "parent_action_proposal_v2_id": str(
+                getattr(action, "parent_action_proposal_v2_id", "") or ""
+            ),
+            "parent_decision_candidate_id": str(
+                getattr(action, "parent_decision_candidate_id", "") or ""
+            ),
+            "source_signal_id": str(getattr(action, "source_signal_id", "") or ""),
+        }
+    return {
+        "parent_policy_decision_id": "",
+        "parent_action_proposal_v2_id": "",
+        "parent_decision_candidate_id": "",
+        "source_signal_id": "",
+    }
+
+
+def _normalized_parent_refs(value: Any) -> dict[str, str]:
+    raw = value if isinstance(value, dict) else {}
+    return {
+        "parent_policy_decision_id": str(
+            raw.get("parent_policy_decision_id") or ""
+        ),
+        "parent_action_proposal_v2_id": str(
+            raw.get("parent_action_proposal_v2_id") or ""
+        ),
+        "parent_decision_candidate_id": str(
+            raw.get("parent_decision_candidate_id") or ""
+        ),
+        "source_signal_id": str(raw.get("source_signal_id") or ""),
+    }
+
+
 def _persist_hitl_send_result(
     mailbox_store: Any,
     *,
@@ -103,6 +146,7 @@ def _persist_hitl_send_result(
     decision_key: str,
     state: dict[str, Any],
     execution: dict[str, Any],
+    parent_refs: dict[str, str],
 ) -> str:
     decision_status = str(state.get("status") or execution.get("decision_status") or "").strip()
     execution_status = "executed" if decision_status == "executed" else ("blocked" if decision_status == "outcome_unknown" else "failed")
@@ -126,10 +170,11 @@ def _persist_hitl_send_result(
                 "engagement_id": engagement_id,
                 "action_id": action_id,
                 "operator_id": operator_id,
+                "parent_refs": dict(parent_refs),
                 "execution": execution,
             },
             "audit_trace_id": _stable_bridge_key("audit", decision_key, decision_status or "unknown"),
-            "policy_result": {},
+            "policy_result": dict(parent_refs),
         }
     )
     if decision_status == "executed":
@@ -148,6 +193,7 @@ def _persist_hitl_send_result(
                     "engagement_id": engagement_id,
                     "action_id": action_id,
                     "operator_id": operator_id,
+                    "parent_refs": dict(parent_refs),
                     "execution": execution,
                 },
                 "source_refs": [{"type": "case", "case_id": case_id}],
@@ -231,6 +277,46 @@ def best_effort_push_engagement_feed_after_hitl(
             trigger="agent_hitl",
         )
         return {"ok": False, "skipped": False, "error": str(exc)}
+
+
+def _project_execution_attention_best_effort(
+    operator_store: Any,
+    *,
+    engagement_id: str,
+    reason: str,
+) -> dict[str, Any]:
+    """SLICE-2B1: make an unresolved send visible to the operator without touching execution.
+
+    After `approve_hitl_action` the snapshot has `hitl_gate.required=False` and
+    `operational_status.code="ready_for_quote"`, and an `outcome_unknown` send raises before any
+    snapshot write. The case therefore has no executive field left that says "an operator must
+    look at this", even though the send may or may not have happened and auto-retry is forbidden.
+
+    This writes only `feed_visibility.execution_attention`. It cannot re-send, cannot alter the
+    `decision_key`, and cannot change the MailboxMemory send state -- and it is best-effort, so a
+    CAS conflict or a store error never masks the original execution outcome.
+    """
+    eid = str(engagement_id or "").strip()
+    if not eid or operator_store is None:
+        return {"ok": False, "reason": "no_engagement_or_store"}
+    try:
+        from feed_visibility import mark_execution_attention
+        from llm_contracts.engagement_snapshot_v2 import FeedVisibility
+
+        snapshot = operator_store.load_snapshot(eid)
+        if snapshot is None:
+            return {"ok": False, "reason": "snapshot_not_found"}
+        current = snapshot.feed_visibility
+        if current is not None and bool(getattr(current, "execution_attention", False)):
+            return {"ok": True, "reason": "already_flagged"}
+        patched = snapshot.model_copy(
+            update={"feed_visibility": FeedVisibility(**mark_execution_attention(current, reason=reason))}
+        )
+        operator_store.save_snapshot(patched, expected_version=snapshot.version)
+        return {"ok": True, "reason": reason}
+    except Exception as exc:  # noqa: BLE001 - visibility projection must never mask the send result
+        logger.warning("EXECUTION_ATTENTION_PROJECTION_FAILED: %s", exc)
+        return {"ok": False, "reason": str(exc)}
 
 
 def approve_hitl_engagement(
@@ -380,13 +466,28 @@ def execute_hitl_send_from_bridge_row(
 
     if not case_id:
         case_id = str(snapshot.case_id or "").strip()
+    snapshot_parent_refs = _snapshot_action_parent_refs(snapshot, action_id)
 
     mailbox_store = _mailbox_store_from_settings(settings)
     cached_state = _read_hitl_state(mailbox_store, case_id=case_id, decision_key=decision_key)
     cached_status = str(cached_state.get("status") or "").strip()
+    if isinstance(cached_state.get("parent_refs"), dict):
+        parent_refs = _normalized_parent_refs(cached_state.get("parent_refs"))
+    elif cached_status in {"executed", "outcome_unknown"}:
+        # A legacy terminal execution cannot be retroactively parented from a
+        # snapshot that may have changed after the effect.
+        parent_refs = _normalized_parent_refs({})
+    else:
+        parent_refs = snapshot_parent_refs
 
     if cached_status in {"executed", "outcome_unknown"}:
         execution = dict(cached_state.get("execution") or {})
+        if cached_status == "outcome_unknown":
+            # replay of an already-unresolved send: the flag is idempotent, so re-asserting it
+            # here covers a projection that failed (or did not yet exist) on the first pass
+            _project_execution_attention_best_effort(
+                service.store, engagement_id=engagement_id, reason="hitl_send_outcome_unknown"
+            )
         event_id = _persist_hitl_send_result(
             mailbox_store,
             case_id=case_id,
@@ -396,6 +497,7 @@ def execute_hitl_send_from_bridge_row(
             decision_key=decision_key,
             state=cached_state,
             execution=execution,
+            parent_refs=parent_refs,
         )
     else:
         accepted_at = _now_iso()
@@ -412,6 +514,7 @@ def execute_hitl_send_from_bridge_row(
                 "engagement_id": engagement_id,
                 "action_id": action_id,
                 "operator_id": operator_id,
+                "parent_refs": dict(parent_refs),
             },
         )
 
@@ -463,6 +566,7 @@ def execute_hitl_send_from_bridge_row(
                 decision_key=decision_key,
                 state=current,
                 execution=execution,
+                parent_refs=parent_refs,
             )
         else:
             decision_status = str(
@@ -488,8 +592,15 @@ def execute_hitl_send_from_bridge_row(
                 decision_key=decision_key,
                 state=final_state,
                 execution=execution,
+                parent_refs=parent_refs,
             )
             if decision_status == "outcome_unknown":
+                # visibility only, and BEFORE the raise: the operator must be able to find this
+                # case, and auto-retry stays forbidden (AGENTS.md) because nothing about the send
+                # state, the decision_key, or operational_status is touched here
+                _project_execution_attention_best_effort(
+                    service.store, engagement_id=engagement_id, reason="hitl_send_outcome_unknown"
+                )
                 raise RuntimeError("hitl_send_outcome_unknown")
             if decision_status != "executed":
                 raise RuntimeError(str(execution.get("reason") or "hitl_send_failed_before_execution"))
@@ -508,6 +619,7 @@ def execute_hitl_send_from_bridge_row(
         "operator_id": operator_id,
         "case_id": case_id,
         "decision_key": decision_key,
+        "parent_refs": parent_refs,
         "event_id": event_id,
         "execution": execution,
         "feed_push": feed_push,

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import unittest
 
-from reply_drafter import gate_reply_draft_commitments
+from reply_drafter import _draft_case_state, gate_reply_draft_commitments
 
 
 def _parsed(body: str) -> dict:
@@ -109,6 +109,76 @@ class NormalWordingUnaffected(unittest.TestCase):
         self.assertIn("Dzien dobry, dziekujemy za zapytanie.", body)
         self.assertIn("Pozdrawiamy.", body)
         self.assertNotIn("Gwarantujemy", body)
+
+
+class QuotedCustomerTextIsNotTreatedAsOwnCommitment(unittest.TestCase):
+    def test_quoted_customer_claim_is_not_rewritten(self) -> None:
+        text = 'Dzien dobry, w Panstwa wiadomosci napisali Panstwo: "wizyta jest juz umowiona na jutro". Sprawdzimy to.'
+        result = gate_reply_draft_commitments(_parsed(text), case_state={})
+        body = result["drafts"][0]["body"]
+        self.assertIn("wizyta jest juz umowiona na jutro", body)
+        self.assertFalse(result["requires_manual_edit"])
+
+    def test_unquoted_commitment_outside_quote_is_still_rewritten(self) -> None:
+        text = 'Cytujac Panstwa: "sprawa jest pilna". Gwarantujemy najlepsza cene.'
+        result = gate_reply_draft_commitments(_parsed(text), case_state={})
+        body = result["drafts"][0]["body"]
+        self.assertIn("sprawa jest pilna", body)
+        self.assertNotIn("Gwarantujemy", body)
+
+
+class RealAuthoritativeEvidenceIsConsulted(unittest.TestCase):
+    """The gate must not treat "no dedicated boolean field" as proof no
+    confirmation exists anywhere -- it must consult real, existing structured
+    case evidence (CaseContextPack.active_facts, persisted by the real
+    schedule_visit / add_deadline write executors) before defaulting to
+    unsupported."""
+
+    def test_scheduled_visit_fact_in_case_context_pack_is_recognized(self) -> None:
+        context_bundle = {
+            "case_context_pack": {
+                "active_facts": [
+                    {"fact_key": "scheduled_visit", "normalized_value": "Date: 2026-02-01, Address: X"}
+                ]
+            }
+        }
+        state = _draft_case_state({}, {}, context_bundle)
+        self.assertTrue(state["visit_confirmed"])
+
+    def test_case_deadline_fact_in_case_context_pack_is_recognized(self) -> None:
+        context_bundle = {
+            "case_context_pack": {
+                "active_facts": [{"fact_key": "case_deadline", "normalized_value": "Deadline: 2026-02-01"}]
+            }
+        }
+        state = _draft_case_state({}, {}, context_bundle)
+        self.assertTrue(state["deadline_confirmed"])
+
+    def test_absence_of_fact_and_absence_of_boolean_field_stays_unsupported(self) -> None:
+        context_bundle = {"case_context_pack": {"active_facts": []}}
+        state = _draft_case_state({}, {}, context_bundle)
+        self.assertFalse(state["visit_confirmed"])
+        self.assertFalse(state["deadline_confirmed"])
+
+    def test_unrelated_facts_do_not_falsely_grant_visit_confirmation(self) -> None:
+        context_bundle = {
+            "case_context_pack": {"active_facts": [{"fact_key": "customer_email", "normalized_value": "a@b.pl"}]}
+        }
+        state = _draft_case_state({}, {}, context_bundle)
+        self.assertFalse(state["visit_confirmed"])
+
+    def test_real_scheduled_visit_evidence_flows_through_the_gate_end_to_end(self) -> None:
+        context_bundle = {
+            "case_context_pack": {
+                "active_facts": [{"fact_key": "scheduled_visit", "normalized_value": "Date: 2026-02-01"}]
+            }
+        }
+        state = _draft_case_state({}, {}, context_bundle)
+        result = gate_reply_draft_commitments(
+            _parsed("Dzien dobry, wizyta jest juz umowiona na jutro."), case_state=state
+        )
+        body = result["drafts"][0]["body"].lower()
+        self.assertIn("umowiona", body)
 
 
 if __name__ == "__main__":

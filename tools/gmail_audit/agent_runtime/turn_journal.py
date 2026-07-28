@@ -60,6 +60,7 @@ class InMemoryAgentTurnJournal(AgentTurnJournal):
             "snapshot_version": int(snapshot_version),
             "tool_name": plan.tool_name,
             "tool_args_redacted": _redact_args(plan.arguments),
+            "plan_correlation": _plan_correlation(plan),
             "tool_status": result.status,
             "turn_summary_pl": result.turn_summary_pl,
             "tokens_used": int(result.tokens_used),
@@ -96,6 +97,7 @@ class PostgresAgentTurnJournal(AgentTurnJournal):
             "snapshot_version": int(snapshot_version),
             "tool_name": plan.tool_name,
             "tool_args_redacted": _redact_args(plan.arguments),
+            "plan_correlation": _plan_correlation(plan),
             "tool_status": result.status,
             "turn_summary_pl": result.turn_summary_pl,
             "tokens_used": int(result.tokens_used),
@@ -107,17 +109,19 @@ class PostgresAgentTurnJournal(AgentTurnJournal):
                     """
                     INSERT INTO agent_runtime_turns (
                         turn_id, engagement_id, snapshot_version, tool_name,
-                        tool_args_redacted, tool_status, turn_summary_pl,
+                        tool_args_redacted, plan_correlation, tool_status, turn_summary_pl,
                         tokens_used, trace_id, created_at
                     ) VALUES (
                         %(turn_id)s, %(engagement_id)s, %(snapshot_version)s, %(tool_name)s,
-                        %(tool_args_redacted)s::jsonb, %(tool_status)s, %(turn_summary_pl)s,
+                        %(tool_args_redacted)s::jsonb, %(plan_correlation)s::jsonb,
+                        %(tool_status)s, %(turn_summary_pl)s,
                         %(tokens_used)s, %(trace_id)s, NOW()
                     )
                     """,
                     {
                         **row,
                         "tool_args_redacted": json.dumps(row["tool_args_redacted"], ensure_ascii=False),
+                        "plan_correlation": json.dumps(row["plan_correlation"], ensure_ascii=False),
                     },
                 )
             conn.commit()
@@ -164,3 +168,11 @@ def _redact_args(arguments: Mapping[str, Any]) -> dict[str, Any]:
         else:
             redacted[key] = value
     return redacted
+
+
+def _plan_correlation(plan: ToolCallPlan) -> dict[str, str]:
+    return {
+        "policy_decision_id": str(plan.policy_decision_id or ""),
+        "action_proposal_id": str(plan.action_proposal_id or ""),
+        "status": str(plan.correlation_status or ""),
+    }

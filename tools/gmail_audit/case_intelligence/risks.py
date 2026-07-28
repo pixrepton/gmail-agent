@@ -71,6 +71,28 @@ def _dedupe_risk_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(by_type.values(), key=lambda item: (_severity_rank(item.get("severity")), _bounded_float(item.get("confidence"), default=0.0)), reverse=True)
 
 
+# RC-IQ-R3: never surface a raw internal signal token in an operator-facing risk
+# reason. Known attachment/document tokens get an operator sentence; a bare snake_case
+# token (internal id, no spaces) is replaced with a neutral verification prompt; genuine
+# human free text is kept.
+_RISK_SIGNAL_LABEL_PL = {
+    "financial_document_present": "Klient przeslal dokument finansowy (np. fakture) wymagajacy przetworzenia.",
+    "low_confidence_extraction": "Odczyt zalacznika jest niepewny i wymaga recznej weryfikacji.",
+    "unrecognized_attachment": "W wiadomosci jest nierozpoznany zalacznik wymagajacy sprawdzenia.",
+}
+
+
+def _humanize_risk_signal(raw_risk: str) -> str:
+    text = str(raw_risk or "").strip()
+    if text.lower() in _RISK_SIGNAL_LABEL_PL:
+        return _RISK_SIGNAL_LABEL_PL[text.lower()]
+    if not text:
+        return "Sygnal wymaga weryfikacji operatora."
+    if "_" in text and " " not in text:  # internal snake_case token — do not leak verbatim
+        return "Pojawil sie sygnal wymagajacy weryfikacji przez operatora przed dalszym ruchem."
+    return f"Zwroc uwage: {text}."
+
+
 def _map_raw_risk_to_item(
     raw_risk: str,
     *,
@@ -102,8 +124,17 @@ def _map_raw_risk_to_item(
         return _risk_item(risk_type="finance_risk", severity="medium",
             reason_pl="Sprawa ma komponent finansowy wymagajacy potwierdzenia.",
             confidence=0.66, watch="Czy pojawi sie potwierdzenie platnosci lub rozliczenia.", grounding=grounding)
+    # RC-IQ-R3: an unanswered customer question is a concrete, grounded risk — describe
+    # it in operator language and reference the actual pending question (from grounding),
+    # never as the raw internal token.
+    if "unanswered_customer_question" in lowered or "unresolved_question" in lowered:
+        supporting = str((grounding or {}).get("supporting_fact_pl") or "").strip()
+        detail = f' Pytanie czeka na odpowiedz: "{supporting[:180]}".' if supporting else ""
+        return _risk_item(risk_type="interpretation_risk", severity=severity,
+            reason_pl=("Klient ma niezalatwione pytanie wymagajace odpowiedzi przed dalszym ruchem." + detail).strip(),
+            confidence=0.7, watch="Czy pytanie klienta zostanie odpowiedziane w kolejnym ruchu.", grounding=grounding)
     return _risk_item(risk_type="interpretation_risk", severity="medium",
-        reason_pl=f"System wykryl sygnal ryzyka: {raw_risk}.",
+        reason_pl=_humanize_risk_signal(raw_risk),
         confidence=0.6, watch="Czy kolejne sygnaly potwierdza ten kierunek.", grounding=grounding)
 
 

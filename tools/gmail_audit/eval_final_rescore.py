@@ -13,7 +13,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from eval_measurement_scoring import canonical_json_sha256, score_case
+from eval_measurement_scoring import canonical_json_sha256, measurement_contract, score_case
 
 
 NON_CAPABILITY_OUTCOMES = {"CAPACITY", "DELIVERY", "HARNESS"}
@@ -65,12 +65,14 @@ def score_final_case(
     corpus_case: dict[str, Any],
     *,
     understanding_judge: dict[str, Any] | None = None,
+    measurement_contract_version: str = "v1",
 ) -> dict[str, Any]:
     case_id = str(case_output.get("id") or case_output.get("case_id") or corpus_case.get("id") or "")
     ground_truth = corpus_case.get("ground_truth") or {}
     sanitized, nonblocking_tool_errors = _case_for_quality_scoring(case_output)
     judge_payload = {"understanding": understanding_judge} if understanding_judge else None
-    score = score_case(sanitized, ground_truth, llm_judge=judge_payload)
+    with measurement_contract(measurement_contract_version):
+        score = score_case(sanitized, ground_truth, llm_judge=judge_payload)
     component_status = _component_statuses(case_output, ground_truth, score)
     final_outcome = _final_outcome(score, component_status)
     return {
@@ -296,6 +298,12 @@ def _final_outcome(score: dict[str, Any], component_status: dict[str, Any]) -> s
     if base == "CAPABILITY":
         return "CAPABILITY"
     if any(item.get("status") == "UNSCORABLE_WITH_PROVEN_CAPTURE_GAP" for item in component_status.values()):
+        return "HARNESS"
+    # An unresolved judge is an infrastructure outcome, not evidence of quality. Without this
+    # guard the `scored and passed is False` test below cannot fire (JUDGE_ERROR sets
+    # scored=False), so the case would fall through to CLEAN_PASS -- awarding a pass to a
+    # component that was never actually judged.
+    if any(item.get("status") in {"JUDGE_ERROR", "JUDGE_UNAVAILABLE"} for item in component_status.values()):
         return "HARNESS"
     if any(item.get("status") == "DRAFT_GENERATION_FAILURE" for item in component_status.values()):
         return "CAPABILITY"

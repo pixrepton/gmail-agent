@@ -352,6 +352,65 @@ def test_groq_success_does_not_use_fallback(monkeypatch: pytest.MonkeyPatch) -> 
     ]
 
 
+def test_groq_key_pool_rotates_starting_key_across_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Consecutive calls should start from a different pool key, not always keys[0].
+
+    Prevents the first key from absorbing all traffic until it hits a rate limit;
+    load spreads across the pool from the very first call.
+    """
+    from groq_client import reset_groq_key_rotation_counter_for_tests
+
+    reset_groq_key_rotation_counter_for_tests()
+    settings = _settings(
+        LLM_STRUCTURED_PROVIDER_ALTERNATION="0",
+        GROQ_API_KEY="gsk_test",
+        GROQ_API_KEYS="gsk_test,gsk_second,gsk_third",
+    )
+    used_keys: list[str] = []
+
+    def fake_post(url: str, headers: dict[str, str], **_: object) -> _FakeResponse:
+        used_keys.append(headers["Authorization"].removeprefix("Bearer "))
+        return _groq_success()
+
+    monkeypatch.setattr("groq_client.requests.post", fake_post)
+
+    _call(settings)
+    _call(settings)
+    _call(settings)
+    _call(settings)
+
+    assert used_keys == ["gsk_test", "gsk_second", "gsk_third", "gsk_test"]
+
+
+def test_groq_key_pool_rotation_still_tries_all_keys_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rotating the starting key must not shrink the fallback chain within one call."""
+    from groq_client import reset_groq_key_rotation_counter_for_tests
+
+    reset_groq_key_rotation_counter_for_tests()
+    settings = _settings(
+        LLM_STRUCTURED_PROVIDER_ALTERNATION="0",
+        GROQ_API_KEY="gsk_test",
+        GROQ_API_KEYS="gsk_test,gsk_second,gsk_third",
+    )
+    used_keys: list[str] = []
+
+    def fake_post(url: str, headers: dict[str, str], **_: object) -> _FakeResponse:
+        key = headers["Authorization"].removeprefix("Bearer ")
+        used_keys.append(key)
+        if key != "gsk_third":
+            return _FakeResponse(429, {"error": {"message": "rate limited"}})
+        return _groq_success()
+
+    monkeypatch.setattr("groq_client.requests.post", fake_post)
+
+    result = _call(settings)
+
+    assert result.text == '{"ok": true}'
+    assert used_keys == ["gsk_test", "gsk_second", "gsk_third"]
+
+
 def test_openai_chat_402_credits_uses_groq_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _settings(
         LLM_PRIMARY_PROVIDER="openai_chat",

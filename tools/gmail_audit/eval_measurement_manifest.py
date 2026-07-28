@@ -19,6 +19,7 @@ MANIFEST_VERSION = "final-eval-measurement-manifest.v1"
 SCORER_FILES = (
     "eval_measurement_scoring.py",
     "eval_final_rescore.py",
+    "eval_final_rescore_versioned.py",
     "eval_understanding_judge.py",
 )
 JUDGE_FILES = (

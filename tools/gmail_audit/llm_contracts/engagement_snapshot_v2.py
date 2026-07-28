@@ -48,6 +48,10 @@ class ActionItem(StrictModel):
     enabled: bool
     payload_pl: str | None = None
     disabled_reason_pl: str | None = None
+    parent_policy_decision_id: str = ""
+    parent_action_proposal_v2_id: str = ""
+    parent_decision_candidate_id: str = ""
+    source_signal_id: str = ""
 
 
 class HitlGate(StrictModel):
@@ -83,6 +87,84 @@ class CaseUnderstandingProjection(StrictModel):
     missing_critical_fields: list[str] = Field(default_factory=list)
     risks: list[UnderstandingRiskItem] = Field(default_factory=list)
     recommended_next_step_pl: str = ""
+
+
+class CaseUnderstandingProvenance(StrictModel):
+    """SLICE-3A: `CaseUnderstandingProvenanceV1` — how the sibling `case_understanding` was produced.
+
+    Deliberately a SEPARATE, small envelope rather than fields inside
+    `CaseUnderstandingProjection`: the projection is Brain 1's semantic content, this is metadata
+    about the run that produced it. Keeping them apart means a reader can trust the content
+    without having to strip bookkeeping out of it, and there is still exactly one semantic
+    representation of the case — no third model.
+
+    Every field is optional with an honest empty default. An empty string means "not known",
+    never a fabricated status: a snapshot written before this slice simply has
+    `case_understanding_provenance = None` and gets no invented provenance.
+
+    `corrected` is NOT `degraded`. A normalisation may be a harmless synonym rewrite or a real
+    dictionary collision, and nothing in the current code distinguishes them. Until a severity
+    contract exists, this records WHAT happened and refuses to editorialise about how bad it was.
+    """
+
+    schema_version: str = "v1"
+    #: `not_required` is a normal outcome (a lane that deliberately skips heavy reasoning) and must
+    #: never surface to the operator as a failure or a warning.
+    availability: Literal["available", "unavailable", "not_required", ""] = ""
+    source_mode: Literal[
+        "model_result", "normalized_model_result", "fallback", "skipped_for_lane", ""
+    ] = ""
+    validation_state: Literal["clean", "corrected", ""] = ""
+    source_signal_id: str = ""
+    observed_at: str = ""
+    reason_codes: list[str] = Field(default_factory=list)
+    normalization_count: int = Field(default=0, ge=0)
+    validation_error_count: int = Field(default=0, ge=0)
+
+
+class PolicyActionEnvelopeV1(StrictModel):
+    """Bounded read-only projection of canonical MailboxMemory policy/action records."""
+
+    schema_version: Literal["policy_action_envelope.v1"] = "policy_action_envelope.v1"
+    decision_candidate_id: str = ""
+    policy_decision_id: str = ""
+    action_proposal_id: str = ""
+    source_signal_id: str = ""
+    source_message_id: str = ""
+    policy_status: str = ""
+    action_intent: str = ""
+    allowed_by_policy: bool | None = None
+    requires_operator_approval: bool | None = None
+    freshness: Literal["current", "stale", "unavailable"] = "unavailable"
+    proposal_status: str = ""
+    reason_codes: list[str] = Field(default_factory=list)
+    generated_at: str = ""
+    expires_at: str = ""
+
+
+class SemanticPolicyPlanConsistencyV1(StrictModel):
+    """Detection-only observation; it never authorizes, blocks, or rewrites a tool plan."""
+
+    schema_version: Literal["semantic_policy_plan_consistency.v1"] = (
+        "semantic_policy_plan_consistency.v1"
+    )
+    status: Literal[
+        "consistent",
+        "conflicting",
+        "missing_policy_envelope",
+        "stale_policy_envelope",
+        "missing_plan_correlation",
+        "not_evaluable",
+    ]
+    reason_codes: list[str] = Field(default_factory=list)
+    policy_decision_id: str = ""
+    action_proposal_id: str = ""
+    tool_name: str = ""
+    mapping_classification: Literal[
+        "EXHAUSTIVE_MAPPING_EXISTS",
+        "PARTIAL_MAPPING_EXISTS",
+        "NO_SAFE_MAPPING_EXISTS",
+    ] = "NO_SAFE_MAPPING_EXISTS"
 
 
 class ToolCallItem(StrictModel):
@@ -137,6 +219,28 @@ SERVICE_CASE_KINDS = frozenset({"awaria_naprawa", "przeglad_konserwacja"})
 ADMIN_CASE_KINDS = frozenset({"ksiegowosc", "faktura_zakup", "zakupy_materialow", "szkolenie"})
 
 
+class FeedVisibility(StrictModel):
+    """SLICE-2B: routing/projection metadata deciding operator MAIN-feed membership.
+
+    This is NOT a new semantic truth about the case — it records how the signal was routed and
+    why, so `snapshot exists` stops implying `belongs in the operator feed`. Optional and
+    additive: snapshots written before this slice validate unchanged and are treated as
+    `main_feed` by an explicit legacy fallback.
+    """
+
+    mode: Literal["hidden", "case_timeline_only", "main_feed", "attention_required"] = "main_feed"
+    reason_codes: list[str] = Field(default_factory=list)
+    source_lane: str = ""
+    source_triage_class: str = ""
+    operator_override: bool = False
+    #: SLICE-2B1: an unresolved EXECUTION state that the snapshot's own executive fields cannot
+    #: express (today: a HITL send that resolved to `outcome_unknown`, which lives in
+    #: MailboxMemory under `decision_key` and has no `OperationalStatus.code` literal). Purely a
+    #: visibility projection -- it never affects execution, retry, or the decision key.
+    execution_attention: bool = False
+    execution_attention_reason: str = ""
+
+
 class EngagementSnapshotV2(StrictModel):
     engagement_id: str
     case_id: str
@@ -152,6 +256,12 @@ class EngagementSnapshotV2(StrictModel):
     hitl_gate: HitlGate = Field(default_factory=lambda: HitlGate(required=False, reason=""))
     case_kind: CaseKindLiteral = "niezaklasyfikowane"
     case_understanding: CaseUnderstandingProjection | None = None
+    #: SLICE-3A: set and cleared in lockstep with `case_understanding` by
+    #: `graph._ground_current_signal`, so the two can never describe different signals.
+    case_understanding_provenance: CaseUnderstandingProvenance | None = None
+    policy_action_envelope: PolicyActionEnvelopeV1 | None = None
+    semantic_policy_plan_consistency: SemanticPolicyPlanConsistencyV1 | None = None
+    feed_visibility: FeedVisibility | None = None
 
 
 def engagement_snapshot_v2_json_schema() -> dict[str, Any]:

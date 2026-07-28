@@ -311,6 +311,41 @@ def infer_applicable_dimensions(case: dict[str, Any], actual_understanding: dict
     return [name for name in DIMENSIONS if name in dims]
 
 
+def _backfill_redundant_top_level_verdict(payload: Any) -> Any:
+    """`normalize_judge_result` ALWAYS recomputes `overall_verdict` deterministically from
+    `dimensions` (see below: `out["overall_verdict"] = overall`) -- the raw top-level
+    `overall_verdict`/`unsafe_misinterpretation` from the LLM are discarded and overwritten
+    regardless of what they contain. Occasionally the provider omits these vestigial fields
+    while still returning complete, usable per-dimension verdicts (observed:
+    ValidationError "overall_verdict Field required" on an otherwise well-formed payload).
+    Backfilling a placeholder here only relaxes the SCHEMA acceptance of a field whose
+    value is never actually used -- it cannot change any judged verdict, since the
+    aggregation always runs against `dimensions` after this. Never invents dimensions.
+
+    Guarded against degrading into a false pass: requires `dimensions` to be non-empty AND
+    contain at least one recognized dimension name with an actual `verdict` value -- an
+    empty `{}` (a genuinely broken/truncated response) does NOT qualify and is left to fail
+    real Pydantic validation -> JUDGE_ERROR, exactly as before this fix. Without this guard,
+    an empty dimensions dict would backfill cleanly, then normalize_judge_result would fill
+    all DIMENSIONS with the synthetic non-applicable default and aggregate to a false
+    CLEAR_PASS (adversarial review finding, confirmed)."""
+    if not isinstance(payload, dict):
+        return payload
+    dims = payload.get("dimensions")
+    if not isinstance(dims, dict) or not dims:
+        return payload
+    has_real_dimension = any(
+        name in DIMENSIONS and isinstance(item, dict) and "verdict" in item
+        for name, item in dims.items()
+    )
+    if not has_real_dimension:
+        return payload
+    out = dict(payload)
+    out.setdefault("overall_verdict", "CLEAR_FAIL")
+    out.setdefault("unsafe_misinterpretation", False)
+    return out
+
+
 def run_judge(
     judge_input: dict[str, Any],
     *,
@@ -322,6 +357,7 @@ def run_judge(
     started = time.monotonic()
     try:
         payload = invoke(PROMPT_FINAL, user, case_id) if invoke else _invoke_provider(PROMPT_FINAL, user, case_id, config or select_judge_config())
+        payload = _backfill_redundant_top_level_verdict(payload)
         result = UnderstandingJudgeResult.model_validate(payload)
     except (TopInstalLLMError, ValidationError, ValueError, TypeError) as exc:
         status = "JUDGE_UNAVAILABLE" if "API_KEY" in str(exc) or "not configured" in str(exc) else "JUDGE_ERROR"
@@ -764,21 +800,62 @@ def _rubric_payload(corpus: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_UNDERSTANDING_ALIAS_PAIRS = (
+    ("summary_pl", "situation_summary_pl"),
+    ("customer_intent_pl", "current_customer_intent"),
+)
+
+
 def _compact_understanding_output(actual: Any) -> dict[str, Any]:
     if not isinstance(actual, dict):
         return {}
+    resolved = dict(actual)
+    diagnostics: list[dict[str, str]] = []
+    for canonical_field, alias_field in _UNDERSTANDING_ALIAS_PAIRS:
+        canonical_value = resolved.get(canonical_field)
+        alias_value = resolved.get(alias_field)
+        canonical_present = canonical_value not in (None, "", [], {})
+        alias_present = alias_value not in (None, "", [], {})
+        if not canonical_present and alias_present:
+            resolved[canonical_field] = alias_value
+            diagnostics.append(
+                {
+                    "code": "alias_promoted",
+                    "canonical_field": canonical_field,
+                    "alias_field": alias_field,
+                    "precedence": "alias_when_canonical_absent",
+                }
+            )
+        elif canonical_present and alias_present and canonical_json_sha256(canonical_value) != canonical_json_sha256(alias_value):
+            diagnostics.append(
+                {
+                    "code": "divergent_alias",
+                    "canonical_field": canonical_field,
+                    "alias_field": alias_field,
+                    "precedence": "canonical",
+                }
+            )
+    # STRUCTURED-INPUT-AND-CAPABILITY-BASELINE-CLOSEOUT-01 — measurement-fidelity fix, not
+    # a judge-contract/prompt change. `situation_summary_pl` and `current_customer_intent`
+    # are expected to mirror `summary_pl`/`customer_intent_pl` respectively. Equal aliases
+    # are omitted, but divergence is now surfaced above instead of being silently lost.
+    # Keeping duplicate values wasted ~40% of the truncation budget. Measured blast radius:
+    # with the old key
+    # order+budget, thread_delta (which carries prior_known_state_pl and
+    # operator_visible_delta_summary -- the ONLY place continuity/state-change evidence
+    # survives compaction) was silently truncated away in 23/23 (100%) of cases that had
+    # real thread_delta content. Moving it earlier and removing the duplicate keys ensures
+    # the judge actually sees the continuity evidence it is asked to score against.
     keys = (
         "summary_pl",
         "operator_explanation",
-        "situation_summary_pl",
         "customer_intent_pl",
-        "current_customer_intent",
+        "thread_delta",
         "missing_information",
         "completeness_gaps",
         "missing_critical_fields",
         "risks",
         "conflicting_facts",
-        "thread_delta",
         "unsupported_claims",
         "next_best_action_recommendation",
         "facts_explicit",
@@ -786,8 +863,17 @@ def _compact_understanding_output(actual: Any) -> dict[str, Any]:
         "facts_inferred",
         "facts_disputed",
     )
-    compact = {key: actual.get(key) for key in keys if key in actual and actual.get(key) not in (None, "", [], {})}
-    return _truncate_payload(compact, limit=900)
+    compact: dict[str, Any] = {}
+    if diagnostics:
+        compact["measurement_diagnostics"] = diagnostics
+    compact.update(
+        {
+            key: resolved.get(key)
+            for key in keys
+            if key in resolved and resolved.get(key) not in (None, "", [], {})
+        }
+    )
+    return _truncate_payload(compact, limit=1800)
 
 
 def _truncate_payload(value: Any, *, limit: int) -> Any:

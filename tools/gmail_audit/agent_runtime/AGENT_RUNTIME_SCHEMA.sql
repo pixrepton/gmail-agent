@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS agent_runtime_turns (
     snapshot_version INT NOT NULL,  -- checklist alias: version
     tool_name TEXT NOT NULL DEFAULT '',
     tool_args_redacted JSONB NOT NULL DEFAULT '{}'::jsonb,
+    plan_correlation JSONB NOT NULL DEFAULT '{}'::jsonb,
     tool_status TEXT NOT NULL DEFAULT '',
     turn_summary_pl TEXT NOT NULL DEFAULT '',
     tokens_used INT NOT NULL DEFAULT 0,

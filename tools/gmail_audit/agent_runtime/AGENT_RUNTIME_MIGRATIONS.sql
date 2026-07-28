@@ -12,6 +12,8 @@ ALTER TABLE agent_runtime_turns
     ADD COLUMN IF NOT EXISTS turn_summary_pl TEXT NOT NULL DEFAULT '';
 ALTER TABLE agent_runtime_turns
     ADD COLUMN IF NOT EXISTS tokens_used INT NOT NULL DEFAULT 0;
+ALTER TABLE agent_runtime_turns
+    ADD COLUMN IF NOT EXISTS plan_correlation JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 -- Rename legacy column `version` -> `snapshot_version` when present (no-op if already migrated).
 DO $$

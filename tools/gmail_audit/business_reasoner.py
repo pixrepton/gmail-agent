@@ -195,7 +195,17 @@ def run_business_reasoning(
                 "error": str(errors)[:500],
             }})
         parsed = parse_and_validate_business_reasoning(stage_call["response_text"])
-        parsed["execution_metadata"] = stage_call
+        # SLICE-2A: a Brain 1 consumer could not tell a real model result from a repaired,
+        # coerced, skipped or fallback one -- every path returned the same schema-valid shape.
+        # source_mode/reasoning_status make authorship explicit. Behaviour is unchanged.
+        coerced = list(parsed.pop("normalization_notes", []) or [])
+        meta = dict(stage_call) if isinstance(stage_call, dict) else {}
+        meta["stage_name"] = "business_reasoning"
+        meta["source_mode"] = "normalized_model_result" if coerced else "model_result"
+        meta["reasoning_status"] = "ok"
+        meta["fallback_used"] = False
+        meta["normalization_notes"] = coerced
+        parsed["execution_metadata"] = meta
 
         # Guard: zweryfikuj rekomendowaną akcję względem stanu sprawy
         case_state = str(intake_result.get("case_assessment", {}).get("state_detected", "") or "").strip()
@@ -210,7 +220,7 @@ def run_business_reasoning(
         }})
         # Pydantic validation of business reasoning output
         try:
-            from gmail_audit.schemas import BusinessReasoningResult as BusinessReasoningModel
+            from schemas import BusinessReasoningResult as BusinessReasoningModel
             _ = BusinessReasoningModel(
                 business_area=str(parsed.get("business_area", "")),
                 customer_state=str(parsed.get("customer_state_guess", "") or None),
@@ -265,6 +275,11 @@ def fallback_business_reasoning(*, reason: str) -> dict[str, Any]:
         "stage_name": "business_reasoning",
         "fallback_used": True,
         "parse_status": "fallback",
+        # SLICE-2A: honest labelling only. fallback_business_reasoning's SEMANTICS are unchanged
+        # in this slice (operator decision D defers that); it simply stops being indistinguishable
+        # from a real conservative decision.
+        "source_mode": "fallback",
+        "reasoning_status": "unavailable",
         "error": reason,
     }
     return result
@@ -345,6 +360,8 @@ def build_skipped_business_reasoning(
         "stage_name": "business_reasoning",
         "fallback_used": True,
         "parse_status": "skipped_for_lane",
+        "source_mode": "skipped_for_lane",
+        "reasoning_status": "skipped",
         "lane": lane,
         "error": reason,
     }

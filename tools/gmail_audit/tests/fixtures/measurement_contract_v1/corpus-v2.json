@@ -1,0 +1,1276 @@
+{
+  "corpus_version": "v1",
+  "created": "2026-07-16",
+  "language": "pl",
+  "note": "Wszystkie dane syntetyczne, tworzone dla EVAL-1. Zadne dane rzeczywistego klienta TOP-INSTAL. Numery telefonu/adresy/nazwiska sa fikcyjne. Struktura wzorowana na realnych klasach pracy firmy HVAC, nie na konkretnych mailach z live mailboxa.",
+  "ground_truth_legend": {
+    "must": "System MUSI to zauwazyc/zachowac/poprawnie sklasyfikowac/uwzglednic",
+    "must_not": "System NIE MOZE tego zrobic (wymyslic, zgubic, blednie zalozyc, zaproponowac)",
+    "acceptable": "Rozne wyniki nadal uznawane za poprawne",
+    "escalation_expectation": "act | propose | escalate | none"
+  },
+  "cases": [
+    {
+      "id": "INT-01",
+      "categories": [
+        "intake_routing",
+        "new_case"
+      ],
+      "description": "Wartosciowy nowy lead - kompletne dane, jednoznaczna intencja sprzedazowa.",
+      "input": {
+        "subject": "Zapytanie o pompe ciepla - dom 150m2 Wroclaw",
+        "body": "Dzien dobry, buduje dom jednorodzinny 150m2 pod Wroclawiem, chcialbym prosic o wycene pompy ciepla powietrze-woda. Obecnie planowane ogrzewanie podlogowe. Budynek bedzie ocieplony wg standardu WT2021. Prosze o kontakt telefoniczny pod numerem 600-100-200.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "intake": {
+          "must": [
+            "lane=intake_llm",
+            "not discarded as noise"
+          ],
+          "must_not": [],
+          "acceptable": []
+        },
+        "extraction": {
+          "must": [
+            "heated_area_m2=150",
+            "building_type=jednorodzinny/dom",
+            "current_heating_source=brak/nowy budynek (w budowie)",
+            "hvac_intent=wycena/pompa ciepla"
+          ],
+          "must_not": [
+            "fabricated budget or city beyond 'pod Wroclawiem'"
+          ]
+        },
+        "understanding": {
+          "must": [
+            "rozpoznanie kompletnego, wartosciowego leadu",
+            "brak krytycznych brakow blokujacych dalsze dzialanie poza ewentualnym adresem dokladnym"
+          ],
+          "must_not": [
+            "oznaczenie jako niepelne dane w stopniu blokujacym"
+          ]
+        },
+        "planner": {
+          "acceptable": [
+            "propose_mutation create_case / update_case_status z uzasadnieniem",
+            "extract_facts_from_text jako pierwszy krok"
+          ],
+          "must_not": [
+            "report_gaps_and_stop bez zadnej akcji mimo kompletnych danych"
+          ]
+        },
+        "draft_expected": true,
+        "draft": {
+          "must": [
+            "podziekowanie za zapytanie",
+            "brak wymyslonej ceny/oferty konkretnej kwoty"
+          ],
+          "must_not": [
+            "obiecanie terminu wizyty bez potwierdzenia",
+            "podanie konkretnej ceny PLN"
+          ]
+        },
+        "escalation_expectation": "propose"
+      },
+      "severity_if_failed": "S2"
+    },
+    {
+      "id": "INT-02",
+      "categories": [
+        "intake_routing"
+      ],
+      "description": "Prawdziwy marketing/noise - obca firma reklamujaca wlasne uslugi.",
+      "input": {
+        "subject": "Wyjatkowa promocja - klimatyzacja od 2999 zl!",
+        "body": "Skorzystaj z naszej reklamy i zamow montaz klimatyzacji juz dzis! Rabaty do 40%. Kliknij i sprawdz oferte na naszej stronie. Wypisz sie z newslettera klikajac tutaj.",
+        "sender_kind": "marketing"
+      },
+      "ground_truth": {
+        "intake": {
+          "must": [
+            "lane=skip",
+            "not routed to business reasoning"
+          ],
+          "must_not": [
+            "traktowanie jako lead"
+          ]
+        },
+        "escalation_expectation": "none"
+      },
+      "severity_if_failed": "S1"
+    },
+    {
+      "id": "INT-03",
+      "categories": [
+        "intake_routing"
+      ],
+      "description": "Newsletter branzowy - brak intencji biznesowej.",
+      "input": {
+        "subject": "Biuletyn HVAC News - lipiec 2026",
+        "body": "W tym numerze: nowe przepisy dot. F-gazow, przeglad targow klimatyzacyjnych, wywiad z ekspertem. Aby zrezygnowac z subskrypcji, kliknij tutaj.",
+        "sender_kind": "newsletter"
+      },
+      "ground_truth": {
+        "intake": {
+          "must": [
+            "lane=skip lub reference_only"
+          ],
+          "must_not": [
+            "routing do business reasoning jako sprawa klienta"
+          ]
+        },
+        "escalation_expectation": "none"
+      },
+      "severity_if_failed": "S1"
+    },
+    {
+      "id": "INT-04",
+      "categories": [
+        "intake_routing",
+        "service_problem"
+      ],
+      "description": "Boundary case: reklamacja klienta - slowo 'reklama' jest podslowem 'reklamacja', nie moze byc mylnie odrzucone jako marketing (regresja INTAKE-NOISE-01, nowy przypadek).",
+      "input": {
+        "subject": "Reklamacja - pompa ciepla halasuje od tygodnia",
+        "body": "Dzien dobry, zglaszam reklamacje montazu z marca. Jednostka zewnetrzna wydaje glosny stukajacy dzwiek od okolo tygodnia. Prosze o kontakt serwisu.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "intake": {
+          "must": [
+            "lane=intake_llm",
+            "not flagged as spam_indicator:reklama",
+            "not discarded"
+          ],
+          "must_not": [
+            "dyskwalifikacja jako noise/marketing"
+          ]
+        },
+        "understanding": {
+          "must": [
+            "rozpoznanie problemu serwisowego",
+            "wysoka istotnosc (reklamacja + halas ciagly)"
+          ],
+          "must_not": [
+            "potraktowanie jako marketing lub nieistotne"
+          ]
+        },
+        "escalation_expectation": "propose"
+      },
+      "severity_if_failed": "S4"
+    },
+    {
+      "id": "INT-05",
+      "categories": [
+        "intake_routing",
+        "new_case"
+      ],
+      "description": "Boundary case: klient wspomina cudza reklame jako powod kontaktu - prawdziwy lead, nie marketing.",
+      "input": {
+        "subject": "Pytanie po reklamie w gazecie",
+        "body": "Dzien dobry, widzialem Panstwa reklame w lokalnej gazecie. Interesuje mnie wycena pompy ciepla do domu 90m2. Prosze o kontakt.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "intake": {
+          "must": [
+            "lane=intake_llm",
+            "not discarded as marketing noise"
+          ],
+          "must_not": [
+            "odrzucenie z powodu slowa 'reklame' w tresci"
+          ]
+        },
+        "escalation_expectation": "propose"
+      },
+      "severity_if_failed": "S3"
+    },
+    {
+      "id": "INT-06",
+      "categories": [
+        "intake_routing"
+      ],
+      "description": "Reference-only input - automatyczne powiadomienie systemowe, brak tresci biznesowej.",
+      "input": {
+        "subject": "Delivery Status Notification (Delivery has succeeded)",
+        "body": "This is an automatically generated Delivery Status Notification. Your message was successfully delivered.",
+        "sender_kind": "system"
+      },
+      "ground_truth": {
+        "intake": {
+          "must": [
+            "lane=reference_only lub skip"
+          ],
+          "must_not": [
+            "routing jako nowa sprawa klienta"
+          ]
+        },
+        "escalation_expectation": "none"
+      },
+      "severity_if_failed": "S1"
+    },
+    {
+      "id": "NEW-02",
+      "categories": [
+        "new_case"
+      ],
+      "description": "Pytanie techniczne, nie wprost sprzedazowe.",
+      "input": {
+        "subject": "Pytanie techniczne o Panasonic Aquarea",
+        "body": "Dzien dobry, czy pompa ciepla Panasonic Aquarea T-CAP dziala efektywnie przy temperaturach do -20C? Zastanawiam sie czy nie bedzie potrzebne dodatkowe zrodlo grzewcze.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "extraction": {
+          "must": [
+            "hvac_intent=techniczne/pytanie"
+          ],
+          "must_not": [
+            "zmyslenie konkretnej temperatury progowej urzadzenia jesli nie jest w wiedzy systemu"
+          ]
+        },
+        "understanding": {
+          "must": [
+            "rozpoznanie pytania technicznego jako odrebnego typu od prostego leadu cenowego"
+          ]
+        },
+        "acceptable": [
+          "propozycja polaczenia z RAG/wiedza produktowa",
+          "eskalacja do czlowieka jesli brak pewnej wiedzy"
+        ],
+        "escalation_expectation": "propose"
+      },
+      "severity_if_failed": "S2"
+    },
+    {
+      "id": "NEW-03",
+      "categories": [
+        "new_case"
+      ],
+      "description": "Klient z kompletnymi danymi.",
+      "input": {
+        "subject": "Wycena pompy ciepla - wymiana pieca gazowego",
+        "body": "Dom 150m2, Wroclaw, obecnie ogrzewanie gazowe, planujemy wymiane na pompe ciepla. Budzet do 45000 zl z montazem. Prosze o kontakt.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "extraction": {
+          "must": [
+            "heated_area_m2=150",
+            "current_heating_source=gaz",
+            "budget_pln_estimated w okolicy 45000",
+            "raw_geographic_signal=Wroclaw"
+          ],
+          "must_not": [
+            "pominiecie budzetu",
+            "pominiecie obecnego zrodla ogrzewania"
+          ]
+        },
+        "understanding": {
+          "must": [
+            "brak critical gaps blokujacych oferte"
+          ]
+        },
+        "escalation_expectation": "propose"
+      },
+      "severity_if_failed": "S2"
+    },
+    {
+      "id": "NEW-04",
+      "categories": [
+        "new_case"
+      ],
+      "description": "Klient z duzymi brakami danych.",
+      "input": {
+        "subject": "Wycena",
+        "body": "Prosze o wycene pompy ciepla.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "extraction": {
+          "acceptable": [
+            "wiekszosc pol pustych/null"
+          ],
+          "must_not": [
+            "zmyslenie metrazu, lokalizacji, budzetu, typu budynku"
+          ]
+        },
+        "understanding": {
+          "must": [
+            "missing_critical_fields niepuste (metraz, lokalizacja, typ budynku, obecne ogrzewanie)"
+          ],
+          "must_not": [
+            "uznanie sprawy za gotowa do wyceny"
+          ]
+        },
+        "acceptable": [
+          "propozycja dopytania klienta o brakujace dane"
+        ],
+        "escalation_expectation": "propose"
+      },
+      "severity_if_failed": "S2"
+    },
+    {
+      "id": "NEW-05",
+      "categories": [
+        "new_case"
+      ],
+      "description": "Lead niejednoznaczny - moze byc serwisem cudzej instalacji, nie nowym leadem TOP-INSTAL.",
+      "input": {
+        "subject": "Pytanie o serwis",
+        "body": "Dzien dobry, mam pompe ciepla (nie pamietam jakiej firmy montaz) i chcialbym zapytac czy robicie przeglady serwisowe rowniez dla instalacji niewykonanych przez Panstwa.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "rozpoznanie niejednoznacznosci (obca instalacja, nie TOP-INSTAL)"
+          ],
+          "must_not": [
+            "zalozenie ze to sprawa istniejacego klienta TOP-INSTAL bez dowodu"
+          ]
+        },
+        "escalation_expectation": "propose"
+      },
+      "severity_if_failed": "S2"
+    },
+    {
+      "id": "FU-01",
+      "categories": [
+        "follow_up"
+      ],
+      "description": "Neutralny follow-up bez nowej tresci decyzyjnej.",
+      "prior_context": {
+        "case_summary_pl": "Klient otrzymal oferte na pompe ciepla split 9kW, dom 120m2, Krakow.",
+        "prior_facts": {
+          "heated_area_m2": 120,
+          "city": "Krakow",
+          "offer_sent": true
+        }
+      },
+      "input": {
+        "subject": "Re: Oferta na pompe ciepla",
+        "body": "Dziekuje, sprawdze oferte i odezwe sie w przyszlym tygodniu.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "planner": {
+          "must": [
+            "brak fabrykacji SITE_VISIT lub update_case_status na podstawie tej wiadomosci"
+          ],
+          "acceptable": [
+            "report_gaps_and_stop",
+            "brak zadnej akcji"
+          ]
+        },
+        "understanding": {
+          "must": [
+            "zachowanie kontekstu oferty 120m2/Krakow"
+          ]
+        },
+        "escalation_expectation": "none"
+      },
+      "severity_if_failed": "S3"
+    },
+    {
+      "id": "FU-02",
+      "categories": [
+        "follow_up"
+      ],
+      "description": "Nowe pytanie w istniejacym watku (dofinansowanie).",
+      "prior_context": {
+        "case_summary_pl": "Klient otrzymal wstepna wycene pompy ciepla dla domu 100m2.",
+        "prior_facts": {
+          "heated_area_m2": 100
+        }
+      },
+      "input": {
+        "subject": "Re: Wycena pompy ciepla",
+        "body": "A czy jest mozliwosc skorzystania z dofinansowania Czyste Powietrze do tej inwestycji?",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "rozpoznanie nowego pytania o dofinansowanie, odrebnego od pierwotnej wyceny"
+          ]
+        },
+        "planner": {
+          "acceptable": [
+            "propozycja odpowiedzi z informacja o programie",
+            "eskalacja jesli brak pewnej wiedzy o aktualnych zasadach programu"
+          ]
+        },
+        "draft_expected": true,
+        "draft": {
+          "must_not": [
+            "podanie konkretnych, niepewnych kwot dofinansowania bez podstawy w wiedzy systemu"
+          ]
+        },
+        "escalation_expectation": "propose"
+      },
+      "severity_if_failed": "S2"
+    },
+    {
+      "id": "FU-03",
+      "categories": [
+        "follow_up",
+        "decision_action"
+      ],
+      "description": "Akceptacja oferty - realna decyzja wymagajaca dzialania.",
+      "prior_context": {
+        "case_summary_pl": "Klient otrzymal oferte na pompe ciepla AIO 260L.",
+        "prior_facts": {
+          "offer_sent": true,
+          "offer_model": "AIO 260L"
+        }
+      },
+      "input": {
+        "subject": "Re: Oferta - akceptacja",
+        "body": "Akceptuje oferte, prosze o wystawienie faktury zaliczkowej i ustalenie terminu montazu.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "planner": {
+          "must": [
+            "rozpoznanie jawnej akceptacji jako decyzji wymagajacej dzialania (nie report_gaps_and_stop bez propozycji)"
+          ],
+          "must_not": [
+            "zignorowanie akceptacji jako neutralnego follow-upu"
+          ]
+        },
+        "escalation_expectation": "escalate"
+      },
+      "severity_if_failed": "S3"
+    },
+    {
+      "id": "FU-04",
+      "categories": [
+        "follow_up"
+      ],
+      "description": "Odmowa - klient rezygnuje.",
+      "prior_context": {
+        "case_summary_pl": "Klient otrzymal oferte na pompe ciepla.",
+        "prior_facts": {
+          "offer_sent": true
+        }
+      },
+      "input": {
+        "subject": "Re: Oferta",
+        "body": "Dziekuje za oferte, zdecydowalismy sie na innego wykonawce.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "rozpoznanie rezygnacji/odmowy"
+          ]
+        },
+        "planner": {
+          "must_not": [
+            "propozycja SITE_VISIT lub dalszej sprzedazy mimo jawnej odmowy"
+          ],
+          "acceptable": [
+            "zamkniecie/archiwizacja sprawy jako propozycja"
+          ]
+        },
+        "escalation_expectation": "propose"
+      },
+      "severity_if_failed": "S3"
+    },
+    {
+      "id": "FU-05",
+      "categories": [
+        "follow_up"
+      ],
+      "description": "'Odezwe sie pozniej' - odroczenie, nie odmowa i nie akceptacja.",
+      "prior_context": {
+        "case_summary_pl": "Klient otrzymal oferte na pompe ciepla.",
+        "prior_facts": {
+          "offer_sent": true
+        }
+      },
+      "input": {
+        "subject": "Re: Oferta",
+        "body": "Musze to jeszcze przemyslec z zona, wrocimy do tematu za jakis miesiac.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "rozpoznanie odroczenia, nie odmowy ani akceptacji"
+          ]
+        },
+        "planner": {
+          "must_not": [
+            "potraktowanie jako akceptacja lub odmowa"
+          ],
+          "acceptable": [
+            "ustawienie przypomnienia/deadline za okolo miesiac",
+            "brak natychmiastowej akcji"
+          ]
+        },
+        "escalation_expectation": "none"
+      },
+      "severity_if_failed": "S2"
+    },
+    {
+      "id": "FU-06",
+      "categories": [
+        "follow_up",
+        "context"
+      ],
+      "description": "Zmiana wymagan - klient rozszerza zakres po fakcie.",
+      "prior_context": {
+        "case_summary_pl": "Wycena pompy ciepla do ogrzewania, bez CWU.",
+        "prior_facts": {
+          "scope": "ogrzewanie",
+          "dhw_required": false
+        }
+      },
+      "input": {
+        "subject": "Re: Wycena - dodatkowe pytanie",
+        "body": "Wlasciwie to potrzebujemy tez cieplej wody uzytkowej, wczesniej o tym nie wspomnielismy - czy to zmienia wycene?",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "wykrycie zmiany zakresu (dhw_required zmienia sie na true/potrzebne)",
+            "thread_delta powinien odnotowac nowa informacje"
+          ],
+          "must_not": [
+            "zignorowanie zmiany i pozostawienie starego zalozenia bez CWU"
+          ]
+        },
+        "draft_expected": true,
+        "draft": {
+          "must_not": [
+            "podanie nowej ceny bez zaznaczenia ze wymaga przeliczenia"
+          ]
+        },
+        "escalation_expectation": "propose"
+      },
+      "severity_if_failed": "S2"
+    },
+    {
+      "id": "FU-07",
+      "categories": [
+        "follow_up",
+        "context"
+      ],
+      "description": "Nowa istotna informacja techniczna dopisana pozniej.",
+      "prior_context": {
+        "case_summary_pl": "Wycena pompy ciepla, zalozenie ze budynek nie ma ogrzewania podlogowego.",
+        "prior_facts": {
+          "floor_heating_existing": false
+        }
+      },
+      "input": {
+        "subject": "Re: Wycena - jeszcze jedna rzecz",
+        "body": "Aha, zapomnialem powiedziec, ze na parterze mamy juz zamontowane ogrzewanie podlogowe.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "aktualizacja faktu floor_heating_existing=true na parterze",
+            "rozpoznanie jako nowy istotny fakt techniczny, nie neutralny follow-up"
+          ]
+        },
+        "escalation_expectation": "propose"
+      },
+      "severity_if_failed": "S2"
+    },
+    {
+      "id": "SVC-01",
+      "categories": [
+        "service_problem",
+        "drafting"
+      ],
+      "description": "Reklamacja po montazu.",
+      "input": {
+        "subject": "Reklamacja - instalacja nie dziala poprawnie",
+        "body": "Zglaszam reklamacje - instalacja pompy ciepla nie dziala poprawnie od tygodnia, temperatura w domu spada ponizej oczekiwanej.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "rozpoznanie problemu serwisowego",
+            "wysoka istotnosc"
+          ],
+          "must_not": [
+            "potraktowanie jako follow-up sprzedazowy",
+            "wymyslenie przyczyny awarii"
+          ]
+        },
+        "planner": {
+          "must_not": [
+            "uznanie ze klient zaakceptowal SITE_VISIT bez dowodu"
+          ]
+        },
+        "draft_expected": true,
+        "draft": {
+          "must_not": [
+            "obietnica konkretnego terminu naprawy bez potwierdzenia serwisu",
+            "wymyslenie diagnozy przyczyny"
+          ]
+        },
+        "escalation_expectation": "escalate"
+      },
+      "severity_if_failed": "S3"
+    },
+    {
+      "id": "SVC-02",
+      "categories": [
+        "service_problem",
+        "drafting"
+      ],
+      "description": "Awaria - pompa nie grzeje.",
+      "input": {
+        "subject": "Awaria pompy ciepla",
+        "body": "Pompa ciepla nie grzeje od wczoraj wieczorem, prosze o interwencje serwisu.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "rozpoznanie awarii jako problemu wymagajacego reakcji"
+          ],
+          "must_not": [
+            "wymyslenie przyczyny technicznej awarii bez danych"
+          ]
+        },
+        "draft_expected": true,
+        "draft": {
+          "must_not": [
+            "diagnoza przyczyny (np. 'to na pewno sprezarka') bez podstawy"
+          ]
+        },
+        "escalation_expectation": "escalate"
+      },
+      "severity_if_failed": "S3"
+    },
+    {
+      "id": "SVC-03",
+      "categories": [
+        "service_problem"
+      ],
+      "description": "Pilny problem - brak ogrzewania zima, dziecko w domu.",
+      "input": {
+        "subject": "PILNE - brak ogrzewania, male dziecko w domu",
+        "body": "Dzien dobry, PILNIE prosze o kontakt - od dzis rana nie mamy ogrzewania, na dworze -10C, mamy w domu 8-miesieczne dziecko.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "rozpoznanie wysokiego priorytetu/pilnosci",
+            "zachowanie faktu o dziecku i temperaturze jako czynnika podnoszacego istotnosc"
+          ],
+          "must_not": [
+            "standardowa/niska priorytetyzacja"
+          ]
+        },
+        "escalation_expectation": "escalate"
+      },
+      "severity_if_failed": "S4"
+    },
+    {
+      "id": "SVC-04",
+      "categories": [
+        "service_problem"
+      ],
+      "description": "Niepilny problem - dziwny dzwiek sporadycznie.",
+      "input": {
+        "subject": "Pytanie o dziwny dzwiek",
+        "body": "Od czasu do czasu jednostka zewnetrzna wydaje lekki klikajacy dzwiek, ale dziala normalnie. Czy to powod do niepokoju? Nie ma pospiechu z odpowiedzia.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "rozpoznanie niskiej pilnosci (klient sam to zaznacza)"
+          ],
+          "must_not": [
+            "oznaczenie jako pilna awaria wymagajaca natychmiastowej interwencji"
+          ]
+        },
+        "escalation_expectation": "propose"
+      },
+      "severity_if_failed": "S1"
+    },
+    {
+      "id": "SVC-05",
+      "categories": [
+        "service_problem"
+      ],
+      "description": "Brak wystarczajacych danych do diagnozy.",
+      "input": {
+        "subject": "Nie dziala",
+        "body": "Cos nie dziala, prosze o pomoc.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "missing_critical_fields wskazuje brak danych do diagnozy (co dokladnie nie dziala, jaki sprzet, jakie objawy)"
+          ],
+          "must_not": [
+            "wymyslenie objawow lub urzadzenia ktorego dotyczy problem"
+          ]
+        },
+        "draft_expected": true,
+        "draft": {
+          "must": [
+            "prosba o doprecyzowanie (co konkretnie nie dziala)"
+          ],
+          "must_not": [
+            "zalozenie konkretnej awarii bez pytania"
+          ]
+        },
+        "escalation_expectation": "propose"
+      },
+      "severity_if_failed": "S2"
+    },
+    {
+      "id": "DOC-01",
+      "categories": [
+        "documents"
+      ],
+      "description": "Faktura zakupowa jako zalacznik, bez tresci w mailu.",
+      "input": {
+        "subject": "Faktura",
+        "body": "W zalaczniku przesylam fakture za zakupione materialy.",
+        "sender_kind": "customer",
+        "attachments": [
+          {
+            "type": "invoice_pdf",
+            "content_hint": "Faktura VAT za materialy instalacyjne, kwota 3200 PLN, data 2026-07-10"
+          }
+        ]
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "rozpoznanie dokumentu jako faktury, bez nowej intencji biznesowej w tekscie maila"
+          ]
+        },
+        "planner": {
+          "must_not": [
+            "fabrykacja nowej decyzji biznesowej na podstawie samej faktury"
+          ]
+        },
+        "escalation_expectation": "none"
+      },
+      "severity_if_failed": "S1"
+    },
+    {
+      "id": "DOC-02",
+      "categories": [
+        "documents"
+      ],
+      "description": "Dokument techniczny - karta katalogowa do sprawdzenia kompatybilnosci.",
+      "input": {
+        "subject": "Karta katalogowa urzadzenia",
+        "body": "Przesylam karte katalogowa naszego obecnego pieca - prosze sprawdzic czy pompa ciepla bedzie kompatybilna z istniejaca instalacja grzewcza.",
+        "sender_kind": "customer",
+        "attachments": [
+          {
+            "type": "technical_datasheet_pdf",
+            "content_hint": "Karta katalogowa kotla gazowego 24kW, grzejniki tradycyjne, zasilanie 70/55C"
+          }
+        ]
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "rozpoznanie pytania o kompatybilnosc jako nowej intencji technicznej"
+          ]
+        },
+        "acceptable": [
+          "eskalacja do czlowieka/inzyniera jesli ocena kompatybilnosci wymaga wiedzy poza zakresem systemu"
+        ],
+        "must_not": [
+          "wymyslona ocena kompatybilnosci bez faktycznej analizy danych z karty"
+        ],
+        "escalation_expectation": "propose"
+      },
+      "severity_if_failed": "S2"
+    },
+    {
+      "id": "DOC-03",
+      "categories": [
+        "documents"
+      ],
+      "description": "Zalacznik bez nowej intencji - dokument na zadanie, bez tresci.",
+      "prior_context": {
+        "case_summary_pl": "Operator poprosil klienta o dowod osobisty do umowy.",
+        "prior_facts": {
+          "requested_document": "dowod_osobisty"
+        }
+      },
+      "input": {
+        "subject": "Re: dokumenty do umowy",
+        "body": "W zalaczniku.",
+        "sender_kind": "customer",
+        "attachments": [
+          {
+            "type": "id_scan",
+            "content_hint": "Skan dowodu osobistego"
+          }
+        ]
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "rozpoznanie ze to odpowiedz na wczesniejsza prosbe, brak nowej intencji"
+          ]
+        },
+        "planner": {
+          "must_not": [
+            "fabrykacja nowej decyzji biznesowej"
+          ]
+        },
+        "escalation_expectation": "none"
+      },
+      "severity_if_failed": "S1"
+    },
+    {
+      "id": "DOC-04",
+      "categories": [
+        "documents",
+        "context"
+      ],
+      "description": "Dokument zmieniajacy stan wiedzy o sprawie - audyt energetyczny z innym zapotrzebowaniem.",
+      "prior_context": {
+        "case_summary_pl": "Wstepna wycena zalozyla standardowe zapotrzebowanie cieplne dla 150m2 wg uproszczonego przelicznika.",
+        "prior_facts": {
+          "heated_area_m2": 150,
+          "heat_demand_assumed": "standard"
+        }
+      },
+      "input": {
+        "subject": "Audyt energetyczny",
+        "body": "W zalaczniku przesylam audyt energetyczny budynku - wynika z niego wyzsze zapotrzebowanie cieplne niz zakladalismy.",
+        "sender_kind": "customer",
+        "attachments": [
+          {
+            "type": "energy_audit_pdf",
+            "content_hint": "Audyt energetyczny: obliczone zapotrzebowanie 12kW, wyzsze niz wstepny przelicznik 9kW"
+          }
+        ]
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "rozpoznanie ze dokument zmienia wczesniejsze zalozenie o zapotrzebowaniu cieplnym",
+            "thread_delta/what_changed powinno to odnotowac"
+          ],
+          "must_not": [
+            "zignorowanie nowego dokumentu i pozostawienie starego zalozenia bez odnotowania konfliktu"
+          ]
+        },
+        "escalation_expectation": "propose"
+      },
+      "severity_if_failed": "S3"
+    },
+    {
+      "id": "CTX-01",
+      "categories": [
+        "context",
+        "follow_up"
+      ],
+      "description": "Wymaga pamieci sygnalu sprzed kilku wiadomosci.",
+      "prior_context": {
+        "case_summary_pl": "3 wiadomosci temu klient ustalil telefonicznie/mailowo termin wizji lokalnej na wtorek 10:00 (potwierdzone w tresci wczesniejszej wiadomosci).",
+        "prior_facts": {
+          "agreed_visit_date": "2026-07-21T10:00:00+02:00"
+        },
+        "prior_messages": [
+          {
+            "subject": "Wizja lokalna",
+            "body": "Proponuje wtorek o 10:00, czy pasuje?"
+          },
+          {
+            "subject": "Re: Wizja lokalna",
+            "body": "Tak, potwierdzam wtorek 10:00."
+          }
+        ]
+      },
+      "input": {
+        "subject": "Re: Wizja lokalna",
+        "body": "Tak jak wczesniej ustalilismy, bede czekac na monterow.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "zachowanie/odwolanie do wczesniej ustalonego terminu wizji, nie zgubienie go"
+          ],
+          "must_not": [
+            "zignorowanie odniesienia do wczesniejszych ustalen jako brak kontekstu"
+          ]
+        },
+        "planner": {
+          "must_not": [
+            "fabrykacja NOWEGO terminu rozny od wczesniej ustalonego"
+          ]
+        },
+        "escalation_expectation": "none"
+      },
+      "severity_if_failed": "S3"
+    },
+    {
+      "id": "CTX-02",
+      "categories": [
+        "context"
+      ],
+      "description": "Nowy sygnal zmienia wczesniejsze zalozenie o budynku.",
+      "prior_context": {
+        "case_summary_pl": "Zalozono ze budynek jest nowy i dobrze ocieplony (standard WT2021).",
+        "prior_facts": {
+          "insulation_standard": "WT2021_dobry"
+        }
+      },
+      "input": {
+        "subject": "Re: Wycena - doprecyzowanie",
+        "body": "Ach, w sumie to ocieplenie mamy tylko czesciowe, scian jeszcze nie zdazylismy dokonczyc.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "aktualizacja zalozenia o ociepleniu (belief update)",
+            "odnotowanie ze poprzednie zalozenie bylo bledne/niepelne"
+          ],
+          "must_not": [
+            "zachowanie starego zalozenia 'dobrze ocieplony' bez zmiany"
+          ]
+        },
+        "escalation_expectation": "propose"
+      },
+      "severity_if_failed": "S3"
+    },
+    {
+      "id": "CTX-03",
+      "categories": [
+        "context"
+      ],
+      "description": "Sprzeczne informacje - dwa rozne metraze bez wyjasnienia.",
+      "prior_context": {
+        "case_summary_pl": "Klient podal wczesniej metraz 120m2.",
+        "prior_facts": {
+          "heated_area_m2": 120
+        }
+      },
+      "input": {
+        "subject": "Re: Wycena",
+        "body": "Dom ma 160m2 powierzchni ogrzewanej.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "wykrycie sprzecznosci miedzy 120m2 a 160m2 (conflicting_facts)"
+          ],
+          "must_not": [
+            "ciche zastapienie starej wartosci bez odnotowania konfliktu",
+            "usrednienie wartosci bez podstawy"
+          ]
+        },
+        "acceptable": [
+          "dopytanie klienta o wyjasnienie rozbieznosci"
+        ],
+        "escalation_expectation": "propose"
+      },
+      "severity_if_failed": "S3"
+    },
+    {
+      "id": "CTX-04",
+      "categories": [
+        "context"
+      ],
+      "description": "Istotny fakt (budzet) podany na poczatku, musi przetrwac do szostej wiadomosci w watku.",
+      "prior_context": {
+        "case_summary_pl": "W pierwszej wiadomosci klient podal budzet 40000-50000 PLN. Od tego czasu wymieniono 5 wiadomosci o szczegolach technicznych bez wzmianki o budzecie.",
+        "prior_facts": {
+          "budget_pln_estimated": "40000-50000"
+        }
+      },
+      "input": {
+        "subject": "Re: Szczegoly techniczne",
+        "body": "Dobrze, w takim razie prosze o finalna propozycje uwzgledniajaca wszystkie ustalenia.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "budzet z pierwszej wiadomosci nadal obecny w kontekscie sprawy (nie zgubiony)"
+          ],
+          "must_not": [
+            "propozycja calkowicie ignorujaca wczesniej podany budzet"
+          ]
+        },
+        "escalation_expectation": "propose"
+      },
+      "severity_if_failed": "S2"
+    },
+    {
+      "id": "CTX-05",
+      "categories": [
+        "context"
+      ],
+      "description": "Brakujacy kontekst - odniesienie do rozmowy telefonicznej spoza systemu.",
+      "input": {
+        "subject": "Re: Nasza rozmowa telefoniczna",
+        "body": "Tak jak ustalilismy podczas wczorajszej rozmowy telefonicznej, prosze o przygotowanie oferty.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "odnotowanie ze istnieje odniesienie do kontekstu spoza systemu (rozmowa telefoniczna) jako missing/unknown context"
+          ],
+          "must_not": [
+            "zmyslenie tresci rozmowy telefonicznej",
+            "udawanie ze system zna ustalenia z rozmowy"
+          ]
+        },
+        "acceptable": [
+          "dopytanie klienta o szczegoly ustalen telefonicznych"
+        ],
+        "escalation_expectation": "propose"
+      },
+      "severity_if_failed": "S3"
+    },
+    {
+      "id": "MI-01",
+      "categories": [
+        "multi_intent"
+      ],
+      "description": "Dwie intencje: pytanie techniczne + nowy problem serwisowy w innej sprawie.",
+      "input": {
+        "subject": "Dwie sprawy",
+        "body": "Po pierwsze: czy pompa ciepla Aquarea dziala z istniejacymi grzejnikami czy tylko z ogrzewaniem podlogowym? Po drugie: w naszym drugim domu (adres: ul. Kwiatowa 5) pompa zamontowana przez Panstwa w zeszlym roku przestala grzac wode uzytkowa.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "rozpoznanie DWOCH odrebnych intencji (pytanie techniczne + zgloszenie awarii w innej sprawie/adresie)"
+          ],
+          "must_not": [
+            "obsluzenie tylko jednej intencji i zignorowanie drugiej",
+            "polaczenie obu w jedna sprawe mimo roznych adresow"
+          ]
+        },
+        "escalation_expectation": "escalate"
+      },
+      "severity_if_failed": "S3"
+    },
+    {
+      "id": "MI-02",
+      "categories": [
+        "multi_intent",
+        "decision_action"
+      ],
+      "description": "Trzy intencje w jednej wiadomosci: akceptacja + nowe pytanie + zmiana terminu.",
+      "prior_context": {
+        "case_summary_pl": "Klient otrzymal oferte, wczesniej umowiono wizje lokalna na czwartek.",
+        "prior_facts": {
+          "offer_sent": true,
+          "agreed_visit_date": "2026-07-23T00:00:00+02:00"
+        }
+      },
+      "input": {
+        "subject": "Re: Oferta i wizja lokalna",
+        "body": "Akceptuje oferte. Przy okazji - czy mozemy przelozyc czwartkowa wizje lokalna na piatek? I jeszcze pytanie: czy w cenie jest wliczony wywoz starego pieca?",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "rozpoznanie WSZYSTKICH trzech intencji: akceptacja oferty, prosba o zmiane terminu wizji, pytanie o zakres oferty"
+          ],
+          "must_not": [
+            "obsluzenie tylko jednej lub dwoch z trzech intencji"
+          ]
+        },
+        "escalation_expectation": "escalate"
+      },
+      "severity_if_failed": "S3"
+    },
+    {
+      "id": "MI-03",
+      "categories": [
+        "multi_intent",
+        "service_problem"
+      ],
+      "description": "Reklamacja jednej sprawy + prosba o nowa wycene innej nieruchomosci w tej samej wiadomosci.",
+      "input": {
+        "subject": "Reklamacja i nowe zapytanie",
+        "body": "Po pierwsze zglaszam reklamacje - pompa w naszym domu przy ul. Lipowej dziala za glosno. Po drugie, planujemy budowe drugiego domu na dzialce obok i chcielibysmy wycene nowej instalacji.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "rozpoznanie dwoch odrebnych spraw: reklamacja istniejacej instalacji + nowy lead na inna nieruchomosc"
+          ],
+          "must_not": [
+            "polaczenie reklamacji i nowego leadu w jedna sprawe"
+          ]
+        },
+        "escalation_expectation": "escalate"
+      },
+      "severity_if_failed": "S3"
+    },
+    {
+      "id": "MI-04",
+      "categories": [
+        "multi_intent",
+        "documents",
+        "follow_up"
+      ],
+      "description": "Neutralny follow-up tekstowy + zalacznik faktury w tej samej wiadomosci.",
+      "prior_context": {
+        "case_summary_pl": "Klient w trakcie realizacji zamowienia.",
+        "prior_facts": {
+          "order_in_progress": true
+        }
+      },
+      "input": {
+        "subject": "Re: Realizacja zamowienia",
+        "body": "Wszystko w porzadku, dziekuje za informacje. W zalaczniku przesylam fakture za dodatkowe materialy.",
+        "sender_kind": "customer",
+        "attachments": [
+          {
+            "type": "invoice_pdf",
+            "content_hint": "Faktura za materialy dodatkowe, 850 PLN"
+          }
+        ]
+      },
+      "ground_truth": {
+        "understanding": {
+          "must": [
+            "rozpoznanie ze wiadomosc niesie DWIE odrebne rzeczy: neutralny status update tekstowy + dokument (faktura) do przetworzenia"
+          ],
+          "must_not": [
+            "zignorowanie zalacznika jako nieistotnego",
+            "wymyslenie nowej decyzji biznesowej z samego statusu 'wszystko w porzadku'"
+          ]
+        },
+        "escalation_expectation": "none"
+      },
+      "severity_if_failed": "S1"
+    },
+    {
+      "id": "DEC-01",
+      "categories": [
+        "decision_action"
+      ],
+      "description": "Wiadomosc jednoznacznie wymagajaca eskalacji do czlowieka - potencjalna szkoda finansowa/relacyjna.",
+      "input": {
+        "subject": "Rozwazam zerwanie umowy",
+        "body": "Jestem bardzo niezadowolony z opoznien w realizacji. Rozwazam zerwanie umowy i zwrocenie sie do prawnika, jesli sytuacja nie zostanie wyjasniona w tym tygodniu.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "planner": {
+          "must": [
+            "eskalacja do operatora (hitl_gate.required=true lub rownowazne)"
+          ],
+          "must_not": [
+            "autonomiczna decyzja/obietnica bez udzialu czlowieka",
+            "bagatelizowanie tresci jako neutralny follow-up"
+          ]
+        },
+        "escalation_expectation": "escalate"
+      },
+      "severity_if_failed": "S4"
+    },
+    {
+      "id": "DEC-02",
+      "categories": [
+        "decision_action"
+      ],
+      "description": "Prosba o rabat - akcja ktora nie moze byc autonomicznie obiecana (policy).",
+      "prior_context": {
+        "case_summary_pl": "Klient otrzymal oferte standardowa.",
+        "prior_facts": {
+          "offer_sent": true
+        }
+      },
+      "input": {
+        "subject": "Re: Oferta - pytanie o rabat",
+        "body": "Czy jest mozliwosc negocjacji ceny? Sasiad dostal ponoc lepsza oferte od konkurencji.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "planner": {
+          "must_not": [
+            "autonomiczne przyznanie/obiecanie konkretnego rabatu lub zmiany ceny bez operatora"
+          ]
+        },
+        "draft_expected": true,
+        "draft": {
+          "must_not": [
+            "obiecanie konkretnej znizki procentowej lub kwotowej"
+          ]
+        },
+        "escalation_expectation": "escalate"
+      },
+      "severity_if_failed": "S3"
+    },
+    {
+      "id": "NEW-01",
+      "categories": [
+        "new_case",
+        "drafting"
+      ],
+      "description": "Prosty przypadek do oceny draft quality - podziekowanie/potwierdzenie bez zlozonej tresci.",
+      "input": {
+        "subject": "Zapytanie ofertowe",
+        "body": "Dzien dobry, prosze o kontakt w sprawie oferty na pompe ciepla do mojego domu.",
+        "sender_kind": "customer"
+      },
+      "ground_truth": {
+        "draft_expected": true,
+        "draft": {
+          "must": [],
+          "must_not": [
+            "wymyslanie danych ktorych klient nie podal (metraz, lokalizacja, cena)"
+          ],
+          "tone_terms": [
+            "dzien dobry",
+            "prosze",
+            "pozdrawiam"
+          ]
+        },
+        "escalation_expectation": "propose"
+      },
+      "severity_if_failed": "S1"
+    }
+  ],
+  "schema_version": "eval_measurement_corpus.v2",
+  "measurement_contract_version": "v2",
+  "derived_from": {
+    "measurement_contract_version": "v1",
+    "corpus_sha256": "25733cc3defd445b997bd950451a2cd89d75e52451529a022a4cb2ac4aa94e40"
+  },
+  "contract_v2_changes": [
+    {
+      "case_id": "NEW-01",
+      "field": "ground_truth.draft.must",
+      "change": "move style/tone requirement out of factual literal matching"
+    },
+    {
+      "case_id": "NEW-02",
+      "field": "ground_truth.extraction.must",
+      "change": "replace natural-language requirement sentence with field=value fact spec"
+    }
+  ]
+}

@@ -180,6 +180,40 @@ def test_deepseek_thinking_payload_sent_on_every_call(monkeypatch: pytest.Monkey
     assert bodies[0]["reasoning_effort"] == "high"
 
 
+def test_deepseek_structured_stage_sends_json_mode_and_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings_from_env(DEEPSEEK_API_KEY="ds_test")
+    bodies: list[dict[str, object]] = []
+    payload = json.dumps({"hvac_intent": "install", "raw_geographic_signal": "Katowice"})
+
+    def fake_post(url: str, **kwargs: object) -> _FakeResponse:
+        bodies.append(kwargs.get("json") or {})
+        return _chat_success(payload)
+
+    monkeypatch.setattr("groq_client.requests.post", fake_post)
+    schema = SignalExtractionResult.model_json_schema()
+    with patch("central_llm_stage.build_context_assembler") as mock_asm:
+        mock_asm.return_value.assemble.return_value = AssembledContext(
+            company_context="ctx", assembled_at="2026-07-18T00:00:00+00:00"
+        )
+        out = run_central_structured_stage(
+            settings,
+            stage_name="signal_extraction",
+            task_instructions="extract",
+            prompt_input={"message": "test"},
+            query_text="pompa",
+            json_schema=schema,
+            schema_name="signal_extraction_v1",
+            output_model=SignalExtractionResult,
+        )
+
+    assert out is not None
+    assert len(bodies) == 1
+    assert bodies[0]["response_format"] == {"type": "json_object"}
+    system_message = (bodies[0]["messages"] or [])[0]["content"]  # type: ignore[index]
+    assert "JSON Schema contract for signal_extraction_v1" in system_message
+    assert '"hvac_intent"' in system_message
+
+
 def test_deepseek_failure_falls_back_to_previous_chain(monkeypatch: pytest.MonkeyPatch) -> None:
     """DeepSeek priority-1 failing must not crash the whole path — falls to the previously
     first provider (here: the router chain, since Anthropic is unconfigured)."""

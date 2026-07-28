@@ -34,6 +34,8 @@ class InMemoryMailboxMemoryStore:
     signal_attempts: list[dict[str, Any]] | None = None
     source_cursors: dict[str, dict[str, Any]] | None = None
     action_proposals: dict[str, dict[str, Any]] | None = None
+    policy_decisions: dict[str, dict[str, Any]] | None = None
+    action_proposals_v2: dict[str, dict[str, Any]] | None = None
     execution_results: dict[str, dict[str, Any]] | None = None
     calendar_events: dict[str, dict[str, Any]] | None = None
     calendar_case_links: dict[str, dict[str, Any]] | None = None
@@ -62,6 +64,8 @@ class InMemoryMailboxMemoryStore:
         self.signal_attempts = self.signal_attempts or []
         self.source_cursors = self.source_cursors or {}
         self.action_proposals = self.action_proposals or {}
+        self.policy_decisions = self.policy_decisions or {}
+        self.action_proposals_v2 = self.action_proposals_v2 or {}
         self.execution_results = self.execution_results or {}
         self.calendar_events = self.calendar_events or {}
         self.calendar_case_links = self.calendar_case_links or {}
@@ -278,6 +282,82 @@ class InMemoryMailboxMemoryStore:
             and (not status or str(item.get("status") or "") == status)
         ]
         rows.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+        return rows[:limit]
+
+    def append_policy_decision(self, row: dict[str, Any]) -> bool:
+        policy_decision_id = str(row.get("policy_decision_id") or "").strip()
+        if not policy_decision_id:
+            return False
+        with self._lock:
+            if policy_decision_id in self.policy_decisions:
+                return False
+            self.policy_decisions[policy_decision_id] = dict(row)
+            return True
+
+    def fetch_policy_decision(self, policy_decision_id: str) -> dict[str, Any] | None:
+        item = self.policy_decisions.get(str(policy_decision_id or "").strip())
+        return dict(item) if item else None
+
+    def fetch_policy_decisions(
+        self,
+        *,
+        case_id: str = "",
+        source_signal_id: str = "",
+        source_message_id: str = "",
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        rows = [
+            dict(item)
+            for item in self.policy_decisions.values()
+            if (not case_id or str(item.get("case_id") or "") == case_id)
+            and (
+                not source_signal_id
+                or str(item.get("source_signal_id") or "") == source_signal_id
+            )
+            and (
+                not source_message_id
+                or str(item.get("source_message_id") or "") == source_message_id
+            )
+        ]
+        rows.sort(key=lambda item: str(item.get("generated_at") or ""), reverse=True)
+        return rows[:limit]
+
+    def append_action_proposal_v2(self, row: dict[str, Any]) -> bool:
+        proposal_id = str(row.get("proposal_id") or "").strip()
+        if not proposal_id:
+            return False
+        with self._lock:
+            if proposal_id in self.action_proposals_v2:
+                return False
+            self.action_proposals_v2[proposal_id] = dict(row)
+            return True
+
+    def fetch_action_proposal_v2(self, proposal_id: str) -> dict[str, Any] | None:
+        item = self.action_proposals_v2.get(str(proposal_id or "").strip())
+        return dict(item) if item else None
+
+    def fetch_action_proposals_v2(
+        self,
+        *,
+        case_id: str = "",
+        source_signal_id: str = "",
+        source_message_id: str = "",
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        rows = [
+            dict(item)
+            for item in self.action_proposals_v2.values()
+            if (not case_id or str(item.get("case_id") or "") == case_id)
+            and (
+                not source_signal_id
+                or str(item.get("source_signal_id") or "") == source_signal_id
+            )
+            and (
+                not source_message_id
+                or str(item.get("source_message_id") or "") == source_message_id
+            )
+        ]
+        rows.sort(key=lambda item: str(item.get("generated_at") or ""), reverse=True)
         return rows[:limit]
 
     def upsert_execution_result(self, row: dict[str, Any]) -> None:

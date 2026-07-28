@@ -6,6 +6,35 @@ from .constants import MISSING_INFO_CRITICAL_KEYWORDS, MISSING_INFO_IMPORTANT_KE
 from .validators import _missing_info_label_pl
 
 
+# RC-IQ-R6: a missing-information item must be a concrete datum the customer/operator can
+# supply. Two classes leaking from the free-text business reasoner are NOT data gaps and
+# must not sit on the operator's gap checklist (they remain visible as open loops/risks):
+#   - an awaited customer decision/response (the customer will decide; nothing to collect);
+#   - a speculative/conditional maybe ("jeśli dotyczy", "if applicable").
+# Markers are deliberately narrow to avoid dropping legitimate gaps (e.g. "jeśli istnieje",
+# "ewentualnej weryfikacji" are NOT matched).
+_AWAITED_DECISION_MARKERS = ("decyzja klient", "decyzją klient", "decyzje klient", "customer decision")
+_SPECULATIVE_MARKERS = ("jesli dotyczy", "jeśli dotyczy", "if applicable")
+# Explicitly-optional items ("(opcjonalnie)") are by definition not a gap the operator
+# must collect; internal case-linking identifiers ("case id") are system state, not a
+# datum the customer can supply. Both are dropped from the operator gap surface.
+_OPTIONAL_MARKERS = ("(opcjonalnie)", "opcjonalnie)", "(optional)")
+_INTERNAL_LINK_MARKERS = ("case id", "case_id")
+
+
+def _is_collectable_gap(item: str) -> bool:
+    low = str(item or "").lower()
+    if any(marker in low for marker in _SPECULATIVE_MARKERS):
+        return False
+    if any(marker in low for marker in _AWAITED_DECISION_MARKERS):
+        return False
+    if any(marker in low for marker in _OPTIONAL_MARKERS):
+        return False
+    if any(marker in low for marker in _INTERNAL_LINK_MARKERS):
+        return False
+    return True
+
+
 def build_missing_info(
     *,
     intake_result: dict[str, Any],
@@ -15,7 +44,11 @@ def build_missing_info(
     attachment_intelligence: dict[str, Any] | None = None,
     thread_memory: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    raw_items = [str(item).strip() for item in (business_result.get("missing_information") or []) if str(item).strip()]
+    raw_items = [
+        str(item).strip()
+        for item in (business_result.get("missing_information") or [])
+        if str(item).strip() and _is_collectable_gap(str(item))
+    ]
     if str(case_link_result.get("decision") or "") in {"weak_link", "competing_links"}:
         raw_items.append("confirmed case reference")
 

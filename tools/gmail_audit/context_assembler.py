@@ -239,6 +239,33 @@ def default_company_context_path() -> Path:
     return Path(__file__).resolve().parent / "data" / "company_context.md"
 
 
+_FACT_PROVENANCE_MAX_CHARS = 200
+
+
+def _fact_provenance_suffix(row: dict[str, Any]) -> str:
+    """SLICE-1 (B3): compact provenance for one fact, or '' when none exists.
+
+    Only parts actually present on the row are rendered — nothing is invented. The deterministic
+    projection (`understanding_output._prior_known_state_rows`) already reads `confidence`,
+    `source_ref` and `observed_at` off these same rows; before this change the model deciding the
+    next action knew strictly less than the projection describing that decision.
+    """
+    parts: list[str] = []
+    raw_conf = row.get("confidence")
+    if raw_conf not in (None, ""):
+        try:
+            parts.append(f"conf {float(raw_conf):.2g}")
+        except (TypeError, ValueError):
+            pass
+    source_ref = str(row.get("source_ref") or "").strip()
+    if source_ref:
+        parts.append(f"src: {source_ref[:60]}")
+    observed_at = str(row.get("observed_at") or "").strip()
+    if observed_at:
+        parts.append(f"seen {observed_at[:10]}")
+    return f" ({', '.join(parts)})" if parts else ""
+
+
 def _facts_dict_from_active_facts(active_facts: list[dict[str, Any]]) -> dict[str, Any]:
     facts: dict[str, Any] = {}
     for row in active_facts:
@@ -250,7 +277,12 @@ def _facts_dict_from_active_facts(active_facts: list[dict[str, Any]]) -> dict[st
         value = row.get("value")
         if value is None:
             value = row.get("normalized_value")
-        facts[key] = value
+        suffix = _fact_provenance_suffix(row)
+        if suffix:
+            # keep the value intact and bounded; provenance never displaces the value
+            facts[key] = f"{value}{suffix}"[:_FACT_PROVENANCE_MAX_CHARS]
+        else:
+            facts[key] = value
     return facts
 
 

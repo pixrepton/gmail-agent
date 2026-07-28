@@ -377,6 +377,55 @@ CREATE INDEX IF NOT EXISTS idx_mailbox_memory_action_proposals_case_id
 CREATE INDEX IF NOT EXISTS idx_mailbox_memory_action_proposals_status
     ON mailbox_memory_action_proposals(status, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS mailbox_memory_policy_decisions (
+    policy_decision_id TEXT PRIMARY KEY,
+    decision_candidate_id TEXT NOT NULL,
+    case_id TEXT NOT NULL,
+    source_signal_id TEXT NOT NULL DEFAULT '',
+    source_message_id TEXT NOT NULL DEFAULT '',
+    schema_version TEXT NOT NULL DEFAULT 'policy_decision.v1',
+    status TEXT NOT NULL DEFAULT '',
+    allowed_actions JSONB NOT NULL DEFAULT '[]'::jsonb,
+    requires_review BOOLEAN NOT NULL DEFAULT TRUE,
+    requires_human_approval BOOLEAN NOT NULL DEFAULT TRUE,
+    policy_basis JSONB NOT NULL DEFAULT '[]'::jsonb,
+    failed_rules JSONB NOT NULL DEFAULT '[]'::jsonb,
+    warnings JSONB NOT NULL DEFAULT '[]'::jsonb,
+    evidence_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
+    generated_at TIMESTAMPTZ,
+    raw_json JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS idx_mailbox_memory_policy_decisions_case
+    ON mailbox_memory_policy_decisions(case_id, generated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mailbox_memory_policy_decisions_source
+    ON mailbox_memory_policy_decisions(source_signal_id, source_message_id);
+
+CREATE TABLE IF NOT EXISTS mailbox_memory_action_proposals_v2 (
+    proposal_id TEXT PRIMARY KEY,
+    policy_decision_id TEXT NOT NULL,
+    decision_candidate_id TEXT NOT NULL,
+    case_id TEXT NOT NULL,
+    source_signal_id TEXT NOT NULL DEFAULT '',
+    source_message_id TEXT NOT NULL DEFAULT '',
+    schema_version TEXT NOT NULL DEFAULT 'action_proposal.v2',
+    action_type TEXT NOT NULL DEFAULT '',
+    allowed_by_policy BOOLEAN NOT NULL DEFAULT FALSE,
+    requires_operator_approval BOOLEAN NOT NULL DEFAULT TRUE,
+    status TEXT NOT NULL DEFAULT 'proposed',
+    action_mode TEXT NOT NULL DEFAULT '',
+    blocked_reason TEXT NOT NULL DEFAULT '',
+    evidence_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
+    generated_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ,
+    raw_json JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS idx_mailbox_memory_action_proposals_v2_case
+    ON mailbox_memory_action_proposals_v2(case_id, generated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mailbox_memory_action_proposals_v2_source
+    ON mailbox_memory_action_proposals_v2(source_signal_id, source_message_id);
+CREATE INDEX IF NOT EXISTS idx_mailbox_memory_action_proposals_v2_policy
+    ON mailbox_memory_action_proposals_v2(policy_decision_id);
+
 CREATE TABLE IF NOT EXISTS mailbox_memory_execution_results (
     execution_id TEXT PRIMARY KEY,
     proposal_id TEXT NOT NULL,

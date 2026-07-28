@@ -34,6 +34,26 @@
           ],
           "default": null,
           "title": "Disabled Reason Pl"
+        },
+        "parent_policy_decision_id": {
+          "default": "",
+          "title": "Parent Policy Decision Id",
+          "type": "string"
+        },
+        "parent_action_proposal_v2_id": {
+          "default": "",
+          "title": "Parent Action Proposal V2 Id",
+          "type": "string"
+        },
+        "parent_decision_candidate_id": {
+          "default": "",
+          "title": "Parent Decision Candidate Id",
+          "type": "string"
+        },
+        "source_signal_id": {
+          "default": "",
+          "title": "Source Signal Id",
+          "type": "string"
         }
       },
       "required": [
@@ -128,6 +148,132 @@
         }
       },
       "title": "CaseUnderstandingProjection",
+      "type": "object"
+    },
+    "CaseUnderstandingProvenance": {
+      "additionalProperties": false,
+      "description": "SLICE-3A: `CaseUnderstandingProvenanceV1` — how the sibling `case_understanding` was produced.\n\nDeliberately a SEPARATE, small envelope rather than fields inside\n`CaseUnderstandingProjection`: the projection is Brain 1's semantic content, this is metadata\nabout the run that produced it. Keeping them apart means a reader can trust the content\nwithout having to strip bookkeeping out of it, and there is still exactly one semantic\nrepresentation of the case — no third model.\n\nEvery field is optional with an honest empty default. An empty string means \"not known\",\nnever a fabricated status: a snapshot written before this slice simply has\n`case_understanding_provenance = None` and gets no invented provenance.\n\n`corrected` is NOT `degraded`. A normalisation may be a harmless synonym rewrite or a real\ndictionary collision, and nothing in the current code distinguishes them. Until a severity\ncontract exists, this records WHAT happened and refuses to editorialise about how bad it was.",
+      "properties": {
+        "schema_version": {
+          "default": "v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "availability": {
+          "default": "",
+          "enum": [
+            "available",
+            "unavailable",
+            "not_required",
+            ""
+          ],
+          "title": "Availability",
+          "type": "string"
+        },
+        "source_mode": {
+          "default": "",
+          "enum": [
+            "model_result",
+            "normalized_model_result",
+            "fallback",
+            "skipped_for_lane",
+            ""
+          ],
+          "title": "Source Mode",
+          "type": "string"
+        },
+        "validation_state": {
+          "default": "",
+          "enum": [
+            "clean",
+            "corrected",
+            ""
+          ],
+          "title": "Validation State",
+          "type": "string"
+        },
+        "source_signal_id": {
+          "default": "",
+          "title": "Source Signal Id",
+          "type": "string"
+        },
+        "observed_at": {
+          "default": "",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "reason_codes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reason Codes",
+          "type": "array"
+        },
+        "normalization_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Normalization Count",
+          "type": "integer"
+        },
+        "validation_error_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Validation Error Count",
+          "type": "integer"
+        }
+      },
+      "title": "CaseUnderstandingProvenance",
+      "type": "object"
+    },
+    "FeedVisibility": {
+      "additionalProperties": false,
+      "description": "SLICE-2B: routing/projection metadata deciding operator MAIN-feed membership.\n\nThis is NOT a new semantic truth about the case — it records how the signal was routed and\nwhy, so `snapshot exists` stops implying `belongs in the operator feed`. Optional and\nadditive: snapshots written before this slice validate unchanged and are treated as\n`main_feed` by an explicit legacy fallback.",
+      "properties": {
+        "mode": {
+          "default": "main_feed",
+          "enum": [
+            "hidden",
+            "case_timeline_only",
+            "main_feed",
+            "attention_required"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "reason_codes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reason Codes",
+          "type": "array"
+        },
+        "source_lane": {
+          "default": "",
+          "title": "Source Lane",
+          "type": "string"
+        },
+        "source_triage_class": {
+          "default": "",
+          "title": "Source Triage Class",
+          "type": "string"
+        },
+        "operator_override": {
+          "default": false,
+          "title": "Operator Override",
+          "type": "boolean"
+        },
+        "execution_attention": {
+          "default": false,
+          "title": "Execution Attention",
+          "type": "boolean"
+        },
+        "execution_attention_reason": {
+          "default": "",
+          "title": "Execution Attention Reason",
+          "type": "string"
+        }
+      },
+      "title": "FeedVisibility",
       "type": "object"
     },
     "GapItem": {
@@ -351,6 +497,111 @@
       "title": "OperationalStatus",
       "type": "object"
     },
+    "PolicyActionEnvelopeV1": {
+      "additionalProperties": false,
+      "description": "Bounded read-only projection of canonical MailboxMemory policy/action records.",
+      "properties": {
+        "schema_version": {
+          "const": "policy_action_envelope.v1",
+          "default": "policy_action_envelope.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "decision_candidate_id": {
+          "default": "",
+          "title": "Decision Candidate Id",
+          "type": "string"
+        },
+        "policy_decision_id": {
+          "default": "",
+          "title": "Policy Decision Id",
+          "type": "string"
+        },
+        "action_proposal_id": {
+          "default": "",
+          "title": "Action Proposal Id",
+          "type": "string"
+        },
+        "source_signal_id": {
+          "default": "",
+          "title": "Source Signal Id",
+          "type": "string"
+        },
+        "source_message_id": {
+          "default": "",
+          "title": "Source Message Id",
+          "type": "string"
+        },
+        "policy_status": {
+          "default": "",
+          "title": "Policy Status",
+          "type": "string"
+        },
+        "action_intent": {
+          "default": "",
+          "title": "Action Intent",
+          "type": "string"
+        },
+        "allowed_by_policy": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Allowed By Policy"
+        },
+        "requires_operator_approval": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requires Operator Approval"
+        },
+        "freshness": {
+          "default": "unavailable",
+          "enum": [
+            "current",
+            "stale",
+            "unavailable"
+          ],
+          "title": "Freshness",
+          "type": "string"
+        },
+        "proposal_status": {
+          "default": "",
+          "title": "Proposal Status",
+          "type": "string"
+        },
+        "reason_codes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reason Codes",
+          "type": "array"
+        },
+        "generated_at": {
+          "default": "",
+          "title": "Generated At",
+          "type": "string"
+        },
+        "expires_at": {
+          "default": "",
+          "title": "Expires At",
+          "type": "string"
+        }
+      },
+      "title": "PolicyActionEnvelopeV1",
+      "type": "object"
+    },
     "ReasoningTraceItem": {
       "additionalProperties": false,
       "properties": {
@@ -369,6 +620,67 @@
         "turn"
       ],
       "title": "ReasoningTraceItem",
+      "type": "object"
+    },
+    "SemanticPolicyPlanConsistencyV1": {
+      "additionalProperties": false,
+      "description": "Detection-only observation; it never authorizes, blocks, or rewrites a tool plan.",
+      "properties": {
+        "schema_version": {
+          "const": "semantic_policy_plan_consistency.v1",
+          "default": "semantic_policy_plan_consistency.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "consistent",
+            "conflicting",
+            "missing_policy_envelope",
+            "stale_policy_envelope",
+            "missing_plan_correlation",
+            "not_evaluable"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "reason_codes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reason Codes",
+          "type": "array"
+        },
+        "policy_decision_id": {
+          "default": "",
+          "title": "Policy Decision Id",
+          "type": "string"
+        },
+        "action_proposal_id": {
+          "default": "",
+          "title": "Action Proposal Id",
+          "type": "string"
+        },
+        "tool_name": {
+          "default": "",
+          "title": "Tool Name",
+          "type": "string"
+        },
+        "mapping_classification": {
+          "default": "NO_SAFE_MAPPING_EXISTS",
+          "enum": [
+            "EXHAUSTIVE_MAPPING_EXISTS",
+            "PARTIAL_MAPPING_EXISTS",
+            "NO_SAFE_MAPPING_EXISTS"
+          ],
+          "title": "Mapping Classification",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "title": "SemanticPolicyPlanConsistencyV1",
       "type": "object"
     },
     "ToolCallItem": {
@@ -498,6 +810,50 @@
       "anyOf": [
         {
           "$ref": "#/$defs/CaseUnderstandingProjection"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "case_understanding_provenance": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CaseUnderstandingProvenance"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "policy_action_envelope": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PolicyActionEnvelopeV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "semantic_policy_plan_consistency": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SemanticPolicyPlanConsistencyV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "feed_visibility": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FeedVisibility"
         },
         {
           "type": "null"

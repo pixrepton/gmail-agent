@@ -84,9 +84,35 @@ def _completed_rag_research(snapshot: Any) -> list[str]:
     return items[-8:]
 
 
+def _brain1_context(snapshot: Any) -> dict[str, Any] | None:
+    """SLICE-3A: Brain 1's Understanding, structured, for the planner.
+
+    Brain 1 authors what the case MEANS; Brain 2 plans what to DO about it. Until this slice the
+    planner received that meaning only as a <=400-char Polish sentence folded into
+    `agent_memory.reasoning_trace` by `graph._ground_current_signal` — so `missing_critical_fields`,
+    `risks` and `recommended_next_step_pl` reached it, if at all, as prose it would have to
+    re-parse, and were dropped entirely once the trace scrolled past the last three entries.
+
+    This reads the EXISTING `snapshot.case_understanding` (+ its provenance envelope). It creates
+    no second semantic representation and persists nothing: it is an ephemeral view assembled at
+    prompt-build time from fields Brain 1 already owns.
+
+    Absent Understanding returns None rather than an empty scaffold — the planner must be able to
+    tell "Brain 1 said nothing" from "Brain 1 said nothing was missing".
+    """
+    understanding = getattr(snapshot, "case_understanding", None)
+    if understanding is None:
+        return None
+    provenance = getattr(snapshot, "case_understanding_provenance", None)
+    view: dict[str, Any] = {"understanding": understanding.model_dump(exclude_none=True)}
+    if provenance is not None:
+        view["provenance"] = provenance.model_dump(exclude_none=True)
+    return view
+
+
 def _compact_view(snapshot: Any) -> dict[str, Any]:
     """Kompaktowy widok stanu dla plannera — bez pełnego dumpa (oszczędność tokenów)."""
-    return {
+    view = {
         "case_id": snapshot.case_id or "(nowy lead — brak case_id)",
         "case_kind": snapshot.case_kind,
         "operational_status": snapshot.operational_status.model_dump(),
@@ -94,8 +120,17 @@ def _compact_view(snapshot: Any) -> dict[str, Any]:
         "gaps": [g.model_dump() for g in snapshot.gaps][:6],
         "actions": [a.model_dump() for a in snapshot.actions][:4],
         "completed_rag_research": _completed_rag_research(snapshot),
+        # kept for backward compatibility: the one-line brief still travels here, but it is no
+        # longer the only channel through which Brain 1 reaches the planner
         "recent_steps": [r.summary_pl for r in snapshot.agent_memory.reasoning_trace[-3:]],
     }
+    brain1 = _brain1_context(snapshot)
+    if brain1 is not None:
+        view["brain1_context"] = brain1
+    policy_envelope = getattr(snapshot, "policy_action_envelope", None)
+    if policy_envelope is not None:
+        view["policy_action_envelope"] = policy_envelope.model_dump(exclude_none=True)
+    return view
 
 
 class OpenAIAgentPlannerError(RuntimeError):
@@ -276,8 +311,19 @@ class OpenAIToolPlanner:
                 "treść generuje system automatycznie z profilu klienta. "
             )
             followup_instruction = (
-                "NIE wywołuj extract_facts_from_text — sprawa już istnieje; użyj generate_draft_reply gdy masz dość danych, "
-                "w przeciwnym razie request_operator_clarification lub report_gaps_and_stop. "
+                # CLOSEOUT-01 Phase 3: deterministic, ordered first-action policy for follow-ups.
+                # Removes the ambiguous "request_operator_clarification LUB report_gaps_and_stop"
+                # (an unresolved OR) and the turn-0 research ambiguity that made the first tool
+                # choice nondeterministic on identical follow-up input. General (all follow-ups),
+                # grounded in hitl_policy, prefers the safe operator-handoff class; not case-specific.
+                "NIE wywołuj extract_facts_from_text — sprawa już istnieje. "
+                "Nie zaczynaj tury od narzędzi read/search (search_*, list_*, read_*), jeśli stan nie wskazuje "
+                "konkretnej, blokującej luki informacyjnej wymagającej ich użycia. "
+                "Wybierz pierwsze działanie deterministycznie w tej kolejności: "
+                "(1) generate_draft_reply — tylko gdy masz wystarczające dane do konkretnej, bezpiecznej odpowiedzi; "
+                "(2) w przeciwnym razie request_operator_clarification — gdy potrzebna jest decyzja operatora albo brakuje "
+                "danych do bezpiecznego działania (to jest domyślne działanie follow-upu bez gotowego draftu); "
+                "(3) report_gaps_and_stop — tylko gdy nie ma ani gotowego draftu, ani żadnej kwestii/decyzji do przekazania operatorowi. "
             )
         else:
             draft_instruction = ""
@@ -293,6 +339,18 @@ class OpenAIToolPlanner:
             "Kolejnego narzedzia read/search uzyj tylko wtedy, gdy potrafisz wskazac konkretny brak informacji niepokryty przez completed_rag_research lub recent_steps. "
             "Nie powtarzaj research objective, dla ktorego istnieje successful RAG evidence. Gdy dowody wystarczaja, przejdz do draftu, clarification albo stopu. "
             f"{draft_instruction}"
+            # INTELLIGENCE-QUALITY-BASELINE-LIFT-01: operator policy for out-of-system context
+            # references (OUT_OF_SYSTEM_CONTEXT_REFERENCE). General (any channel/phrasing, no
+            # case-id, no hardcoded phrase), gated on being UNVERIFIABLE from the thread/case data,
+            # so cases with linked context are unaffected. The operator holds context the system
+            # cannot: ask them first, draft only after.
+            "Jeśli wiadomość opiera się na wcześniejszych ustaleniach spoza tego systemu (odwołuje się do wcześniejszej "
+            "rozmowy, spotkania lub ustaleń), których NIE możesz zweryfikować w wątku ani w danych sprawy, a ten kontekst "
+            "jest potrzebny do bezpiecznego działania — PIERWSZYM działaniem musi być request_operator_clarification, aby "
+            "operator uzupełnił znany mu kontekst. NIE zaczynaj wtedy od search_*/read_*/list_* — tego kontekstu z definicji "
+            "nie ma w wątku, w sprawie ani w RAG, więc research go nie odnajdzie; od razu wywołaj request_operator_clarification. "
+            "Wiadomość do klienta (generate_draft_reply) przygotuj dopiero po jego uzyskaniu lub po potwierdzeniu operatora, "
+            "że kontekst jest niedostępny. "
             "o metraż pytaj tylko dla spraw ofertowych (wycena_oferta / zapytanie_klienta).\n"
             "WAŻNE: Jeśli case_id jest już ustawione (nie jest puste ani '(nowy lead)') — to jest FOLLOW-UP na istniejącej sprawie. "
             f"{followup_instruction}"

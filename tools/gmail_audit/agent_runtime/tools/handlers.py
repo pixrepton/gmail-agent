@@ -209,6 +209,21 @@ _HVAC_INTENT_TO_KIND = {
     "quote": "wycena_oferta", "offer": "wycena_oferta", "oferta": "wycena_oferta",
     "wycena": "wycena_oferta", "purchase": "wycena_oferta", "zakup": "wycena_oferta",
     "inquiry": "zapytanie_klienta", "zapytanie": "zapytanie_klienta", "lead": "zapytanie_klienta",
+    # STRUCTURED-INPUT-AND-CAPABILITY-BASELINE-CLOSEOUT-01 — canonical hvac_intent values
+    # (llm_contracts.signal_extraction.HVAC_INTENT_CANONICAL_VALUES) map directly onto
+    # case_kind buckets. "nieznane" (no detected intent) is deliberately NOT mapped here so
+    # the existing raw-text keyword heuristics below remain the fallback, unchanged.
+    # Every OTHER canonical value must appear here: the raw-text heuristics have no rule for
+    # deferral language, so an unmapped detected intent falls all the way through to
+    # "niezaklasyfikowane" -- discarding a signal the extractor correctly identified.
+    "wycena_oferta": "wycena_oferta",
+    "awaria_naprawa": "awaria_naprawa",
+    "przeglad_konserwacja": "przeglad_konserwacja",
+    "pytanie_techniczne": "zapytanie_klienta",
+    "negocjacja_ceny": "wycena_oferta",
+    # a customer deferring a decision is a sales-pipeline state (the offer is out, the
+    # decision is pending), same bucket as price negotiation
+    "odroczenie_decyzji": "wycena_oferta",
 }
 
 

@@ -685,6 +685,158 @@ class PostgresMailboxMemoryStore:
             sql = "SELECT * FROM mailbox_memory_action_proposals ORDER BY created_at DESC NULLS LAST LIMIT %(limit)s"
         return self._fetch_all(sql, {"case_id": case_id, "status": status, "limit": limit})
 
+    def append_policy_decision(self, row: dict[str, Any]) -> bool:
+        payload = dict(row)
+        payload["raw_json"] = dict(row.get("raw_json") or row)
+        prepared = self._prep(
+            payload,
+            json_fields={
+                "allowed_actions",
+                "policy_basis",
+                "failed_rules",
+                "warnings",
+                "evidence_refs",
+                "raw_json",
+            },
+            time_fields={"generated_at"},
+        )
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO mailbox_memory_policy_decisions (
+                        policy_decision_id, decision_candidate_id, case_id,
+                        source_signal_id, source_message_id, schema_version, status,
+                        allowed_actions, requires_review, requires_human_approval,
+                        policy_basis, failed_rules, warnings, evidence_refs,
+                        generated_at, raw_json
+                    ) VALUES (
+                        %(policy_decision_id)s, %(decision_candidate_id)s, %(case_id)s,
+                        %(source_signal_id)s, %(source_message_id)s, %(schema_version)s, %(status)s,
+                        %(allowed_actions)s::jsonb, %(requires_review)s, %(requires_human_approval)s,
+                        %(policy_basis)s::jsonb, %(failed_rules)s::jsonb, %(warnings)s::jsonb,
+                        %(evidence_refs)s::jsonb, %(generated_at)s, %(raw_json)s::jsonb
+                    )
+                    ON CONFLICT (policy_decision_id) DO NOTHING
+                    RETURNING policy_decision_id
+                    """,
+                    prepared,
+                )
+                inserted = cur.fetchone() is not None
+            conn.commit()
+        return inserted
+
+    def fetch_policy_decision(self, policy_decision_id: str) -> dict[str, Any] | None:
+        return self._fetch_one(
+            """
+            SELECT * FROM mailbox_memory_policy_decisions
+            WHERE policy_decision_id = %(policy_decision_id)s
+            """,
+            {"policy_decision_id": policy_decision_id},
+        )
+
+    def fetch_policy_decisions(
+        self,
+        *,
+        case_id: str = "",
+        source_signal_id: str = "",
+        source_message_id: str = "",
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        where = ["TRUE"]
+        if case_id:
+            where.append("case_id = %(case_id)s")
+        if source_signal_id:
+            where.append("source_signal_id = %(source_signal_id)s")
+        if source_message_id:
+            where.append("source_message_id = %(source_message_id)s")
+        return self._fetch_all(
+            f"""
+            SELECT * FROM mailbox_memory_policy_decisions
+            WHERE {' AND '.join(where)}
+            ORDER BY generated_at DESC NULLS LAST, policy_decision_id DESC
+            LIMIT %(limit)s
+            """,
+            {
+                "case_id": case_id,
+                "source_signal_id": source_signal_id,
+                "source_message_id": source_message_id,
+                "limit": limit,
+            },
+        )
+
+    def append_action_proposal_v2(self, row: dict[str, Any]) -> bool:
+        payload = dict(row)
+        payload["raw_json"] = dict(row.get("raw_json") or row)
+        prepared = self._prep(
+            payload,
+            json_fields={"evidence_refs", "raw_json"},
+            time_fields={"generated_at", "expires_at"},
+        )
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO mailbox_memory_action_proposals_v2 (
+                        proposal_id, policy_decision_id, decision_candidate_id, case_id,
+                        source_signal_id, source_message_id, schema_version, action_type,
+                        allowed_by_policy, requires_operator_approval, status, action_mode,
+                        blocked_reason, evidence_refs, generated_at, expires_at, raw_json
+                    ) VALUES (
+                        %(proposal_id)s, %(policy_decision_id)s, %(decision_candidate_id)s, %(case_id)s,
+                        %(source_signal_id)s, %(source_message_id)s, %(schema_version)s, %(action_type)s,
+                        %(allowed_by_policy)s, %(requires_operator_approval)s, %(status)s, %(action_mode)s,
+                        %(blocked_reason)s, %(evidence_refs)s::jsonb, %(generated_at)s, %(expires_at)s,
+                        %(raw_json)s::jsonb
+                    )
+                    ON CONFLICT (proposal_id) DO NOTHING
+                    RETURNING proposal_id
+                    """,
+                    prepared,
+                )
+                inserted = cur.fetchone() is not None
+            conn.commit()
+        return inserted
+
+    def fetch_action_proposal_v2(self, proposal_id: str) -> dict[str, Any] | None:
+        return self._fetch_one(
+            """
+            SELECT * FROM mailbox_memory_action_proposals_v2
+            WHERE proposal_id = %(proposal_id)s
+            """,
+            {"proposal_id": proposal_id},
+        )
+
+    def fetch_action_proposals_v2(
+        self,
+        *,
+        case_id: str = "",
+        source_signal_id: str = "",
+        source_message_id: str = "",
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        where = ["TRUE"]
+        if case_id:
+            where.append("case_id = %(case_id)s")
+        if source_signal_id:
+            where.append("source_signal_id = %(source_signal_id)s")
+        if source_message_id:
+            where.append("source_message_id = %(source_message_id)s")
+        return self._fetch_all(
+            f"""
+            SELECT * FROM mailbox_memory_action_proposals_v2
+            WHERE {' AND '.join(where)}
+            ORDER BY generated_at DESC NULLS LAST, proposal_id DESC
+            LIMIT %(limit)s
+            """,
+            {
+                "case_id": case_id,
+                "source_signal_id": source_signal_id,
+                "source_message_id": source_message_id,
+                "limit": limit,
+            },
+        )
+
     def upsert_execution_result(self, row: dict[str, Any]) -> None:
         payload = dict(row)
         payload["raw_json"] = dict(row)

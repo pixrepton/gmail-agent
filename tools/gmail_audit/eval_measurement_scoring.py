@@ -12,8 +12,10 @@ import json
 import math
 import re
 import unicodedata
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 
 PRIMARY_OUTCOMES = frozenset({"CAPACITY", "DELIVERY", "CAPABILITY", "HARNESS", "CLEAN_PASS"})
@@ -41,9 +43,37 @@ DEFAULT_UNSAFE_TERMS = (
     "umowiona wizyta",
 )
 
+_SUPPORTED_MEASUREMENT_CONTRACTS = frozenset({"v1", "v2", "v3"})
+_MEASUREMENT_CONTRACT_VERSION: ContextVar[str] = ContextVar(
+    "measurement_contract_version",
+    default="v3",
+)
+
 
 class FrozenCorpusError(ValueError):
     """Raised when a frozen corpus does not match the expected hash."""
+
+
+@contextmanager
+def measurement_contract(version: str) -> Iterator[None]:
+    """Apply versioned scorer semantics without changing helper call signatures."""
+
+    normalized = str(version or "").strip().lower()
+    if normalized not in _SUPPORTED_MEASUREMENT_CONTRACTS:
+        raise ValueError(f"Unsupported measurement contract version: {version!r}")
+    token = _MEASUREMENT_CONTRACT_VERSION.set(normalized)
+    try:
+        yield
+    finally:
+        _MEASUREMENT_CONTRACT_VERSION.reset(token)
+
+
+def current_measurement_contract_version() -> str:
+    return _MEASUREMENT_CONTRACT_VERSION.get()
+
+
+def _uses_v3_semantics() -> bool:
+    return current_measurement_contract_version() == "v3"
 
 
 def canonical_json_sha256(payload: Any) -> str:
@@ -211,7 +241,7 @@ def score_understanding(
     total_weight = 0.0
     weighted = 0.0
     needs_llm_judge = False
-    unsafe_hits = _find_terms(_flatten_text(actual), ground_truth.get("unsafe_terms") or DEFAULT_UNSAFE_TERMS)
+    unsafe_hits = _find_terms(_flatten_text(actual), ground_truth.get("unsafe_terms") or DEFAULT_UNSAFE_TERMS, strict=True)
 
     for name in UNDERSTANDING_DIMENSIONS:
         spec = _dimension_spec(dimensions.get(name), default_weight=1.0)
@@ -280,8 +310,8 @@ def score_draft(
     fact_hits, fact_missing = _term_partition(normalized, required_facts)
     info_hits, info_missing = _term_partition(normalized, required_info)
     relevance_hits, relevance_missing = _term_partition(normalized, relevance_terms)
-    invented_hits = _find_terms(normalized, forbidden_claims)
-    unsafe_hits = _find_terms(normalized, unsafe_terms)
+    invented_hits = _find_terms(normalized, forbidden_claims, strict=True)
+    unsafe_hits = _find_terms(normalized, unsafe_terms, strict=True)
 
     factual_score = _ratio_score(len(fact_hits), len(required_facts), default=1.0)
     missing_info_score = _ratio_score(len(info_hits), len(required_info), default=1.0)
@@ -434,9 +464,35 @@ def _fact_spec(fact: Any) -> dict[str, Any]:
     return spec
 
 
+# A composite ground-truth string shaped "<field_name> <free text> <number>" (no "=") --
+# e.g. "budget_pln_estimated w okolicy 45000" -- used to fall back to flattening the WHOLE
+# extraction object into one string and token-matching it, which spuriously fails when the
+# targeted field's value is correct but the free text around it shares little token overlap
+# with the rest of the object (STRUCTURED-INPUT-AND-CAPABILITY-BASELINE-CLOSEOUT-01,
+# Phase 2/3). General, schema-agnostic pattern: any leading snake_case-shaped token (a real
+# field name always looks like this) is used as a targeted key instead of the whole-object
+# fallback. This only ever ADDS a more precise lookup path; when the pattern doesn't match
+# the original whole-object fallback is unchanged.
+_FIELD_NAME_PREFIX_RE = re.compile(r"^([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\s+(.+)$")
+
+
 def _legacy_fact_spec(text: str) -> dict[str, Any]:
     raw = text.strip()
     if "=" not in raw:
+        if _uses_v3_semantics():
+            match = _FIELD_NAME_PREFIX_RE.match(raw)
+            if match and re.search(r"\d", match.group(2)):
+                key, expected = match.group(1), match.group(2).strip()
+                # `derived_key` marks an inferred key, so a missing field can retain
+                # the historical whole-object fallback.
+                return {
+                    "id": key,
+                    "key": key,
+                    "expected": expected,
+                    "aliases": [],
+                    "derived_key": True,
+                    "raw_text": raw,
+                }
         return {"expected": raw}
     key, expected = raw.split("=", 1)
     key = key.strip()
@@ -470,6 +526,11 @@ def _extract_fact_value(actual: dict[str, Any], spec: dict[str, Any]) -> Any:
     if key:
         values = _find_values_by_key(actual, str(key))
         if not values:
+            if spec.get("derived_key"):
+                # the guessed key doesn't exist in `actual` at all -- it was a false-positive
+                # field-name-shaped prefix, not a real field. Fall back to whole-object
+                # matching against the FULL original composite string (pre-fix behavior).
+                return _flatten_text(actual)
             return None
         if len(values) == 1:
             return values[0]
@@ -517,7 +578,7 @@ def _is_unknown(value: Any) -> bool:
     return False
 
 
-def _matches_expected(value: Any, spec: dict[str, Any]) -> bool:
+def _matches_expected(value: Any, spec: dict[str, Any], *, strict: bool = False) -> bool:
     expected_values = []
     if "expected" in spec:
         expected_values.append(spec.get("expected"))
@@ -526,14 +587,14 @@ def _matches_expected(value: Any, spec: dict[str, Any]) -> bool:
         expected_values.append(spec.get("term"))
     if not expected_values:
         return not _is_unknown(value)
-    return any(_value_matches(value, expected) for expected in expected_values)
+    return any(_value_matches(value, expected, strict=strict) for expected in expected_values)
 
 
-def _value_matches(actual: Any, expected: Any) -> bool:
+def _value_matches(actual: Any, expected: Any, *, strict: bool = False) -> bool:
     if isinstance(actual, list):
-        return any(_value_matches(item, expected) for item in actual)
+        return any(_value_matches(item, expected, strict=strict) for item in actual)
     if isinstance(actual, dict):
-        return _value_matches(_flatten_text(actual), expected)
+        return _value_matches(_flatten_text(actual), expected, strict=strict)
     if isinstance(expected, bool):
         return bool(actual) is expected
     actual_number = _number(actual)
@@ -546,6 +607,8 @@ def _value_matches(actual: Any, expected: Any) -> bool:
         return not _is_unknown(actual)
     if actual_text == expected_text or expected_text in actual_text:
         return True
+    if strict and _uses_v3_semantics():
+        return _strict_phrase_matches(actual_text, expected_text)
     expected_tokens = set(_tokens(expected_text))
     if not expected_tokens:
         return False
@@ -559,7 +622,10 @@ def _forbidden_present(actual: dict[str, Any], spec: dict[str, Any]) -> bool:
     if _is_unknown(value):
         return False
     if "expected" in spec or "term" in spec or spec.get("aliases"):
-        return _matches_expected(value, spec)
+        # Fabrication detection is a flag-something-bad check; require exact match (see
+        # _value_matches' strict-mode rationale) so an unrelated inflected word form cannot
+        # falsely accuse extraction of hallucinating a forbidden fact.
+        return _matches_expected(value, spec, strict=True)
     return True
 
 
@@ -684,6 +750,20 @@ def _draft_text(value: Any) -> str:
             return value["body"]
         drafts = value.get("drafts")
         if isinstance(drafts, list) and drafts:
+            # STRUCTURED-INPUT-AND-CAPABILITY-BASELINE-CLOSEOUT-01 -- measurement-fidelity
+            # fix: score the draft the system actually recommends for use, not always the
+            # first list entry. reply_drafter emits multiple variants (e.g. an internal
+            # "short_operational" operator note alongside a "customer_friendly" reply) and
+            # names the intended one in `recommended_variant`; scoring drafts[0]
+            # unconditionally could grade an internal note against customer-facing draft
+            # ground truth (observed: INT-01's drafts[0] was an internal rejection note,
+            # never meant to be read by the customer).
+            if _uses_v3_semantics():
+                recommended = str(value.get("recommended_variant") or "").strip()
+                if recommended:
+                    for item in drafts:
+                        if isinstance(item, dict) and str(item.get("variant") or "").strip() == recommended:
+                            return str(item.get("body") or item.get("payload_pl") or "")
             first = drafts[0]
             if isinstance(first, dict):
                 return str(first.get("body") or first.get("payload_pl") or "")
@@ -717,11 +797,24 @@ def _split_legacy_positive_and_absence_terms(terms: list[Any]) -> tuple[list[Any
     return positive, absence
 
 
+# STRUCTURED-INPUT-AND-CAPABILITY-BASELINE-CLOSEOUT-01 -- the previous default vocabulary
+# recognized only 3 literal phrases and missed common, equally-polite Polish business forms
+# (observed: "Dziekujemy za..."/"Prosimy o..." -- formal plural/first-person forms -- did
+# not match "prosze"/singular). General default rubric broadening, not case text.
+_DEFAULT_POLITE_TERMS = (
+    "dzien dobry", "prosze", "prosimy", "pozdrawiam", "dziekuje", "dziekujemy",
+    "szanowni", "uprzejmie",
+)
+_LEGACY_DEFAULT_POLITE_TERMS = ("dzien dobry", "prosze", "pozdrawiam")
+_DEFAULT_FORBIDDEN_TONE_TERMS = ("natychmiast", "musisz", "bez sensu")
+
+
 def _score_tone(normalized_text: str, ground_truth: dict[str, Any]) -> dict[str, Any]:
-    polite_terms = ground_truth.get("tone_terms") or ("dzien dobry", "prosze", "pozdrawiam")
-    forbidden = ground_truth.get("forbidden_tone_terms") or ("natychmiast", "musisz", "bez sensu")
+    default_polite_terms = _DEFAULT_POLITE_TERMS if _uses_v3_semantics() else _LEGACY_DEFAULT_POLITE_TERMS
+    polite_terms = ground_truth.get("tone_terms") or default_polite_terms
+    forbidden = ground_truth.get("forbidden_tone_terms") or _DEFAULT_FORBIDDEN_TONE_TERMS
     polite_hits = _find_terms(normalized_text, polite_terms)
-    forbidden_hits = _find_terms(normalized_text, forbidden)
+    forbidden_hits = _find_terms(normalized_text, forbidden, strict=True)
     score = 1.0 if polite_hits else 0.6
     if forbidden_hits:
         score = 0.0
@@ -809,12 +902,12 @@ def _term_partition(normalized_text: str, terms: list[Any]) -> tuple[list[str], 
     return matched, missing
 
 
-def _find_terms(text_or_payload: Any, terms: Any) -> list[str]:
+def _find_terms(text_or_payload: Any, terms: Any, *, strict: bool = False) -> list[str]:
     normalized = _normalize_text(text_or_payload)
     hits: list[str] = []
     for term in list(terms or []):
         spec = _fact_spec(term)
-        if _matches_expected(normalized, spec):
+        if _matches_expected(normalized, spec, strict=strict):
             hits.append(str(spec["id"]))
     return hits
 
@@ -856,8 +949,18 @@ def _flatten_text_with_keys(value: Any) -> str:
     return str(value or "")
 
 
+# Polish "ł"/"Ł" (U+0142/U+0141, stroke-L) is a distinct base letter, not a combining-mark
+# decomposition of "l" -- NFKD leaves it untouched (unicodedata.combining("ł") == 0), so it
+# survives diacritic stripping and never matches plain-ASCII ground truth ("Wroclaw" vs
+# extracted "Wrocław"). STRUCTURED-INPUT-AND-CAPABILITY-BASELINE-CLOSEOUT-01: explicit
+# supplementary mapping before NFKD, the standard fix for this well-known Unicode gap.
+_POLISH_STROKE_L = str.maketrans({"ł": "l", "Ł": "L"})
+
+
 def _normalize_text(value: Any) -> str:
     text = _flatten_text(value) if not isinstance(value, str) else value
+    if _uses_v3_semantics():
+        text = text.translate(_POLISH_STROKE_L)
     text = unicodedata.normalize("NFKD", text)
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
     text = text.casefold()
@@ -867,6 +970,42 @@ def _normalize_text(value: Any) -> str:
 
 def _tokens(text: str) -> list[str]:
     return re.findall(r"[a-z0-9]+", text)
+
+
+_UJ_INFLECTION_ENDINGS = (
+    "ujecie",
+    "ujemy",
+    "ujacy",
+    "ujaca",
+    "ujace",
+    "ujesz",
+    "ujac",
+    "uja",
+    "uje",
+)
+
+
+def _strict_phrase_matches(actual_text: str, expected_text: str) -> bool:
+    actual_tokens = _tokens(actual_text)
+    expected_tokens = _tokens(expected_text)
+    if not actual_tokens or not expected_tokens or len(expected_tokens) > len(actual_tokens):
+        return False
+    expected_forms = [_strict_token_form(token) for token in expected_tokens]
+    width = len(expected_tokens)
+    for start in range(len(actual_tokens) - width + 1):
+        actual_forms = [_strict_token_form(token) for token in actual_tokens[start : start + width]]
+        if actual_forms == expected_forms:
+            return True
+    return False
+
+
+def _strict_token_form(token: str) -> str:
+    """Normalize only the allowlisted Polish -uj- conjugation family."""
+
+    for ending in _UJ_INFLECTION_ENDINGS:
+        if token.endswith(ending) and len(token) - len(ending) >= 5:
+            return f"{token[:-len(ending)]}uj"
+    return token
 
 
 def _token_matches_any(expected: str, actual_tokens: set[str]) -> bool:

@@ -68,6 +68,8 @@ _STRUCTURED_ALT_SEQ = 0
 _STRUCTURED_ALT_LOCK = threading.Lock()
 _STAGE_ALT_SLOTS: dict[str, tuple[int, str]] = {}
 _INTAKE_PIPELINE_STAGES = frozenset({"signal_extraction", "intake_reasoning", "intake_second_pass"})
+_GROQ_KEY_ROTATION_SEQ = 0
+_GROQ_KEY_ROTATION_LOCK = threading.Lock()
 
 
 def reset_structured_alternation_counter_for_tests() -> None:
@@ -77,6 +79,31 @@ def reset_structured_alternation_counter_for_tests() -> None:
     with _STRUCTURED_ALT_LOCK:
         _STRUCTURED_ALT_SEQ = 0
         _STAGE_ALT_SLOTS.clear()
+
+
+def reset_groq_key_rotation_counter_for_tests() -> None:
+    """Reset process-local Groq key-pool rotation counter (tests only)."""
+
+    global _GROQ_KEY_ROTATION_SEQ
+    with _GROQ_KEY_ROTATION_LOCK:
+        _GROQ_KEY_ROTATION_SEQ = 0
+
+
+def _rotate_groq_key_pool(groq_keys: tuple[str, ...]) -> tuple[str, ...]:
+    """Reorder a multi-key Groq pool so consecutive calls start from a different key.
+
+    Full fallback order is preserved (every key is still tried on 429/5xx/timeout
+    within one call), only the starting point rotates call-to-call. This spreads load
+    across the pool preemptively instead of pinning all traffic to keys[0] until it
+    hits a rate limit.
+    """
+    if len(groq_keys) <= 1:
+        return groq_keys
+    global _GROQ_KEY_ROTATION_SEQ
+    with _GROQ_KEY_ROTATION_LOCK:
+        offset = _GROQ_KEY_ROTATION_SEQ % len(groq_keys)
+        _GROQ_KEY_ROTATION_SEQ += 1
+    return groq_keys[offset:] + groq_keys[:offset]
 
 
 def reset_structured_alternation_stage_slots_for_message() -> None:
@@ -331,6 +358,7 @@ def _deepseek_providers(
     *,
     instructions: str,
     user_payload: Any,
+    json_schema: dict[str, Any],
     schema_name: str,
     model: str | None,
     mode: str | None,
@@ -362,6 +390,7 @@ def _deepseek_providers(
                 settings,
                 instructions=instructions,
                 user_payload=user_payload,
+                json_schema=json_schema,
                 model=provider_model,
                 mode=mode,
                 schema_name=schema_name,
@@ -393,6 +422,7 @@ def run_deepseek_structured_stage(
     stage_name: str,
     instructions: str,
     prompt_input: dict[str, Any],
+    json_schema: dict[str, Any],
     schema_name: str,
     model: str | None = None,
     verbose: bool = False,
@@ -413,6 +443,7 @@ def run_deepseek_structured_stage(
             settings,
             instructions=instructions,
             user_payload=user_payload,
+            json_schema=json_schema,
             schema_name=schema_name,
             model=model,
             mode=mode,
@@ -422,7 +453,7 @@ def run_deepseek_structured_stage(
         settings,
         instructions,
         serialized_input,
-        json_schema={},
+        json_schema=json_schema,
         schema_name=schema_name,
         model=model,
         verbose=verbose,
@@ -810,6 +841,7 @@ def _structured_providers(
                     )
                 )
                 continue
+            groq_keys = _rotate_groq_key_pool(groq_keys)
             for key_index, groq_key in enumerate(groq_keys):
                 def call_groq(
                     provider_model: str = provider_model,
@@ -860,6 +892,7 @@ def _structured_providers(
                     settings,
                     instructions=instructions,
                     user_payload=user_payload,
+                    json_schema=json_schema,
                     model=provider_model,
                     mode=mode,
                     schema_name=schema_name,
@@ -906,6 +939,7 @@ def _structured_providers(
                         settings,
                         instructions=instructions,
                         user_payload=user_payload,
+                        json_schema=json_schema,
                         model=provider_model,
                         mode=mode,
                         schema_name=schema_name,
@@ -956,6 +990,7 @@ def _structured_providers(
                         settings,
                         instructions=instructions,
                         user_payload=user_payload,
+                        json_schema=json_schema,
                         model=provider_model,
                         mode=mode,
                         schema_name=schema_name,
@@ -1005,6 +1040,7 @@ def _structured_providers(
                         settings,
                         instructions=instructions,
                         user_payload=user_payload,
+                        json_schema=json_schema,
                         model=provider_model,
                         mode=mode,
                         schema_name=schema_name,
@@ -1092,6 +1128,7 @@ def _post_openai_chat_structured(
     *,
     instructions: str,
     user_payload: Any,
+    json_schema: dict[str, Any] | None = None,
     model: str | None,
     mode: str | None,
     schema_name: str,
@@ -1109,8 +1146,17 @@ def _post_openai_chat_structured(
         user_content = json.dumps(user_payload, ensure_ascii=False)
     else:
         user_content = str(user_payload)
+    schema_instruction = ""
+    if json_schema:
+        schema_instruction = (
+            f"\n\nJSON Schema contract for {schema_name}:\n"
+            f"{json.dumps(json_schema, ensure_ascii=False, sort_keys=True)}\n"
+            "Return exactly one JSON value that validates against this schema. "
+            "Use the schema field names and JSON types exactly."
+        )
     system_content = (
         instructions.strip()
+        + schema_instruction
         + f"\n\nSchema name: {schema_name}. "
         "Reply with a single JSON value (object or array only). No markdown fences, no text outside JSON."
     )
@@ -1120,6 +1166,7 @@ def _post_openai_chat_structured(
             {"role": "system", "content": system_content},
             {"role": "user", "content": user_content},
         ],
+        "response_format": {"type": "json_object"},
         "temperature": 0,
         "stream": False,
     }

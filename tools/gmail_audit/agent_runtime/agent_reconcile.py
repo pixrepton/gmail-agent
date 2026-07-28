@@ -84,6 +84,65 @@ def build_case_understanding_projection(
     }
 
 
+def build_case_understanding_provenance_projection(
+    case_intelligence_result: dict[str, Any] | None,
+    *,
+    message_id: str,
+) -> dict[str, Any] | None:
+    """SLICE-3A: the provenance envelope for the CURRENT turn's Understanding.
+
+    Same freshness rule as `build_case_understanding_projection`, applied independently: the
+    provenance is only returned when Brain 1 recorded it for THIS exact signal. The two are then
+    set and cleared together by `graph._ground_current_signal`, so a snapshot can never carry a
+    provenance describing one signal and an Understanding describing another.
+
+    Returns None (honest absence) whenever Brain 1 did not record provenance -- for example when
+    the Understanding stage was disabled entirely. No status is fabricated to fill the gap.
+    """
+    intel = case_intelligence_result if isinstance(case_intelligence_result, dict) else {}
+    meta = intel.get("execution_metadata")
+    if not isinstance(meta, dict):
+        return None
+    provenance = meta.get("case_understanding_provenance")
+    if not isinstance(provenance, dict) or not provenance:
+        return None
+    source_signal_id = str(provenance.get("source_signal_id") or "").strip()
+    mid = str(message_id or "").strip()
+    if not source_signal_id or not mid or source_signal_id != mid:
+        return None
+    return provenance
+
+
+def build_policy_action_envelope_handoff(
+    *,
+    store: Any,
+    case_intelligence_result: dict[str, Any] | None,
+    case_id: str,
+    source_signal_id: str,
+    source_message_id: str,
+) -> tuple[dict[str, int | bool], dict[str, Any]]:
+    """Persist canonical policy/APv2 records, then project the Brain 2 envelope."""
+    from agent_runtime.policy_action_spine import (
+        persist_policy_action_spine,
+        project_policy_action_envelope,
+    )
+
+    persisted = persist_policy_action_spine(
+        store,
+        case_intelligence_result=case_intelligence_result,
+        case_id=case_id,
+        source_signal_id=source_signal_id,
+        source_message_id=source_message_id,
+    )
+    envelope = project_policy_action_envelope(
+        store,
+        case_id=case_id,
+        source_signal_id=source_signal_id,
+        source_message_id=source_message_id,
+    )
+    return persisted, envelope.model_dump(mode="python")
+
+
 def _current_trace_id(runtime_context: Any) -> str:
     run_state = getattr(runtime_context, "run_state", None)
     if isinstance(run_state, dict):
@@ -364,6 +423,78 @@ def signal_payload_for_agent(signal: CanonicalSignal, intake_output: dict[str, A
     return agent_payload
 
 
+def _feed_visibility_for_signal(signal: CanonicalSignal) -> Any | None:
+    """SLICE-2B: decide MAIN-feed membership routing once, at snapshot creation.
+
+    Pure delegation to `feed_visibility.classify_signal_for_feed`; the executive-state override is
+    applied later at read time. Returns None (legacy main_feed fallback) if classification data is
+    unavailable, so a gap can only over-show, never silently hide.
+    """
+    try:
+        from feed_visibility import classify_signal_for_feed
+        from llm_contracts.engagement_snapshot_v2 import FeedVisibility
+
+        payload = dict(getattr(signal, "payload", None) or {})
+        decision = classify_signal_for_feed(
+            preclassification_result=payload.get("preclassification_result"),
+            triage_result=payload.get("triage_result"),
+        )
+        return FeedVisibility(**decision)
+    except Exception:  # noqa: BLE001 - visibility metadata must never break signal processing
+        logger.warning("FEED_VISIBILITY_CLASSIFY_FAILED", extra={"x": {
+            "signal_id": str(getattr(signal, "signal_id", "") or ""),
+        }})
+        return None
+
+
+def _refresh_feed_visibility(
+    operator_store: OperatorEngagementStore,
+    snapshot: EngagementSnapshotV2,
+    *,
+    signal: CanonicalSignal,
+    dry_run: bool,
+) -> EngagementSnapshotV2:
+    """SLICE-2B1: re-evaluate feed membership for an EXISTING snapshot under a new signal.
+
+    An engagement outlives the signal that created it. Without this, the first message's routing
+    verdict was permanent, so a newsletter arriving before a real enquiry on the same engagement
+    would keep the case out of the operator's feed indefinitely.
+
+    Promotion only (`merge_feed_visibility`); a later low-value signal can never demote. Failure
+    is non-fatal and never blocks signal processing.
+    """
+    try:
+        from feed_visibility import merge_feed_visibility
+        from llm_contracts.engagement_snapshot_v2 import FeedVisibility
+
+        incoming = _feed_visibility_for_signal(signal)
+        if incoming is None:
+            return snapshot
+        merged = merge_feed_visibility(
+            snapshot.feed_visibility,
+            incoming.model_dump(mode="python"),
+        )
+        if merged is None:
+            return snapshot
+        promoted = snapshot.model_copy(update={"feed_visibility": FeedVisibility(**merged)})
+        logger.info("FEED_VISIBILITY_PROMOTED", extra={"x": {
+            "engagement_id": str(snapshot.engagement_id or ""),
+            "from": str(getattr(snapshot.feed_visibility, "mode", "") or ""),
+            "to": str(merged.get("mode") or ""),
+            "signal_id": str(getattr(signal, "signal_id", "") or ""),
+        }})
+        if dry_run:
+            return promoted
+        new_version = operator_store.save_snapshot(promoted, expected_version=snapshot.version)
+        return promoted.model_copy(update={"version": new_version})
+    except Exception:  # noqa: BLE001 - visibility metadata must never break signal processing
+        logger.warning("FEED_VISIBILITY_REFRESH_FAILED", extra={"x": {
+            "engagement_id": str(getattr(snapshot, "engagement_id", "") or ""),
+            "signal_id": str(getattr(signal, "signal_id", "") or ""),
+        }})
+        return snapshot
+
+
 def ensure_engagement_snapshot(
     operator_store: OperatorEngagementStore,
     *,
@@ -376,7 +507,9 @@ def ensure_engagement_snapshot(
 ) -> EngagementSnapshotV2:
     existing = operator_store.load_snapshot(engagement_id)
     if existing is not None:
-        return existing
+        return _refresh_feed_visibility(
+            operator_store, existing, signal=signal, dry_run=dry_run
+        )
     agent_signal = signal_payload_for_agent(signal, intake_output)
     if dry_run:
         from agent_runtime.store import build_initial_snapshot
@@ -386,6 +519,7 @@ def ensure_engagement_snapshot(
             engagement_id=engagement_id,
             signal_id=signal.signal_id,
             trace_id=_current_trace_id(runtime_context),
+            feed_visibility=_feed_visibility_for_signal(signal),
         )
     from agent_runtime.store import build_snapshot_from_signal
 
@@ -395,6 +529,7 @@ def ensure_engagement_snapshot(
         engagement_id=engagement_id,
         signal_id=signal.signal_id,
         trace_id=_current_trace_id(runtime_context),
+        feed_visibility=_feed_visibility_for_signal(signal),
     )
     return operator_store.insert_snapshot(built)
 
@@ -470,10 +605,33 @@ def run_agent_reconcile(
         mailbox_store = runtime_context.resolved_store
         try:
             agent_signal = signal_payload_for_agent(signal, intake)
+            try:
+                _, policy_action_envelope = build_policy_action_envelope_handoff(
+                    store=mailbox_store,
+                    case_intelligence_result=case_intelligence_result,
+                    case_id=case_id,
+                    source_signal_id=str(signal.signal_id or ""),
+                    source_message_id=str(agent_signal.get("message_id") or ""),
+                )
+            except Exception as exc:  # detection-only handoff cannot suppress Brain 2
+                from llm_contracts.engagement_snapshot_v2 import PolicyActionEnvelopeV1
+
+                warnings.append(
+                    f"policy_action_spine_handoff_failed:{type(exc).__name__}:{exc}"
+                )
+                policy_action_envelope = PolicyActionEnvelopeV1(
+                    freshness="unavailable",
+                    reason_codes=["canonical_policy_action_projection_failed"],
+                ).model_dump(mode="python")
+            agent_signal["policy_action_envelope"] = policy_action_envelope
             agent_signal["understanding_brief_pl"] = str(
                 (case_intelligence_result.get("operator_brief") or {}).get("brief_pl") or ""
             )
             agent_signal["case_understanding_projection"] = build_case_understanding_projection(
+                case_intelligence_result,
+                message_id=str(agent_signal.get("message_id") or ""),
+            )
+            agent_signal["case_understanding_provenance"] = build_case_understanding_provenance_projection(
                 case_intelligence_result,
                 message_id=str(agent_signal.get("message_id") or ""),
             )
@@ -611,6 +769,7 @@ def run_agent_reconcile_staging(
             engagement_id=resolution.engagement_id,
             signal_id=signal.signal_id,
             trace_id=_current_trace_id(runtime_context),
+            feed_visibility=_feed_visibility_for_signal(signal),
         )
         if not dry_run:
             snapshot = operator_store.insert_snapshot(snapshot)
@@ -630,6 +789,7 @@ def run_agent_reconcile_staging(
                 engagement_id=resolution.engagement_id,
                 signal_id=signal.signal_id,
                 trace_id=_current_trace_id(runtime_context),
+            feed_visibility=_feed_visibility_for_signal(signal),
             )
             if not dry_run:
                 snapshot = operator_store.insert_snapshot(snapshot)
@@ -646,6 +806,7 @@ def run_agent_reconcile_staging(
             engagement_id=resolution.engagement_id,
             signal_id=signal.signal_id,
             trace_id=_current_trace_id(runtime_context),
+            feed_visibility=_feed_visibility_for_signal(signal),
         )
         if not dry_run:
             snapshot = operator_store.insert_snapshot(snapshot)
@@ -658,6 +819,26 @@ def run_agent_reconcile_staging(
             updates["signal_id"] = current_signal_id
         if current_trace_id and str(snapshot.trace_id or "").strip() != current_trace_id:
             updates["trace_id"] = current_trace_id
+        # SLICE-2B1: the same monotonic promotion as the case-bound path. Reachable whenever a
+        # staging engagement_id is reused (`stg_<signal_id[:12]>` prefix reuse, or a replay of the
+        # same signal after its classification inputs changed).
+        try:
+            from feed_visibility import merge_feed_visibility
+            from llm_contracts.engagement_snapshot_v2 import FeedVisibility
+
+            _incoming = _feed_visibility_for_signal(signal)
+            _merged = (
+                merge_feed_visibility(snapshot.feed_visibility, _incoming.model_dump(mode="python"))
+                if _incoming is not None
+                else None
+            )
+            if _merged is not None:
+                updates["feed_visibility"] = FeedVisibility(**_merged)
+        except Exception:  # noqa: BLE001 - visibility metadata must never break signal processing
+            logger.warning("FEED_VISIBILITY_REFRESH_FAILED", extra={"x": {
+                "engagement_id": str(snapshot.engagement_id or ""),
+                "signal_id": current_signal_id,
+            }})
         if updates:
             snapshot = snapshot.model_copy(update=updates)
             if not dry_run:

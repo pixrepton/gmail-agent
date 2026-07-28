@@ -131,27 +131,57 @@ def run_reply_drafter(
             errors = (stage_call.get("request_meta") or {}).get("pydantic_errors")
             logger.warning("[reply_drafter] Pydantic ValidationError: %s", errors)
         parsed = parse_and_validate_reply_draft(stage_call["response_text"])
-        parsed = gate_reply_draft_commitments(parsed, case_state=_draft_case_state(intake_result, business_result))
+        parsed = gate_reply_draft_commitments(
+            parsed, case_state=_draft_case_state(intake_result, business_result, context_bundle)
+        )
         parsed["execution_metadata"] = stage_call
         return parsed
     except GroqClientError as exc:
         return fallback_reply_drafter(reason=sanitize_text(str(exc)))
 
 
-def _draft_case_state(intake_result: dict[str, Any], business_result: dict[str, Any]) -> dict[str, Any]:
+def _active_fact_present(context_bundle: dict[str, Any] | None, *, fact_key: str) -> bool:
+    bundle = context_bundle if isinstance(context_bundle, dict) else {}
+    pack = bundle.get("case_context_pack") if isinstance(bundle.get("case_context_pack"), dict) else {}
+    facts = pack.get("active_facts") if isinstance(pack.get("active_facts"), list) else []
+    for row in facts:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("fact_key") or row.get("predicate") or "").strip() == fact_key:
+            return True
+    return False
+
+
+def _draft_case_state(
+    intake_result: dict[str, Any],
+    business_result: dict[str, Any],
+    context_bundle: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Authoritative case-state signals available at shadow-draft time.
 
-    ``reply_drafter`` runs before any mutation is executed (it is a shadow
-    proposal, not a confirmed action), so today there is no field anywhere in
-    the intake/business payload that marks a visit as actually scheduled or an
-    action as actually completed. That absence IS the authoritative state: a
-    draft claiming otherwise at this stage is never supported. Explicit,
-    forward-compatible flags are still honored if a caller ever supplies them.
+    Absence of a dedicated boolean field is NOT proof that no confirmation
+    exists anywhere in the case — real, already-persisted structured evidence
+    is consulted first: ``CaseContextPack.active_facts``, safely available here
+    via ``context_bundle["case_context_pack"]`` (see
+    ``gmail_intake.build_context_bundle``), carries the exact facts real write
+    executors persist — ``execute_schedule_visit``'s ``fact_key="scheduled_visit"``
+    and ``execute_add_deadline``'s ``fact_key="case_deadline"`` — so a visit or
+    deadline confirmed earlier in the case's lifecycle is correctly recognized
+    even though ``reply_drafter`` itself runs before any *new* mutation in this
+    turn. Explicit, forward-compatible flags are still honored if a caller ever
+    supplies them directly.
+
+    KNOWN LIMITATION (disclosed, not silently assumed): no write executor today
+    persists an "action already completed" fact (e.g. "offer already sent") —
+    ``action_completed`` therefore stays conservatively unsupported unless an
+    explicit override is supplied, until such a fact is introduced.
     """
     return {
-        "visit_confirmed": bool(intake_result.get("visit_confirmed") or business_result.get("visit_confirmed")),
+        "visit_confirmed": bool(intake_result.get("visit_confirmed") or business_result.get("visit_confirmed"))
+        or _active_fact_present(context_bundle, fact_key="scheduled_visit"),
         "action_completed": bool(intake_result.get("action_completed") or business_result.get("action_completed")),
-        "deadline_confirmed": bool(intake_result.get("deadline_confirmed") or business_result.get("deadline_confirmed")),
+        "deadline_confirmed": bool(intake_result.get("deadline_confirmed") or business_result.get("deadline_confirmed"))
+        or _active_fact_present(context_bundle, fact_key="case_deadline"),
     }
 
 
@@ -173,6 +203,21 @@ _COMMITMENT_PATTERNS: tuple[tuple[re.Pattern[str], str, str], ...] = (
         "zaproponujemy termin wizyty i potwierdzimy go z Panstwem",
     ),
     (
+        # Future-tense unsupported visit/service commitment ("we WILL arrange a
+        # visit / send a technician") — the past-tense pattern above missed these,
+        # so a draft could still promise a service visit before it is confirmed
+        # (RC-D1: SVC-01 "umowimy wizyte naszego serwisanta"). Diacritic-tolerant.
+        re.compile(
+            r"um[oó]wimy\s+(?:\w+\s+){0,2}(?:wizyt\w+|serwis\w*|termin\w*)(?:\s+serwisow\w+)?"
+            r"|zorganizujemy\s+(?:\w+\s+){0,2}wizyt\w+(?:\s+serwisow\w+)?"
+            r"|wy[sś]lemy\s+(?:\w+\s+){0,2}serwisant\w+"
+            r"|przy[sś]lemy\s+(?:\w+\s+){0,2}serwisant\w+",
+            re.IGNORECASE,
+        ),
+        "visit_confirmed",
+        "zaproponujemy termin wizyty i potwierdzimy go z Panstwem",
+    ),
+    (
         re.compile(r"juz (?:wyslalismy|zamontowalismy|zrealizowalismy|dostarczylismy)", re.IGNORECASE),
         "action_completed",
         "przygotowujemy to dla Panstwa",
@@ -185,6 +230,12 @@ _COMMITMENT_PATTERNS: tuple[tuple[re.Pattern[str], str, str], ...] = (
 )
 
 
+# Matches a quoted span (straight ASCII quotes or Polish low-high „...") — text
+# inside a quotation is reported CUSTOMER speech, not a commitment the company
+# is making, and must never be rewritten as if it were the company's own claim.
+_QUOTED_SPAN = re.compile(r'"[^"]*"|„[^”"]*[”"]')
+
+
 def _gate_commitment_text(text: str, *, case_state: dict[str, Any]) -> tuple[str, list[str]]:
     reasons: list[str] = []
     out = text
@@ -192,8 +243,13 @@ def _gate_commitment_text(text: str, *, case_state: dict[str, Any]) -> tuple[str
         supported = bool(case_state.get(required_state_key)) if required_state_key else False
         if supported:
             continue
+        quoted_spans = [(m.start(), m.end()) for m in _QUOTED_SPAN.finditer(out)]
 
-        def _replace(match: "re.Match[str]", _replacement: str = replacement) -> str:
+        def _replace(
+            match: "re.Match[str]", _replacement: str = replacement, _spans: list[tuple[int, int]] = quoted_spans
+        ) -> str:
+            if any(start <= match.start() < end for start, end in _spans):
+                return match.group(0)
             return _replacement
 
         new_out = pattern.sub(_replace, out)

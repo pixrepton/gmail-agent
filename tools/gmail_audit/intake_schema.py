@@ -318,6 +318,7 @@ def validate_business_reasoning_result(obj: dict[str, Any] | None) -> dict[str, 
     if not isinstance(obj, dict):
         raise GroqClientError("BusinessReasoningResult must be a JSON object.")
 
+    coercion_notes: list[dict[str, Any]] = []
     confidence_source = obj.get("confidence") if isinstance(obj.get("confidence"), dict) else {}
     business_interpretation = _string_or_default(
         obj.get("business_interpretation"),
@@ -328,16 +329,32 @@ def validate_business_reasoning_result(obj: dict[str, Any] | None) -> dict[str, 
         BUSINESS_NEXT_ACTIONS,
         default="escalate_review",
         field_name="business_reasoning.recommended_next_action",
+            notes=coercion_notes,
     )
+    customer_state_guess = _normalize_choice(
+        obj.get("customer_state_guess"),
+        CUSTOMER_STATE_GUESSES,
+        default="unclear",
+        field_name="business_reasoning.customer_state_guess",
+        notes=coercion_notes,
+    )
+    # CLOSEOUT-01 Phase 4 — deterministic decision-class consistency normalization.
+    # `collect_data` is a pre-offer data-gathering action; it is contract-incoherent once the
+    # customer is already `post_offer` (the offer is out, so the operative blocker is an
+    # operator decision/negotiation — e.g. a discount request — not missing intake data).
+    # Canonicalize that one incoherent (customer_state_guess, recommended_next_action) pair to
+    # the module's existing safe default `escalate_review`. This keys ONLY on normalized enum
+    # fields (never on free reasoning text), is one-directional (it can only ever *increase*
+    # escalation, so it can never introduce an unsafe non-escalation), and encodes the contract's
+    # own "prefer escalate_review when evidence is weak" bias deterministically. It resolves the
+    # post_offer recommended_action flip (escalate_review vs collect_data) proven on
+    # byte-identical production-faithful BusinessReasoning input (DEC-02).
+    if customer_state_guess == "post_offer" and recommended_next_action == "collect_data":
+        recommended_next_action = "escalate_review"
     normalized = {
         "business_interpretation": business_interpretation,
-        "business_area": _normalize_choice(obj.get("business_area"), BUSINESS_REASONING_AREAS, default="unknown", field_name="business_reasoning.business_area"),
-        "customer_state_guess": _normalize_choice(
-            obj.get("customer_state_guess"),
-            CUSTOMER_STATE_GUESSES,
-            default="unclear",
-            field_name="business_reasoning.customer_state_guess",
-        ),
+        "business_area": _normalize_choice(obj.get("business_area"), BUSINESS_REASONING_AREAS, default="unknown", field_name="business_reasoning.business_area", notes=coercion_notes),
+        "customer_state_guess": customer_state_guess,
         "recommended_next_action": recommended_next_action,
         "recommended_action_reason": _string_or_default(
             obj.get("recommended_action_reason"),
@@ -345,7 +362,7 @@ def validate_business_reasoning_result(obj: dict[str, Any] | None) -> dict[str, 
         ),
         "missing_information": _normalize_string_list_contract(obj.get("missing_information")),
         "risks": _normalize_string_list_contract(obj.get("risks")),
-        "urgency": _normalize_choice(obj.get("urgency"), BUSINESS_URGENCY_LEVELS, default="normal", field_name="business_reasoning.urgency"),
+        "urgency": _normalize_choice(obj.get("urgency"), BUSINESS_URGENCY_LEVELS, default="normal", field_name="business_reasoning.urgency", notes=coercion_notes),
         "operator_note": _string_or_default(obj.get("operator_note"), default="Manual review recommended."),
         "confidence": {
             "business_confidence": _bounded_float(confidence_source.get("business_confidence"), default=0.0),
@@ -361,6 +378,7 @@ def validate_business_reasoning_result(obj: dict[str, Any] | None) -> dict[str, 
             HUMAN_REVIEW_BIAS,
             default="medium",
             field_name="business_reasoning.human_review_bias",
+            notes=coercion_notes,
         ),
         "safety_notes": _normalize_string_list_contract(obj.get("safety_notes")),
         "evidence_refs": normalize_case_guidance_evidence_refs(obj.get("evidence_refs") or [], source_mode="llm_reasoned"),
@@ -368,6 +386,10 @@ def validate_business_reasoning_result(obj: dict[str, Any] | None) -> dict[str, 
         "unsupported_claims": _normalize_string_list_contract(obj.get("unsupported_claims")),
         "conflict_refs": strip_forbidden_evidence_like_rows(obj.get("conflict_refs") or []),
     }
+    # SLICE-2A: bounded per-field coercion evidence. Absent when nothing was coerced, so a clean
+    # result stays byte-identical to the pre-slice contract.
+    if coercion_notes:
+        normalized["normalization_notes"] = coercion_notes
     return normalized
 
 
@@ -495,10 +517,33 @@ def _infer_case_link_source_from_candidates(candidates: list[dict[str, Any]], de
     return _normalize_case_link_source(candidates[0].get("source"))
 
 
-def _normalize_choice(value: Any, allowed: set[str] | tuple[str, ...], *, default: str, field_name: str) -> str:
+def _normalize_choice(
+    value: Any,
+    allowed: set[str] | tuple[str, ...],
+    *,
+    default: str,
+    field_name: str,
+    notes: list[dict[str, Any]] | None = None,
+) -> str:
+    """Normalize a free-string field onto a fixed vocabulary.
+
+    SLICE-2A: the coercion was previously silent — the `field_name` argument was accepted at every
+    call site and never used, so a value the model actually produced could be replaced by a default
+    with no record anywhere. Behaviour is unchanged; when a `notes` sink is supplied, each REAL
+    coercion appends bounded per-field evidence. A value that is already valid produces no note.
+    """
     text = str(value or "").strip()
     if text in allowed:
         return text
+    if notes is not None:
+        notes.append(
+            {
+                "field_name": field_name,
+                "raw_value": text[:120],
+                "normalized_value": default,
+                "reason_code": "empty_value_defaulted" if not text else "value_not_in_allowed_vocabulary",
+            }
+        )
     return default
 
 
@@ -1340,6 +1385,7 @@ def _validate_semantics(data: dict[str, Any]) -> list[str]:
     linked_candidates = data["thread"].get("linked_case_candidates") or []
     primary_signal_code = str(data["primary_signal"]["code"])
     secondary_signal_codes = [str(item["code"]) for item in data["secondary_signals"]]
+    has_attachments = bool((data.get("message") or {}).get("has_attachments"))
 
     has_deadlines = bool(deadlines)
     has_amounts = bool(amounts)
@@ -1457,8 +1503,24 @@ def _validate_semantics(data: dict[str, Any]) -> list[str]:
 
     if "deadline_found_without_owner" in review_flags and not has_deadlines:
         errors.append("deadline_found_without_owner review flag requires at least one deadline.")
-    if "financial_document_without_payable_context" in review_flags and not (has_amounts or has_invoice_refs):
-        errors.append("financial_document_without_payable_context requires financial evidence.")
+    # STRUCTURED-INPUT-AND-CAPABILITY-BASELINE-CLOSEOUT-01 — Phase 4 fix. The flag's own
+    # name means "a financial document IS present, but payable context (amounts/invoice
+    # numbers) could NOT be extracted from it" -- so requiring has_amounts/has_invoice_refs
+    # as its evidence was self-contradictory: those fields represent exactly the payable
+    # context the flag says is MISSING. A real financial-document attachment (e.g. an
+    # invoice the model cannot read line items from) legitimately has this flag with BOTH
+    # fields empty. The correct evidence is that a financial document was actually received:
+    # an attachment present AND business_area=finance together (unchanged, backward-
+    # compatible: amounts/invoice_refs already extracted remain independently sufficient).
+    # Adversarial review: `has_attachments OR business_area=="finance"` ALONE was too broad
+    # (e.g. a marketing_growth case with an unrelated PDF attached would have passed). Every
+    # live re-run of DOC-01/MI-04 that legitimately carried this flag had BOTH conditions
+    # true simultaneously, so requiring both together still fully covers the real evidence
+    # while rejecting the marketing-case counter-example.
+    if "financial_document_without_payable_context" in review_flags and not (
+        has_amounts or has_invoice_refs or (has_attachments and business_area == "finance")
+    ):
+        errors.append("financial_document_without_payable_context requires evidence of a financial document.")
     if "supplier_mail_may_be_noise_or_opportunity" in review_flags and business_area != "supplier_commercial":
         errors.append("supplier_mail_may_be_noise_or_opportunity must stay in supplier_commercial area.")
     if "legal_or_compliance_risk" in review_flags and business_area != "compliance_legal":

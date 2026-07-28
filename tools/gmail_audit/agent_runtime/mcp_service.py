@@ -221,6 +221,18 @@ class AgentMcpService:
         except AgentConcurrencyError as exc:
             return _error(str(exc), engagement_id=eid)
         final = patched.model_copy(update={"version": new_version})
+        parent_refs = {
+            "parent_policy_decision_id": str(
+                action.parent_policy_decision_id if action is not None else ""
+            ),
+            "parent_action_proposal_v2_id": str(
+                action.parent_action_proposal_v2_id if action is not None else ""
+            ),
+            "parent_decision_candidate_id": str(
+                action.parent_decision_candidate_id if action is not None else ""
+            ),
+            "source_signal_id": str(action.source_signal_id if action is not None else ""),
+        }
         return {
             "ok": True,
             "engagement_id": eid,
@@ -235,6 +247,7 @@ class AgentMcpService:
                 "engagement_id": eid,
                 "action_id": aid,
                 "operator_id": str(operator_id or "").strip(),
+                **parent_refs,
             },
             "snapshot": _snapshot_summary(final),
         }
@@ -530,6 +543,10 @@ def _snapshot_summary(snapshot: EngagementSnapshotV2) -> dict[str, Any]:
                 "id": a.id,
                 "enabled": a.enabled,
                 "payload_pl_preview": (a.payload_pl or "")[:120],
+                "parent_policy_decision_id": a.parent_policy_decision_id,
+                "parent_action_proposal_v2_id": a.parent_action_proposal_v2_id,
+                "parent_decision_candidate_id": a.parent_decision_candidate_id,
+                "source_signal_id": a.source_signal_id,
             }
             for a in snapshot.actions
         ],
@@ -543,6 +560,7 @@ def _turn_summary(row: Mapping[str, Any]) -> dict[str, Any]:
         "tool_name": row.get("tool_name"),
         "tool_status": row.get("tool_status"),
         "turn_summary_pl": row.get("turn_summary_pl"),
+        "plan_correlation": row.get("plan_correlation") or {},
         "snapshot_version": row.get("snapshot_version"),
         "created_at": row.get("created_at"),
     }

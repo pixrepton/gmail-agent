@@ -64,23 +64,64 @@ def test_business_reasoning_output_model_validates() -> None:
     assert isinstance(parsed, BusinessReasoningResult)
 
 
-def test_business_reasoning_output_model_failure_returns_envelope() -> None:
+def test_business_reasoning_output_model_normalizes_canonical_contract_before_pydantic() -> None:
     settings = _minimal_settings()
-    bad_payload = {
-        "business_interpretation": "ok",
+    provider_payload = {
+        "business_interpretation": "Klient prosi o termin serwisu.",
         "business_area": "lead",
         "customer_state_guess": "interested",
         "recommended_next_action": "wait",
         "recommended_action_reason": "r",
-        "missing_information": [],
-        "risks": [],
+        "missing_information": ["adres montazu"],
+        "risks": ["brak terminu"],
         "urgency": "normal",
         "operator_note": "n",
-        # confidence missing -> ValidationError
+        "evidence_refs": [
+            {"source_type": "gmail_message", "source_id": "msg-1", "message_id": "msg-1"},
+            "message_summary.snippet: prosba o termin",
+        ],
+        # Missing confidence is normalized by the canonical business-reasoning
+        # contract to 0.0 instead of discarding the semantic result.
     }
     fake_stage = {
         "stage_name": "business_reasoning",
-        "response_text": json.dumps(bad_payload, ensure_ascii=False),
+        "response_text": json.dumps(provider_payload, ensure_ascii=False),
+        "response_json": {},
+        "request_meta": {"llm_selected_provider": "groq"},
+        "model_name": "openai/gpt-oss-120b",
+        "attempt_count": 1,
+    }
+    with patch("central_llm_stage.build_context_assembler") as mock_asm:
+        mock_asm.return_value.assemble.return_value = AssembledContext(
+            company_context="ctx",
+            assembled_at="2026-05-24T00:00:00+00:00",
+        )
+        with patch("central_llm_stage.run_structured_stage", return_value=fake_stage):
+            out = run_central_structured_stage(
+                settings,
+                stage_name="business_reasoning",
+                task_instructions="reason",
+                prompt_input={"x": 1},
+                query_text="lead",
+                json_schema={},
+                schema_name="business_reasoning_v1",
+                output_model=BusinessReasoningResult,
+            )
+    assert out is not None
+    assert out["parse_status"] == "pydantic_validated"
+    parsed = BusinessReasoningResult.model_validate(out["response_json"])
+    assert parsed.confidence.business_confidence == 0.0
+    assert parsed.confidence.action_confidence == 0.0
+    assert parsed.missing_information == ["adres montazu"]
+    assert parsed.risks == ["brak terminu"]
+    assert parsed.evidence_refs[0]["source_id"] == "msg-1"
+
+
+def test_business_reasoning_output_model_malformed_top_level_returns_envelope() -> None:
+    settings = _minimal_settings()
+    fake_stage = {
+        "stage_name": "business_reasoning",
+        "response_text": json.dumps([{"business_interpretation": "not an object"}], ensure_ascii=False),
         "response_json": {},
         "request_meta": {"llm_selected_provider": "groq"},
         "model_name": "openai/gpt-oss-120b",
@@ -150,4 +191,4 @@ def test_business_reasoning_output_model_allows_missing_operator_note() -> None:
     assert out is not None
     assert out["parse_status"] == "pydantic_validated"
     parsed = BusinessReasoningResult.model_validate(out["response_json"])
-    assert parsed.operator_note is None
+    assert parsed.operator_note == "Manual review recommended."

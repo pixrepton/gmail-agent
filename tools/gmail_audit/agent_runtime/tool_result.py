@@ -12,6 +12,9 @@ class ToolCallPlan(BaseModel):
 
     tool_name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
+    policy_decision_id: str = ""
+    action_proposal_id: str = ""
+    correlation_status: str = ""
 
     model_config = ConfigDict(extra="forbid")
 

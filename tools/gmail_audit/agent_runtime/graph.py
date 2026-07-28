@@ -8,10 +8,16 @@ import threading
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from typing import Any
 
 from agent_runtime.constitution import AgentConstitution
 from agent_runtime.metrics import record_agent_turn
 from agent_runtime.planner import ToolPlanner
+from agent_runtime.policy_action_spine import (
+    annotate_action_parent_refs,
+    correlate_tool_plan,
+    evaluate_semantic_policy_plan_consistency,
+)
 from agent_runtime.snapshot_delta import apply_snapshot_delta, decrement_steps
 from agent_runtime.tool_context import ToolExecutionContext
 from agent_runtime.sub_agents import select_sub_agent, sub_agent_handoff_note, tools_for_sub_agent
@@ -169,6 +175,8 @@ class AgentGraphEngine:
                     available_tools=available_tools,
                     constitution=self._constitution,
                 )
+                plan, current = _observe_policy_plan(current, plan)
+                ctx.snapshot = current
             except Exception as exc:
                 # Failure convergence (DELIVERY-1): a planner-call exception (ghost-tool
                 # schema mismatch, network error, any provider-side bug) must never silently
@@ -183,6 +191,8 @@ class AgentGraphEngine:
                     exc,
                 )
                 plan = ToolCallPlan(tool_name="planner_error", arguments={})
+                plan, current = _observe_policy_plan(current, plan)
+                ctx.snapshot = current
                 result = ToolResult(
                     status="error",
                     turn_summary_pl=f"BĹ‚Ä…d planera ({type(exc).__name__}) â€” zatrzymano, wymaga operatora.",
@@ -247,6 +257,13 @@ class AgentGraphEngine:
                 memory["reasoning_trace"] = trace
                 delta["agent_memory"] = memory
                 result = result.model_copy(update={"snapshot_delta": delta})
+            annotated_delta = annotate_action_parent_refs(
+                result.snapshot_delta,
+                plan=plan,
+                envelope=current.policy_action_envelope,
+            )
+            if annotated_delta is not result.snapshot_delta:
+                result = result.model_copy(update={"snapshot_delta": annotated_delta})
             current = _apply_tool_result(current, plan, result)
             current = decrement_steps(current)
             turns.append(
@@ -459,15 +476,47 @@ def _ground_current_signal(
         trace = [item.model_dump(mode="python") for item in snapshot.agent_memory.reasoning_trace]
         trace.append({"turn": len(trace), "summary_pl": " ".join(parts)})
         delta["agent_memory"] = {"reasoning_trace": trace}
+    provenance = signal_payload.get("case_understanding_provenance")
+    policy_envelope = signal_payload.get("policy_action_envelope")
     if isinstance(projection, dict) and projection:
         delta["case_understanding"] = projection
     elif snapshot.case_understanding is not None:
         # No fresh, correlated Understanding for THIS turn's signal â€” never
         # let a previous turn's Understanding keep looking current.
         delta["case_understanding"] = None
+    # SLICE-3A: provenance moves in LOCKSTEP with the Understanding it describes. It is cleared
+    # whenever the Understanding is cleared, so the snapshot can never carry a status for a
+    # projection that is no longer there, nor a status computed for an earlier signal.
+    if isinstance(projection, dict) and projection and isinstance(provenance, dict) and provenance:
+        delta["case_understanding_provenance"] = provenance
+    elif snapshot.case_understanding_provenance is not None:
+        delta["case_understanding_provenance"] = None
+    if isinstance(policy_envelope, dict) and policy_envelope:
+        delta["policy_action_envelope"] = policy_envelope
+    elif snapshot.policy_action_envelope is not None:
+        delta["policy_action_envelope"] = None
+    # Consistency is a per-plan observation. A new external signal must never
+    # inherit the previous turn's planner result.
+    if snapshot.semantic_policy_plan_consistency is not None:
+        delta["semantic_policy_plan_consistency"] = None
     if not delta:
         return snapshot
     return apply_snapshot_delta(snapshot, delta)
+
+
+def _observe_policy_plan(
+    snapshot: EngagementSnapshotV2,
+    plan: ToolCallPlan,
+) -> tuple[ToolCallPlan, EngagementSnapshotV2]:
+    """Correlate and observe a plan without changing its selected tool/arguments."""
+    correlated = correlate_tool_plan(plan, snapshot.policy_action_envelope)
+    telemetry = evaluate_semantic_policy_plan_consistency(
+        snapshot.policy_action_envelope,
+        correlated,
+    )
+    return correlated, snapshot.model_copy(
+        update={"semantic_policy_plan_consistency": telemetry}
+    )
 
 
 def _filter_completed_read_once_tools(
@@ -601,6 +650,40 @@ def _is_loop_terminal(snapshot: EngagementSnapshotV2) -> bool:
     return snapshot.operational_status.code in _LOOP_TERMINAL_CODES
 
 
+#: Fields whose sole author is Brain 1 (`intake_shared_downstream` -> `understanding_output`),
+#: projected into the snapshot by `_ground_current_signal`. Brain 2's tools own desk EXECUTION
+#: state; they do not get to restate what the case means. No existing tool writes either key --
+#: verified across `agent_runtime/tools/` and `tools_registry.py` -- so this guard forbids a
+#: capability nobody legitimately uses today, rather than removing one.
+_BRAIN1_OWNED_SNAPSHOT_FIELDS = (
+    "case_understanding",
+    "case_understanding_provenance",
+    "policy_action_envelope",
+    "semantic_policy_plan_consistency",
+)
+
+
+def _strip_brain1_owned_fields(*, delta_source: Any, tool_name: str) -> Any:
+    """Central authority guard: a tool delta may never write upstream-owned fields.
+
+    One place, not one check per tool: `_apply_tool_result` is the single point at which every
+    `ToolResult.snapshot_delta` reaches the snapshot, so a new tool cannot bypass this by
+    forgetting to opt in. Policy/action projection and consistency telemetry are authored by
+    the runtime around the planner, never by an individual tool.
+    """
+    if not isinstance(delta_source, dict):
+        return delta_source
+    blocked = [field for field in _BRAIN1_OWNED_SNAPSHOT_FIELDS if field in delta_source]
+    if not blocked:
+        return delta_source
+    logger.warning(
+        "BRAIN1_FIELD_WRITE_REJECTED tool=%s fields=%s",
+        tool_name,
+        ",".join(blocked),
+    )
+    return {key: value for key, value in delta_source.items() if key not in blocked}
+
+
 def _apply_tool_result(
     snapshot: EngagementSnapshotV2,
     plan: ToolCallPlan,
@@ -614,7 +697,7 @@ def _apply_tool_result(
         return updated.model_copy(
             update={"hitl_gate": HitlGate(required=True, reason="node_a_error")}
         )
-    delta = result.snapshot_delta
+    delta = _strip_brain1_owned_fields(delta_source=result.snapshot_delta, tool_name=plan.tool_name)
     incoming_trace = (
         ((delta or {}).get("agent_memory") or {}).get("reasoning_trace")
         if isinstance(delta, dict)
