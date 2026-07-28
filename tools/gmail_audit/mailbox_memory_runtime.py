@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os as _os
 
 # E4: skip legacy mailbox_memory_snapshots writes when engagement_snapshot_v2 feed is active.
@@ -187,6 +188,57 @@ class MailboxMemoryRuntime:
         tokens.discard("")
         allow = {item.strip() for item in self.stage_allowlist if item.strip()}
         return bool(tokens.intersection(allow))
+
+    def fetch_thread_memory(self, thread_id: str) -> dict[str, Any]:
+        resolved_thread_id = str(thread_id or "").strip()
+        if not resolved_thread_id:
+            return {}
+        row = self.store.fetch_thread_memory(resolved_thread_id) or {}
+        memory = row.get("memory_json")
+        if not isinstance(memory, dict):
+            return {}
+        if str(memory.get("thread_id") or "").strip() != resolved_thread_id:
+            return {}
+        return dict(memory)
+
+    def persist_thread_memory(
+        self,
+        thread_memory: dict[str, Any],
+        *,
+        case_id: str = "",
+        message_id: str = "",
+        source_kind: str = "node_b_generated",
+        only_if_absent: bool = False,
+    ) -> dict[str, Any]:
+        if not isinstance(thread_memory, dict):
+            return {}
+        thread_id = str(thread_memory.get("thread_id") or "").strip()
+        if not thread_id:
+            return {}
+        serialized = json.dumps(
+            thread_memory,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        memory_json = json.loads(serialized)
+        updated_at = datetime.now().astimezone().isoformat()
+        self.store.upsert_thread_memory(
+            {
+                "thread_id": thread_id,
+                "case_id": str(case_id or memory_json.get("case_id") or "").strip(),
+                "source_message_id": str(message_id or "").strip(),
+                "memory_json": memory_json,
+                "memory_sha256": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
+                "source_kind": str(source_kind or "node_b_generated").strip(),
+                "version": 1,
+                "created_at": updated_at,
+                "updated_at": updated_at,
+            },
+            only_if_absent=only_if_absent,
+        )
+        return self.fetch_thread_memory(thread_id)
 
     def _message_source_facts(
         self,
@@ -512,6 +564,15 @@ class MailboxMemoryRuntime:
     ) -> MailboxMemoryIngestResult:
         if not self.enabled or not case_id:
             return MailboxMemoryIngestResult(enabled=False, case_id=case_id, message_id=message_id)
+
+        thread_memory = (case_intelligence_result or {}).get("thread_memory")
+        if isinstance(thread_memory, dict) and str(thread_memory.get("thread_id") or "").strip():
+            self.persist_thread_memory(
+                thread_memory,
+                case_id=case_id,
+                message_id=message_id,
+                source_kind="node_b_generated",
+            )
 
         next_action = derive_next_action_record(
             case_id=case_id,

@@ -176,6 +176,20 @@ CREATE TABLE IF NOT EXISTS mailbox_memory_snapshots (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS mailbox_memory_thread_memory (
+    thread_id TEXT PRIMARY KEY,
+    case_id TEXT NOT NULL DEFAULT '',
+    source_message_id TEXT NOT NULL DEFAULT '',
+    memory_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    memory_sha256 TEXT NOT NULL DEFAULT '',
+    source_kind TEXT NOT NULL DEFAULT 'node_b_generated',
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_mailbox_memory_thread_memory_case_id
+    ON mailbox_memory_thread_memory(case_id);
+
 CREATE TABLE IF NOT EXISTS mailbox_memory_next_actions (
     case_id TEXT PRIMARY KEY,
     next_action TEXT NOT NULL DEFAULT '',

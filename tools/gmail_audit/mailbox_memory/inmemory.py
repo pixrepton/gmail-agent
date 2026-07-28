@@ -22,6 +22,7 @@ class InMemoryMailboxMemoryStore:
     facts: dict[str, list[dict[str, Any]]] | None = None
     snapshots: dict[str, dict[str, Any]] | None = None
     case_snapshot_versions: dict[str, list[dict[str, Any]]] | None = None
+    thread_memories: dict[str, dict[str, Any]] | None = None
     next_actions: dict[str, dict[str, Any]] | None = None
     drive_documents: dict[str, dict[str, Any]] | None = None
     drive_chunks: dict[str, list[dict[str, Any]]] | None = None
@@ -52,6 +53,7 @@ class InMemoryMailboxMemoryStore:
         self.facts = self.facts or {}
         self.snapshots = self.snapshots or {}
         self.case_snapshot_versions = self.case_snapshot_versions or {}
+        self.thread_memories = self.thread_memories or {}
         self.next_actions = self.next_actions or {}
         self.drive_documents = self.drive_documents or {}
         self.drive_chunks = self.drive_chunks or {}
@@ -173,6 +175,31 @@ class InMemoryMailboxMemoryStore:
     def fetch_latest_case_snapshot_version(self, case_id: str) -> dict[str, Any] | None:
         rows = self.fetch_case_snapshot_versions(case_id, limit=1_000)
         return rows[-1] if rows else None
+
+    def upsert_thread_memory(self, row: dict[str, Any], *, only_if_absent: bool = False) -> None:
+        thread_id = str(row.get("thread_id") or "").strip()
+        if not thread_id:
+            return
+        with self._lock:
+            existing = self.thread_memories.get(thread_id)
+            if existing is not None and only_if_absent:
+                return
+            payload = dict(row)
+            payload["thread_id"] = thread_id
+            if existing is None:
+                payload["version"] = 1
+                payload.setdefault("created_at", payload.get("updated_at"))
+            else:
+                same_content = str(existing.get("memory_sha256") or "") == str(payload.get("memory_sha256") or "")
+                payload["version"] = int(existing.get("version") or 1) + (0 if same_content else 1)
+                payload["created_at"] = existing.get("created_at")
+                if same_content:
+                    payload["updated_at"] = existing.get("updated_at")
+            self.thread_memories[thread_id] = payload
+
+    def fetch_thread_memory(self, thread_id: str) -> dict[str, Any] | None:
+        item = self.thread_memories.get(str(thread_id or "").strip())
+        return dict(item) if item else None
 
     def upsert_next_action(self, case_id: str, row: dict[str, Any]) -> None:
         self.next_actions[case_id] = dict(row)

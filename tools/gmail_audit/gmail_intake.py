@@ -14,6 +14,7 @@ logger = get_logger("gmail_intake")
 import time
 from datetime import datetime
 from pathlib import Path
+from requests import RequestException
 from types import SimpleNamespace
 from typing import Any, Callable
 from uuid import uuid4
@@ -3185,7 +3186,7 @@ def _default_attachment_fetcher(settings: Settings) -> Callable[[str, str], byte
 
 
 def hydrate_intelligence_seam_config(run_state: dict[str, Any], snapshot: dict[str, Any], stage_config: dict[str, Any]) -> None:
-    """Populate Daszek thread-memory + calibration + attachment limits before intelligence stages."""
+    """Populate Node B thread memory plus bounded projection inputs before intelligence stages."""
     settings_obj = stage_config.get("settings")
     signal_mode = str(getattr(settings_obj, "signal_runtime_mode", "active") or "active").strip().lower()
     from intelligence_shadow_profile import apply_intelligence_shadow_profile
@@ -3199,30 +3200,55 @@ def hydrate_intelligence_seam_config(run_state: dict[str, Any], snapshot: dict[s
         # CLI wins for this run: no binary attachment fetch / extraction for LLM intake path.
         stage_config["attachment_max_bytes"] = 0
         stage_config["attachment_fetcher"] = None
-    stage_config["mailbox_memory_runtime"] = run_state.get("mailbox_memory_runtime")
+    mailbox_runtime = run_state.get("mailbox_memory_runtime")
+    stage_config["mailbox_memory_runtime"] = mailbox_runtime
     client = run_state.get("daszek_client")
     stage_config["daszek_client"] = client
     source_message = snapshot.get("source_message") or {}
     thread_id = str(source_message.get("thread_id") or "").strip()
-    if client and thread_id:
+    message_id = str(source_message.get("message_id") or "").strip()
+    existing_thread_memory: dict[str, Any] = {}
+    if mailbox_runtime is not None and thread_id:
+        fetch_thread_memory = getattr(mailbox_runtime, "fetch_thread_memory", None)
+        if callable(fetch_thread_memory):
+            existing_thread_memory = fetch_thread_memory(thread_id) or {}
+            if isinstance(existing_thread_memory, dict) and existing_thread_memory.get("thread_id"):
+                stage_config["existing_thread_memory"] = existing_thread_memory
+    if client and mailbox_runtime is not None and thread_id and not existing_thread_memory:
         try:
             remote = client.get_v2_thread_memory(thread_id)
             if isinstance(remote, dict) and remote.get("thread_id"):
-                stage_config["existing_thread_memory"] = remote
-        except DaszekClientError as exc:
+                persist_thread_memory = getattr(mailbox_runtime, "persist_thread_memory", None)
+                if callable(persist_thread_memory):
+                    migrated = persist_thread_memory(
+                        remote,
+                        case_id=str(remote.get("case_id") or "").strip(),
+                        message_id=message_id,
+                        source_kind="daszek_migration",
+                        only_if_absent=True,
+                    )
+                    if isinstance(migrated, dict) and migrated.get("thread_id"):
+                        stage_config["existing_thread_memory"] = migrated
+        except (DaszekClientError, RequestException) as exc:
+            logger.warning("Daszek thread-memory projection unavailable; continuing from Node B", extra={"x": {
+                "step": "fetch_thread_memory_projection",
+                "error_type": type(exc).__name__,
+            }})
+        except Exception as exc:  # noqa: BLE001
             raise IntakeError(
-                "Failed to fetch thread memory from Daszek",
-                context={"step": "fetch_thread_memory"}
+                "Failed to migrate thread memory into Node B",
+                context={"step": "migrate_thread_memory_to_mailbox_memory"},
             ) from exc
+    if client:
         try:
             cal = client.get_v2_calibration_profile()
             if isinstance(cal, dict):
                 stage_config["calibration_profile"] = cal
-        except DaszekClientError as exc:
-            raise IntakeError(
-                "Failed to fetch calibration profile from Daszek",
-                context={"step": "fetch_calibration_profile"}
-            ) from exc
+        except (DaszekClientError, RequestException) as exc:
+            logger.warning("Daszek calibration projection unavailable; continuing without it", extra={"x": {
+                "step": "fetch_calibration_profile",
+                "error_type": type(exc).__name__,
+            }})
     if settings_obj is not None and not bool(controls.get("attachments_metadata_only")):
         stage_config["attachment_fetcher"] = _default_attachment_fetcher(settings_obj)
 

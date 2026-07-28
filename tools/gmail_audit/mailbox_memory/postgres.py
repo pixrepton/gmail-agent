@@ -494,6 +494,76 @@ class PostgresMailboxMemoryStore:
             {"case_id": case_id},
         )
 
+    def upsert_thread_memory(self, row: dict[str, Any], *, only_if_absent: bool = False) -> None:
+        payload = dict(row)
+        payload.setdefault("case_id", "")
+        payload.setdefault("source_message_id", "")
+        payload.setdefault("memory_json", {})
+        payload.setdefault("memory_sha256", "")
+        payload.setdefault("source_kind", "node_b_generated")
+        payload.setdefault("version", 1)
+        payload.setdefault("created_at", payload.get("updated_at"))
+        prepared = self._prep(
+            payload,
+            json_fields={"memory_json"},
+            time_fields={"created_at", "updated_at"},
+        )
+        if only_if_absent:
+            self._upsert(
+                """
+                INSERT INTO mailbox_memory_thread_memory (
+                    thread_id, case_id, source_message_id, memory_json, memory_sha256,
+                    source_kind, version, created_at, updated_at
+                ) VALUES (
+                    %(thread_id)s, %(case_id)s, %(source_message_id)s, %(memory_json)s::jsonb,
+                    %(memory_sha256)s, %(source_kind)s, %(version)s, %(created_at)s, %(updated_at)s
+                )
+                ON CONFLICT (thread_id) DO NOTHING
+                """,
+                prepared,
+            )
+            return
+        self._upsert(
+            """
+            INSERT INTO mailbox_memory_thread_memory (
+                thread_id, case_id, source_message_id, memory_json, memory_sha256,
+                source_kind, version, created_at, updated_at
+            ) VALUES (
+                %(thread_id)s, %(case_id)s, %(source_message_id)s, %(memory_json)s::jsonb,
+                %(memory_sha256)s, %(source_kind)s, %(version)s, %(created_at)s, %(updated_at)s
+            )
+            ON CONFLICT (thread_id) DO UPDATE SET
+                case_id = CASE
+                    WHEN EXCLUDED.case_id <> '' THEN EXCLUDED.case_id
+                    ELSE mailbox_memory_thread_memory.case_id
+                END,
+                source_message_id = CASE
+                    WHEN EXCLUDED.source_message_id <> '' THEN EXCLUDED.source_message_id
+                    ELSE mailbox_memory_thread_memory.source_message_id
+                END,
+                memory_json = EXCLUDED.memory_json,
+                memory_sha256 = EXCLUDED.memory_sha256,
+                source_kind = EXCLUDED.source_kind,
+                version = CASE
+                    WHEN mailbox_memory_thread_memory.memory_sha256 = EXCLUDED.memory_sha256
+                        THEN mailbox_memory_thread_memory.version
+                    ELSE mailbox_memory_thread_memory.version + 1
+                END,
+                updated_at = CASE
+                    WHEN mailbox_memory_thread_memory.memory_sha256 = EXCLUDED.memory_sha256
+                        THEN mailbox_memory_thread_memory.updated_at
+                    ELSE EXCLUDED.updated_at
+                END
+            """,
+            prepared,
+        )
+
+    def fetch_thread_memory(self, thread_id: str) -> dict[str, Any] | None:
+        return self._fetch_one(
+            "SELECT * FROM mailbox_memory_thread_memory WHERE thread_id = %(thread_id)s",
+            {"thread_id": str(thread_id or "").strip()},
+        )
+
     def upsert_next_action(self, case_id: str, row: dict[str, Any]) -> None:
         payload = dict(row)
         payload["case_id"] = case_id
