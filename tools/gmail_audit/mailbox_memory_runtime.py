@@ -1394,6 +1394,122 @@ def build_case_snapshot(
     }
 
 
+def _hot_state_open_questions(hot_state: dict[str, Any]) -> list[str]:
+    questions: list[str] = []
+    for item in list(hot_state.get("open_loops") or []):
+        if isinstance(item, dict):
+            text = str(item.get("description") or item.get("summary") or item.get("loop_id") or "").strip()
+        else:
+            text = str(item or "").strip()
+        if text:
+            questions.append(text)
+    return questions
+
+
+def _fetch_current_hot_state(
+    *,
+    store: MailboxMemoryStore,
+    case_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    fetcher = getattr(store, "fetch_latest_case_snapshot_version", None)
+    if not callable(fetcher):
+        return {}, {}
+    row = fetcher(case_id)
+    if not isinstance(row, dict):
+        return {}, {}
+    hot_state = row.get("snapshot_json")
+    if not isinstance(hot_state, dict) or not hot_state:
+        return {}, {}
+    case_block = hot_state.get("case") if isinstance(hot_state.get("case"), dict) else {}
+    hot_case_id = str(case_block.get("case_id") or hot_state.get("case_id") or "").strip()
+    if hot_case_id and hot_case_id != case_id:
+        return {}, {}
+    return dict(hot_state), dict(row)
+
+
+def build_current_case_context_snapshot(
+    *,
+    store: MailboxMemoryStore,
+    case_id: str,
+    case_record: dict[str, Any],
+    messages: list[dict[str, Any]],
+    facts: list[dict[str, Any]],
+    documents: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+    next_action: dict[str, Any],
+    drive_enrichment: dict[str, Any],
+) -> dict[str, Any]:
+    snapshot = build_case_snapshot(
+        case_id=case_id,
+        case_record=case_record,
+        messages=messages,
+        facts=facts,
+        documents=documents,
+        events=events,
+        next_action=next_action,
+        drive_enrichment=drive_enrichment,
+    )
+    snapshot["context_snapshot_status"] = "current"
+    snapshot["context_snapshot_source"] = "mailbox_memory_live_projection"
+    snapshot["context_snapshot_generated_at"] = datetime.now().astimezone().isoformat()
+    for field_name in ("case_key", "case_family"):
+        value = str(case_record.get(field_name) or "").strip()
+        if value:
+            snapshot[field_name] = value
+
+    hot_state, hot_row = _fetch_current_hot_state(store=store, case_id=case_id)
+    if not hot_state:
+        return snapshot
+
+    case_block = hot_state.get("case") if isinstance(hot_state.get("case"), dict) else {}
+    for source_name, target_name in (
+        ("case_key", "case_key"),
+        ("case_family", "case_family"),
+        ("lifecycle_status", "status"),
+        ("operational_status", "operational_status"),
+        ("waiting_for", "waiting_for"),
+        ("priority", "priority"),
+        ("summary_text", "summary_text"),
+    ):
+        value = str(case_block.get(source_name) or "").strip()
+        if value:
+            snapshot[target_name] = value
+
+    snapshot["open_questions"] = _hot_state_open_questions(hot_state)
+    if isinstance(hot_state.get("key_facts"), list):
+        snapshot["key_facts"] = list(hot_state.get("key_facts") or [])
+    if isinstance(hot_state.get("active_conflicts"), list):
+        snapshot["conflicting_facts"] = list(hot_state.get("active_conflicts") or [])
+    if isinstance(hot_state.get("documents_summary"), list):
+        snapshot["latest_documents"] = list(hot_state.get("documents_summary") or [])
+
+    recommended_next_step = str(hot_state.get("recommended_next_step") or "").strip()
+    if recommended_next_step:
+        snapshot["recommended_next_action"] = recommended_next_step
+
+    snapshot_meta = hot_state.get("snapshot_meta") if isinstance(hot_state.get("snapshot_meta"), dict) else {}
+    source_signal_id = str(
+        snapshot_meta.get("source_signal_id")
+        or hot_state.get("source_signal_id")
+        or hot_row.get("source_signal_id")
+        or ""
+    ).strip()
+    if source_signal_id:
+        snapshot["latest_signal_id"] = source_signal_id
+
+    version = hot_row.get("version") or snapshot_meta.get("version")
+    if version is not None:
+        snapshot["context_snapshot_version"] = int(version)
+    snapshot["context_snapshot_status"] = "current"
+    snapshot["context_snapshot_source"] = "case_snapshot_hot_state"
+    snapshot["context_snapshot_generated_at"] = str(
+        hot_row.get("created_at")
+        or snapshot_meta.get("created_at")
+        or snapshot["context_snapshot_generated_at"]
+    )
+    return snapshot
+
+
 def build_case_context_pack(
     *,
     store: MailboxMemoryStore,
@@ -1402,16 +1518,29 @@ def build_case_context_pack(
     graph_store: Any | None = None,
     retrieval_runtime: Any | None = None,
 ) -> CaseContextPack:
-    snapshot_row = store.fetch_snapshot(case_id) or {}
-    snapshot = snapshot_row.get("snapshot_json") if isinstance(snapshot_row.get("snapshot_json"), dict) else snapshot_row
     facts = store.fetch_facts_for_case(case_id)
     active_facts, conflicting_facts = split_conflicting_facts(facts)
     documents = store.fetch_documents_for_case(case_id, limit=8)
+    messages = store.fetch_messages_for_case(case_id, limit=10)
+    events = store.fetch_events_for_case(case_id, limit=12)
+    next_action = store.fetch_next_action(case_id) or {}
+    case_row = store.fetch_case(case_id) or {}
     drive_enrichment = collect_drive_case_enrichment(
         store=store,
         case_id=case_id,
         query_text=query_text,
         graph_store=graph_store,
+    )
+    snapshot = build_current_case_context_snapshot(
+        store=store,
+        case_id=case_id,
+        case_record=case_row,
+        messages=messages,
+        facts=facts,
+        documents=documents,
+        events=events,
+        next_action=next_action,
+        drive_enrichment=drive_enrichment,
     )
     drive_documents = list(drive_enrichment.get("drive_documents") or [])
     drive_facts = list(drive_enrichment.get("drive_facts") or [])
@@ -1510,9 +1639,6 @@ def build_case_context_pack(
         vector_path_status=str(vr_summary.get("vector_path_status") or ""),
         vector_path_detail=str(vr_summary.get("detail") or ""),
     )
-    events = store.fetch_events_for_case(case_id, limit=12)
-    next_action = store.fetch_next_action(case_id) or {}
-    case_row = store.fetch_case(case_id) or {}
     action_proposals = store.fetch_action_proposals(case_id=case_id, limit=20) if hasattr(store, "fetch_action_proposals") else []
     execution_results = store.fetch_execution_results(case_id=case_id, limit=20) if hasattr(store, "fetch_execution_results") else []
     calendar_events = store.fetch_calendar_events_for_case(case_id, limit=10) if hasattr(store, "fetch_calendar_events_for_case") else []
@@ -1524,7 +1650,7 @@ def build_case_context_pack(
     calendar_risk = "calendar_event_exists" if calendar_events else "calendar_event_missing"
     doc_conflicts = [conf for row in document_intelligence_rows for conf in list(row.get("conflicts") or [])]
     source_refs = build_source_refs(
-        snapshot=snapshot if isinstance(snapshot, dict) else {},
+        snapshot=snapshot,
         facts=active_facts + drive_active_facts,
         documents=documents + drive_documents,
         chunks=chunks,
@@ -1579,7 +1705,7 @@ def build_case_context_pack(
 
     return CaseContextPack(
         case_id=case_id,
-        snapshot=snapshot if isinstance(snapshot, dict) else {},
+        snapshot=snapshot,
         recent_events=events,
         active_facts=active_facts + drive_active_facts,
         conflicting_facts=conflicting_facts + drive_conflicts,
@@ -1652,10 +1778,16 @@ def collect_drive_case_enrichment(
         except Exception:  # pragma: no cover - defensive
             graph_hints = []
 
+    hot_state, _hot_row = _fetch_current_hot_state(store=store, case_id=case_id)
+    reference_key_facts = list(hot_state.get("key_facts") or [])
+    for fact in list(store.fetch_facts_for_case(case_id) or []):
+        value = str(fact.get("normalized_value") or "").strip()
+        if value:
+            reference_key_facts.append({"value": value})
     scope_terms = collect_reference_terms(
         query_text=query_text,
         drive_facts=drive_facts,
-        case_snapshot=store.fetch_snapshot(case_id) or {},
+        case_snapshot={"key_facts": reference_key_facts},
     )
     reference_pool = []
     if callable(fetch_drive_documents):
