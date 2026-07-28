@@ -16,12 +16,14 @@ from typing import Any
 
 import eval_final_rescore as v1_rescore
 from eval_measurement_scoring import canonical_json_sha256
+from eval_understanding_judge import DIMENSIONS, _norm, _overall_score
 
 
 CONTRACT_V1 = "v1"
 CONTRACT_V2 = "v2"
 CONTRACT_V3 = "v3"
-SUPPORTED_CONTRACTS = {CONTRACT_V1, CONTRACT_V2, CONTRACT_V3}
+CONTRACT_V4 = "v4"
+SUPPORTED_CONTRACTS = {CONTRACT_V1, CONTRACT_V2, CONTRACT_V3, CONTRACT_V4}
 QUALIFICATION_THRESHOLD = 34
 
 NEW01_BAD_DRAFT_MUST = "ton profesjonalny, adekwatny do prostego zapytania"
@@ -99,6 +101,30 @@ def build_contract_v3_corpus(corpus_v1: dict[str, Any]) -> dict[str, Any]:
     return corpus
 
 
+def build_contract_v4_corpus(corpus_v1: dict[str, Any]) -> dict[str, Any]:
+    """Derive v4 from v3 without changing any ground-truth entry.
+
+    v4 only changes how already-captured judge dimensions are interpreted when
+    rescoring (see `_apply_v4_risk_grounding`); it never edits ground truth.
+    """
+
+    corpus_v3 = build_contract_v3_corpus(corpus_v1)
+    corpus = copy.deepcopy(corpus_v3)
+    corpus["schema_version"] = "eval_measurement_corpus.v4"
+    corpus["measurement_contract_version"] = CONTRACT_V4
+    corpus["derived_from"] = {
+        "measurement_contract_version": CONTRACT_V3,
+        "corpus_sha256": canonical_json_sha256(corpus_v3),
+    }
+    corpus["contract_v4_changes"] = [
+        "ground 'risks' applicability in ground truth only, not SUT output non-emptiness",
+        "narrow an already-captured judge dimension when ground truth never required it",
+        "flag, never fabricate, a case where ground truth wanted risks judged for real "
+        "but the frozen v1 hint suppressed it before the judge ever looked",
+    ]
+    return corpus
+
+
 def rescore_final_run_versioned(
     results: dict[str, Any],
     corpus: dict[str, Any],
@@ -116,8 +142,10 @@ def rescore_final_run_versioned(
         rescored = v1_rescore.rescore_final_run(results, effective_corpus, understanding_judge=understanding_judge)
     elif version == CONTRACT_V2:
         rescored = _rescore_final_run_v2(results, effective_corpus, understanding_judge=understanding_judge)
-    else:
+    elif version == CONTRACT_V3:
         rescored = _rescore_final_run_v3(results, effective_corpus, understanding_judge=understanding_judge)
+    else:
+        rescored = _rescore_final_run_v4(results, effective_corpus, understanding_judge=understanding_judge)
 
     metadata = build_measurement_manifest(
         effective_corpus,
@@ -165,6 +193,13 @@ def build_measurement_manifest(
             "top-level manifest coverage for the versioned rescore entrypoint",
         ]
         manifest["ground_truth_changed_from_v2"] = False
+    elif version == CONTRACT_V4:
+        manifest["contract_changed_from"] = CONTRACT_V3
+        manifest["contract_change_reason"] = [
+            "ground 'risks' applicability in ground truth only, not SUT output non-emptiness",
+            "narrow already-captured judge dimensions instead of re-invoking the frozen judge",
+        ]
+        manifest["ground_truth_changed_from_v3"] = False
     manifest["manifest_sha256"] = canonical_json_sha256(manifest)
     return manifest
 
@@ -293,6 +328,192 @@ def _score_final_case_v3(
     if evidence_diagnostics:
         row["evidence_namespace_diagnostics"] = evidence_diagnostics
     return row
+
+
+def _rescore_final_run_v4(
+    results: dict[str, Any],
+    corpus: dict[str, Any],
+    *,
+    understanding_judge: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    cases_by_id = {str(case.get("id") or case.get("case_id")): case for case in corpus.get("cases", [])}
+    judge_by_case = v1_rescore._judge_by_case(understanding_judge)
+    judge_supplied = isinstance(understanding_judge, dict)
+    rows = []
+    for case_output in results.get("cases", []):
+        case_id = str(case_output.get("id") or case_output.get("case_id") or "")
+        corpus_case = cases_by_id.get(case_id)
+        if not corpus_case:
+            rows.append(v1_rescore._missing_ground_truth_row(case_id, case_output))
+            continue
+        judge_row = judge_by_case.get(case_id)
+        ground_truth = corpus_case.get("ground_truth") if isinstance(corpus_case.get("ground_truth"), dict) else {}
+        if judge_supplied and isinstance(ground_truth.get("understanding"), dict) and not judge_row:
+            judge_row = {"case_id": case_id, "status": "JUDGE_UNAVAILABLE", "error": "missing_frozen_judge_result"}
+        judge_row = _apply_v4_risk_grounding(judge_row, corpus_case)
+        rows.append(_score_final_case_v4(case_output, corpus_case, understanding_judge=judge_row))
+
+    summary = v1_rescore._summary(rows)
+    return {
+        "source_mode": results.get("mode"),
+        "sentinel_only": bool(results.get("sentinel_only")),
+        "corpus_canonical_sha256": canonical_json_sha256(corpus),
+        "summary": summary,
+        "cases": rows,
+    }
+
+
+def _score_final_case_v4(
+    case_output: dict[str, Any],
+    corpus_case: dict[str, Any],
+    *,
+    understanding_judge: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    selected, draft_selection = _select_contract_v3_draft(case_output)
+    sanitized, v2_nonblocking = _strip_contract_v2_nonblocking_errors(selected, corpus_case)
+    row = v1_rescore.score_final_case(
+        sanitized,
+        corpus_case,
+        understanding_judge=understanding_judge,
+        measurement_contract_version=CONTRACT_V3,
+    )
+    row["nonblocking_tool_errors"] = v2_nonblocking + list(row.get("nonblocking_tool_errors") or [])
+    row["measurement_contract_version"] = CONTRACT_V4
+    row["draft_measurement_selection"] = draft_selection
+    evidence_diagnostics = _case_evidence_namespace_diagnostics(case_output)
+    if evidence_diagnostics:
+        row["evidence_namespace_diagnostics"] = evidence_diagnostics
+    if isinstance(understanding_judge, dict) and understanding_judge.get("v4_risk_applicability_corrected"):
+        row["v4_risk_applicability_corrected"] = understanding_judge["v4_risk_applicability_corrected"]
+    return row
+
+
+def _ground_truth_only_applicable_dimensions(case: dict[str, Any]) -> list[str]:
+    """Reimplements only the ground-truth-grounded half of the frozen v1 judge's
+    `infer_applicable_dimensions` (eval_understanding_judge.py) -- the keyword
+    heuristic over ground truth `must`/`must_not`/`dimensions` and case input/prior
+    context. Deliberately omits the frozen function's second half, which also marks
+    a dimension applicable purely because the SUT's own captured output happens to
+    be non-empty (the exact asymmetry v4 corrects: silence never had to earn a real
+    judgment, while a forthcoming answer ground truth never asked for did).
+
+    Kept as a separate, additive function so eval_understanding_judge.py -- the
+    frozen judge contract used to build v1/v2/v3 judge inputs -- stays byte-for-byte
+    unchanged.
+    """
+
+    ground_truth = case.get("ground_truth") if isinstance(case.get("ground_truth"), dict) else {}
+    understanding = ground_truth.get("understanding") if isinstance(ground_truth.get("understanding"), dict) else {}
+    if isinstance(understanding.get("dimensions"), dict) and understanding["dimensions"]:
+        return [name for name in DIMENSIONS if name in understanding["dimensions"]]
+    text = _norm(" ".join(list(understanding.get("must") or []) + list(understanding.get("must_not") or [])))
+    source = _norm(
+        json.dumps(case.get("input") or {}, ensure_ascii=False)
+        + " "
+        + json.dumps(case.get("prior_context") or {}, ensure_ascii=False)
+    )
+    dims: set[str] = set()
+    if any(
+        token in text
+        for token in ("rozpoznanie", "intencj", "lead", "wiadomosc", "spraw", "dokument", "faktur", "serwis", "akceptacj")
+    ):
+        dims.add("essence")
+    if any(token in text for token in ("intencj", "lead", "akceptacj", "odmow", "odroczen", "serwis", "wycene", "ofert")):
+        dims.add("intent")
+    if any(token in text for token in ("brak", "missing", "niepelne", "kompletn", "gotowa")):
+        dims.add("gaps")
+    if any(
+        token in text
+        for token in ("piln", "priorytet", "ryzyk", "dziecko", "temperatur", "standardowa", "niska prioryt")
+    ):
+        dims.add("risks")
+    if any(token in text for token in ("sprzeczn", "konflikt", "conflict")):
+        dims.add("contradictions")
+    if case.get("prior_context") or any(
+        token in text + " " + source
+        for token in ("zmienia", "wczesniej", "thread_delta", "odroczen", "akceptacj", "status", "re:")
+    ):
+        dims.add("current_state_change")
+    if any(
+        token in text
+        for token in ("next step", "kolejny krok", "nastepny krok", "rekomendowan", "zalecan", "dalsze dzialanie")
+    ):
+        dims.add("recommended_next_step")
+    return [name for name in DIMENSIONS if name in dims]
+
+
+def _recompute_overall_verdict(dimensions: dict[str, Any], *, unsafe: bool) -> str:
+    """Mirrors eval_understanding_judge.normalize_judge_result's own deterministic
+    aggregation (CLEAR_PASS if all applicable dimensions PASS; BORDERLINE if no FAIL
+    and any BORDERLINE; CLEAR_FAIL if any FAIL or unsafe) so a corrected applicability
+    set can be re-aggregated without a new judge call.
+    """
+
+    applicable = [item for item in dimensions.values() if isinstance(item, dict) and item.get("applicable")]
+    if unsafe or any(item.get("verdict") == "FAIL" for item in applicable):
+        return "CLEAR_FAIL"
+    if any(item.get("verdict") == "BORDERLINE" for item in applicable):
+        return "BORDERLINE"
+    return "CLEAR_PASS"
+
+
+def _apply_v4_risk_grounding(
+    judge_row: dict[str, Any] | None,
+    corpus_case: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Ground 'risks' applicability in ground truth only, never in SUT output.
+
+    Only ever narrows applicability already captured under v1/v2/v3 (safe: removing
+    a dimension from the applicable set can only keep or improve overall_verdict, per
+    `_recompute_overall_verdict`'s aggregation rule -- it can never manufacture a new
+    failure). Never upgrades a dimension the frozen judge never evaluated for real:
+    when ground truth would require 'risks' but the v1 hint marked it not applicable
+    (so the judge was never actually asked to look), this flags the row instead of
+    inventing a verdict -- an honest 'needs a real judge call', not a silent PASS.
+    """
+
+    if not isinstance(judge_row, dict) or judge_row.get("status") != "SCORED":
+        return judge_row
+    dimensions = judge_row.get("dimensions")
+    if not isinstance(dimensions, dict) or "risks" not in dimensions:
+        return judge_row
+    risks = dimensions["risks"]
+    if not isinstance(risks, dict):
+        return judge_row
+
+    currently_applicable = bool(risks.get("applicable"))
+    ground_truth_applicable = "risks" in _ground_truth_only_applicable_dimensions(corpus_case)
+
+    if currently_applicable and not ground_truth_applicable:
+        adjusted = copy.deepcopy(judge_row)
+        adjusted_dimensions = adjusted["dimensions"]
+        adjusted_dimensions["risks"] = {
+            **risks,
+            "applicable": False,
+            "verdict": "PASS",
+            "score": 1.0,
+            "status": "passed",
+            "reason_code": "not_applicable_v4_ground_truth_only",
+            "v1_verdict_superseded": {
+                "applicable": True,
+                "verdict": risks.get("verdict"),
+                "reason_code": risks.get("reason_code"),
+            },
+        }
+        adjusted["overall_verdict"] = _recompute_overall_verdict(
+            adjusted_dimensions, unsafe=bool(adjusted.get("unsafe_misinterpretation"))
+        )
+        adjusted["score"] = _overall_score(adjusted["overall_verdict"])
+        adjusted["passed"] = adjusted["overall_verdict"] == "CLEAR_PASS"
+        adjusted["v4_risk_applicability_corrected"] = "narrowed"
+        return adjusted
+
+    if ground_truth_applicable and not currently_applicable:
+        flagged = copy.deepcopy(judge_row)
+        flagged["v4_risk_applicability_corrected"] = "needs_rejudge"
+        return flagged
+
+    return judge_row
 
 
 def _select_contract_v3_draft(case_output: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -577,6 +798,8 @@ def _effective_corpus(corpus: dict[str, Any], version: str) -> dict[str, Any]:
         return build_contract_v2_corpus(corpus)
     if version == CONTRACT_V3:
         return build_contract_v3_corpus(corpus)
+    if version == CONTRACT_V4:
+        return build_contract_v4_corpus(corpus)
     raise AssertionError(version)
 
 
@@ -598,9 +821,9 @@ def _ground_truth_sha256(corpus: dict[str, Any]) -> str:
 def _scorer_sha256(version: str) -> str:
     here = Path(__file__).resolve()
     scorer_files = [here.parent / "eval_measurement_scoring.py", here.parent / "eval_final_rescore.py"]
-    if version in {CONTRACT_V2, CONTRACT_V3}:
+    if version in {CONTRACT_V2, CONTRACT_V3, CONTRACT_V4}:
         scorer_files.append(here)
-    if version == CONTRACT_V3:
+    if version in {CONTRACT_V3, CONTRACT_V4}:
         scorer_files.append(here.parent / "eval_understanding_judge.py")
     hashes = {path.name: _file_sha256(path) for path in scorer_files}
     return canonical_json_sha256(hashes)
