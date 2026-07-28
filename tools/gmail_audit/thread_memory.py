@@ -84,6 +84,12 @@ def _build_canonical_summary(
 ) -> str:
     business_interpretation = str(business_result.get("business_interpretation") or "").strip()
     if business_interpretation:
+        if existing_summary:
+            if business_interpretation in existing_summary:
+                return existing_summary
+            if existing_summary in business_interpretation:
+                return business_interpretation
+            return f"{existing_summary} Aktualizacja: {business_interpretation}"
         return business_interpretation
     subject = str(source_message.get("subject") or "").strip()
     if existing_summary:

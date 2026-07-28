@@ -500,6 +500,7 @@ def build_business_reasoning_payload(
             "sender": str(snapshot.get("source_message", {}).get("sender") or ""),
             "subject": str(snapshot.get("source_message", {}).get("subject") or ""),
             "snippet": str(snapshot.get("source_message", {}).get("snippet") or ""),
+            "body_excerpt": str(snapshot.get("source_message", {}).get("body") or "")[:900],
             "thread_quality": str(snapshot.get("thread_context_quality") or "weak"),
         },
         "intake_result": sanitize_prompt_input(intake_result),
