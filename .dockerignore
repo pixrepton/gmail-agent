@@ -14,6 +14,10 @@
 tools/gmail_audit/.env
 tools/gmail_audit/.env.*
 !tools/gmail_audit/.env.example
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.*.example
 
 # Runtime artifacts copied/mounted separately on VPS
 tools/gmail_audit/runs/
