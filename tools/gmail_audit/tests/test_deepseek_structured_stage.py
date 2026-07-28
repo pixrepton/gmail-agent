@@ -204,11 +204,15 @@ def test_deepseek_structured_stage_sends_json_mode_and_schema(monkeypatch: pytes
             json_schema=schema,
             schema_name="signal_extraction_v1",
             output_model=SignalExtractionResult,
+            temperature=0.19,
         )
 
     assert out is not None
     assert len(bodies) == 1
     assert bodies[0]["response_format"] == {"type": "json_object"}
+    assert bodies[0]["temperature"] == 0.19
+    assert out["request_meta"]["llm_temperature_effective"] == "provider_managed"
+    assert out["request_meta"]["llm_determinism_guaranteed"] is False
     system_message = (bodies[0]["messages"] or [])[0]["content"]  # type: ignore[index]
     assert "JSON Schema contract for signal_extraction_v1" in system_message
     assert '"hvac_intent"' in system_message

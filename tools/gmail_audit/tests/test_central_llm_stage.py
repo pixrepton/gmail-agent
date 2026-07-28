@@ -21,6 +21,7 @@ from central_llm_stage import (
 )
 from config import Settings
 from context_assembler import AssembledContext
+from llm_client import TopInstalLLMError
 from llm_contracts.signal_extraction import SignalExtractionResult
 
 
@@ -101,9 +102,13 @@ def test_run_central_structured_stage_uses_groq_when_no_anthropic_key() -> None:
                 json_schema=SignalExtractionResult.model_json_schema(),
                 schema_name="signal_extraction_v1",
                 output_model=SignalExtractionResult,
+                temperature=0.37,
+                correlation_id="msg-central-temperature",
             )
     assert out is not None
     mock_run.assert_called_once()
+    assert mock_run.call_args.kwargs["temperature"] == 0.37
+    assert mock_run.call_args.kwargs["correlation_id"] == "msg-central-temperature"
     assert out["parse_status"] == "pydantic_validated"
     assert out["response_json"]["hvac_intent"] == "quote"
     SignalExtractionResult.model_validate(out["response_json"])
@@ -193,7 +198,7 @@ def test_anthropic_path_validates_pydantic_output_model() -> None:
         with patch(
             "central_llm_stage._call_anthropic_raw_text",
             return_value=json.dumps(payload),
-        ):
+        ) as mock_anthropic:
             out = run_central_structured_stage(
                 settings,
                 stage_name="signal_extraction",
@@ -203,8 +208,52 @@ def test_anthropic_path_validates_pydantic_output_model() -> None:
                 json_schema=SignalExtractionResult.model_json_schema(),
                 schema_name="signal_extraction_v1",
                 output_model=SignalExtractionResult,
+                temperature=0.21,
             )
     assert out is not None
+    assert mock_anthropic.call_args.kwargs["temperature"] == 0.21
+    assert out["request_meta"]["llm_temperature_requested"] == 0.21
+    assert out["request_meta"]["llm_determinism_guaranteed"] is False
     assert out["parse_status"] == "pydantic_validated"
     assert out["central_llm_provider"] == "anthropic"
     assert out["response_json"]["hvac_intent"] == "install"
+
+
+def test_anthropic_failure_preserves_temperature_and_correlation_on_groq_fallback() -> None:
+    settings = _minimal_settings(anthropic_api_key="sk-ant-test")
+    groq_json = json.dumps({"hvac_intent": "quote", "raw_geographic_signal": "Jaworzno"})
+    fake_stage = {
+        "stage_name": "signal_extraction",
+        "response_text": groq_json,
+        "response_json": {},
+        "request_meta": {"llm_selected_provider": "groq"},
+        "model_name": "openai/gpt-oss-120b",
+        "attempt_count": 1,
+    }
+    with patch("central_llm_stage.build_context_assembler") as mock_asm:
+        mock_asm.return_value.assemble.return_value = AssembledContext(
+            company_context="ctx",
+            assembled_at="2026-05-24T00:00:00+00:00",
+        )
+        with patch(
+            "central_llm_stage._call_anthropic_raw_text",
+            side_effect=TopInstalLLMError("provider unavailable"),
+        ):
+            with patch("central_llm_stage.run_structured_stage", return_value=fake_stage) as mock_run:
+                out = run_central_structured_stage(
+                    settings,
+                    stage_name="signal_extraction",
+                    task_instructions="extract",
+                    prompt_input={"message": "test"},
+                    query_text="pompa",
+                    json_schema=SignalExtractionResult.model_json_schema(),
+                    schema_name="signal_extraction_v1",
+                    output_model=SignalExtractionResult,
+                    temperature=0.23,
+                    correlation_id="msg-anthropic-fallback",
+                    max_retries=0,
+                )
+
+    assert out is not None
+    assert mock_run.call_args.kwargs["temperature"] == 0.23
+    assert mock_run.call_args.kwargs["correlation_id"] == "msg-anthropic-fallback"

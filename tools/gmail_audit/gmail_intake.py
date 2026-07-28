@@ -2468,6 +2468,7 @@ def _run_llm_with_timeout(
             input_variants=request_variants,
             output_model=IntakeReasoningResult,
             context_bundle=config.get("context_bundle", {}),
+            correlation_id=str((_snapshot.get("source_message") or {}).get("message_id") or "").strip() or None,
         )
 
     executor = ThreadPoolExecutor(max_workers=1)

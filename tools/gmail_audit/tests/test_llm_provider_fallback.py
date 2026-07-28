@@ -114,13 +114,14 @@ def _settings(**env_overrides: str):
             return load_settings(require_groq=True, require_google=False)
 
 
-def _call(settings):
+def _call(settings, *, correlation_id: str | None = None):
     return request_structured_output(
         settings,
         "Return JSON.",
         '{"input": true}',
         json_schema=_SCHEMA,
         schema_name="unit_test_schema",
+        correlation_id=correlation_id,
     )
 
 
@@ -155,6 +156,7 @@ def test_structured_alternation_groq_429_uses_fallback_chain(
         json_schema=_SCHEMA,
         schema_name="unit_test_schema",
         stage_name="signal_extraction",
+        correlation_id="msg-2",
     )
 
     assert result.text == '{"ok": true}'
@@ -190,6 +192,7 @@ def test_structured_alternation_reuses_slot_across_input_variants(
             {"mode": "reduced", "input": '{"input": true}'},
         ],
         stage_name="intake_reasoning",
+        correlation_id="msg-3",
     )
 
     assert result.text == '{"ok": true}'
@@ -200,7 +203,7 @@ def test_structured_alternation_reuses_slot_across_input_variants(
     assert result.request_meta["llm_fallback_used"] is True
 
 
-def test_structured_alternation_intake_pipeline_stages_share_slot(
+def test_structured_alternation_is_stable_for_each_message_stage_pair(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reset_structured_alternation_counter_for_tests()
@@ -209,7 +212,7 @@ def test_structured_alternation_intake_pipeline_stages_share_slot(
 
     def fake_post(url: str, **_kwargs: object):
         urls.append(url)
-        return _groq_success()
+        return _cerebras_success() if "cerebras.ai" in url else _groq_success()
 
     monkeypatch.setattr("groq_client.requests.post", fake_post)
     signal = request_structured_output(
@@ -219,6 +222,7 @@ def test_structured_alternation_intake_pipeline_stages_share_slot(
         json_schema=_SCHEMA,
         schema_name="unit_test_schema",
         stage_name="signal_extraction",
+        correlation_id="msg-stage-stable",
     )
     intake = request_structured_output(
         settings,
@@ -227,12 +231,32 @@ def test_structured_alternation_intake_pipeline_stages_share_slot(
         json_schema=_SCHEMA,
         schema_name="unit_test_schema",
         stage_name="intake_reasoning",
+        correlation_id="msg-stage-stable",
+    )
+    signal_repeated = request_structured_output(
+        settings,
+        "Return JSON.",
+        '{"input": true}',
+        json_schema=_SCHEMA,
+        schema_name="unit_test_schema",
+        stage_name="signal_extraction",
+        correlation_id="msg-stage-stable",
+    )
+    intake_repeated = request_structured_output(
+        settings,
+        "Return JSON.",
+        '{"input": true}',
+        json_schema=_SCHEMA,
+        schema_name="unit_test_schema",
+        stage_name="intake_reasoning",
+        correlation_id="msg-stage-stable",
     )
 
-    assert signal.request_meta.get("llm_alternation_slot") == "groq"
-    assert intake.request_meta.get("llm_alternation_slot") == "groq"
-    assert len(urls) == 2
-    assert all("groq.com" in u for u in urls)
+    assert signal.request_meta["llm_alternation_slot"] == signal_repeated.request_meta["llm_alternation_slot"]
+    assert intake.request_meta["llm_alternation_slot"] == intake_repeated.request_meta["llm_alternation_slot"]
+    assert signal.request_meta["llm_alternation_key"] == signal_repeated.request_meta["llm_alternation_key"]
+    assert intake.request_meta["llm_alternation_key"] == intake_repeated.request_meta["llm_alternation_key"]
+    assert len(urls) == 4
 
 
 def test_structured_alternation_distinct_stages_rotate(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -254,6 +278,7 @@ def test_structured_alternation_distinct_stages_rotate(monkeypatch: pytest.Monke
         json_schema=_SCHEMA,
         schema_name="unit_test_schema",
         stage_name="stage_a",
+        correlation_id="msg-1",
     )
     second = request_structured_output(
         settings,
@@ -262,6 +287,7 @@ def test_structured_alternation_distinct_stages_rotate(monkeypatch: pytest.Monke
         json_schema=_SCHEMA,
         schema_name="unit_test_schema",
         stage_name="stage_b",
+        correlation_id="msg-2",
     )
     third = request_structured_output(
         settings,
@@ -270,6 +296,7 @@ def test_structured_alternation_distinct_stages_rotate(monkeypatch: pytest.Monke
         json_schema=_SCHEMA,
         schema_name="unit_test_schema",
         stage_name="stage_a",
+        correlation_id="msg-1",
     )
 
     assert first.request_meta.get("llm_alternation_slot") == "groq"
@@ -281,7 +308,77 @@ def test_structured_alternation_distinct_stages_rotate(monkeypatch: pytest.Monke
     assert "groq.com" in urls[2]
 
 
-def test_structured_alternation_rotates_groq_then_cerebras(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_structured_provider_selection_is_stable_per_message_and_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reset_structured_alternation_counter_for_tests()
+    settings = _settings()
+
+    def fake_post(url: str, **_kwargs: object):
+        return _cerebras_success() if "cerebras.ai" in url else _groq_success()
+
+    monkeypatch.setattr("groq_client.requests.post", fake_post)
+
+    def call(correlation_id: str, stage_name: str = "business_reasoning"):
+        return request_structured_output(
+            settings,
+            "Return JSON.",
+            '{"input": true}',
+            json_schema=_SCHEMA,
+            schema_name="unit_test_schema",
+            stage_name=stage_name,
+            correlation_id=correlation_id,
+        )
+
+    first = call("msg-stable")
+    for index in range(12):
+        call(f"msg-other-{index}", stage_name=f"stage-{index % 3}")
+    repeated = call("msg-stable")
+
+    assert repeated.request_meta["llm_alternation_slot"] == first.request_meta["llm_alternation_slot"]
+    assert repeated.request_meta["llm_alternation_key"] == first.request_meta["llm_alternation_key"]
+    assert repeated.request_meta["llm_alternation_strategy"] == "stable_correlation_hash_v1"
+
+
+def test_temperature_reaches_responses_and_openai_compatible_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings()
+    bodies: list[tuple[str, dict[str, object]]] = []
+
+    def fake_post(url: str, **kwargs: object):
+        bodies.append((url, kwargs.get("json") or {}))
+        return _cerebras_success() if "cerebras.ai" in url else _groq_success()
+
+    monkeypatch.setattr("groq_client.requests.post", fake_post)
+    request_structured_output(
+        settings,
+        "Return JSON.",
+        '{"input": true}',
+        json_schema=_SCHEMA,
+        schema_name="unit_test_schema",
+        stage_name="signal_extraction",
+        correlation_id="msg-2",
+        temperature=0.31,
+    )
+    request_structured_output(
+        settings,
+        "Return JSON.",
+        '{"input": true}',
+        json_schema=_SCHEMA,
+        schema_name="unit_test_schema",
+        stage_name="signal_extraction",
+        correlation_id="msg-0",
+        temperature=0.47,
+    )
+
+    groq_body = next(body for url, body in bodies if "groq.com" in url)
+    cerebras_body = next(body for url, body in bodies if "cerebras.ai" in url)
+    assert groq_body["temperature"] == 0.31
+    assert cerebras_body["temperature"] == 0.47
+
+
+def test_structured_alternation_distributes_by_stable_correlation(monkeypatch: pytest.MonkeyPatch) -> None:
     reset_structured_alternation_counter_for_tests()
     settings = _settings()
     assert settings.llm_structured_provider_alternation is True
@@ -294,9 +391,9 @@ def test_structured_alternation_rotates_groq_then_cerebras(monkeypatch: pytest.M
         return _groq_success()
 
     monkeypatch.setattr("groq_client.requests.post", fake_post)
-    first = _call(settings)
-    second = _call(settings)
-    third = _call(settings)
+    first = _call(settings, correlation_id="msg-0")
+    second = _call(settings, correlation_id="msg-2")
+    third = _call(settings, correlation_id="msg-0")
     assert len(urls) == 3
     assert "groq.com" in urls[0]
     assert "cerebras.ai" in urls[1]

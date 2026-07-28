@@ -79,7 +79,7 @@ def _get_provider_semaphore(provider: str) -> threading.Semaphore:
 
 
 # ── LLM Response Cache (Krok 5) ──────────────────────────────────────────────
-# Cache dla deterministycznych zapytan (temperature=0).
+# Cache for structured requests that explicitly ask for temperature=0.
 
 
 def _get_cache_db_url() -> str:
@@ -305,12 +305,13 @@ def merge_system_prompt(assembled: AssembledContext, task_instructions: str) -> 
     return system
 
 
-def _anthropic_client(settings: Settings) -> TopInstalLLMClient:
+def _anthropic_client(settings: Settings, *, temperature: float = 0) -> TopInstalLLMClient:
     return TopInstalLLMClient(
         api_key=str(settings.anthropic_api_key),
         model=str(settings.anthropic_model),
         timeout_sec=float(settings.http_timeout),
         max_retries=min(3, int(settings.http_max_retries)),
+        temperature=temperature,
     )
 
 
@@ -406,8 +407,9 @@ def _call_anthropic_raw_text(
     user_json: str,
     case_id: str | None,
     model: str | None,
+    temperature: float,
 ) -> str:
-    client = _anthropic_client(settings)
+    client = _anthropic_client(settings, temperature=temperature)
     payload = client.complete_json(
         system=system,
         user=user_json,
@@ -428,6 +430,8 @@ def _call_groq_structured_stage(
     model: str | None,
     verbose: bool,
     input_variants: list[dict[str, Any]] | None,
+    temperature: float,
+    correlation_id: str | None,
 ) -> dict[str, Any]:
     return run_structured_stage(
         settings,
@@ -439,6 +443,8 @@ def _call_groq_structured_stage(
         model=model,
         verbose=verbose,
         input_variants=input_variants,
+        temperature=temperature,
+        correlation_id=correlation_id,
     )
 
 
@@ -497,7 +503,8 @@ def run_central_structured_stage(
     context_bundle: dict[str, Any] | None = None,
     client_timeout: int = LLM_CLIENT_TIMEOUT_SEC,
     max_retries: int = MAX_RETRIES,
-    temperature: float = 0,  # Krok 5: temperature=0 → deterministyczne → mozna cache'owac
+    temperature: float = 0,  # Requested sampling value; provider/model determinism is not guaranteed.
+    correlation_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Run structured LLM with company context; validate via Pydantic when output_model is set."""
     started = time.monotonic()
@@ -517,9 +524,17 @@ def run_central_structured_stage(
     system = merge_system_prompt(assembled, task_instructions)
     user_json = json.dumps(prompt_input, ensure_ascii=False)
     provider = primary_llm_provider(settings)
+    source_message = prompt_input.get("source_message") if isinstance(prompt_input.get("source_message"), dict) else {}
+    resolved_correlation_id = str(
+        correlation_id
+        or source_message.get("message_id")
+        or prompt_input.get("message_id")
+        or case_id
+        or engagement_id
+        or ""
+    ).strip()
 
-    # Krok 5: Sprawdz cache dla deterministycznych zapytan (temperature=0).
-    # Jesli cache hit — pomijamy LLM call i idziemy prosto do walidacji.
+    # A cache hit replays an exact prior body; temperature=0 alone is not a determinism proof.
     cache_hit_raw: str | None = None
     if temperature == 0 and output_model is not None:
         db_url = _get_cache_db_url()
@@ -529,7 +544,13 @@ def run_central_structured_stage(
 
     if cache_hit_raw is not None:
         raw_text = cache_hit_raw
-        request_meta: dict[str, Any] = {"central_llm_provider": provider, "cache_hit": True}
+        request_meta: dict[str, Any] = {
+            "central_llm_provider": provider,
+            "cache_hit": True,
+            "llm_temperature_requested": float(temperature),
+            "llm_determinism_guaranteed": True,
+            "llm_determinism_basis": "response_cache_hit",
+        }
         model_name = str(model or settings.groq_model)
         attempt_count = 1
     else:
@@ -550,6 +571,8 @@ def run_central_structured_stage(
                     model=model,
                     verbose=verbose,
                     input_variants=input_variants,
+                    temperature=temperature,
+                    correlation_id=resolved_correlation_id or None,
                 )
             except GroqClientError as exc:
                 if not deepseek_error_allows_fallback(exc):
@@ -580,6 +603,7 @@ def run_central_structured_stage(
                         user_json=user_json,
                         case_id=assembled.case_id_used or case_id,
                         model=model,
+                        temperature=temperature,
                     ),
                     stage_name=stage_name,
                     max_retries=max_retries,
@@ -588,6 +612,9 @@ def run_central_structured_stage(
                     provider="anthropic",  # Faza 2a: rate limiting per provider
                 )
                 request_meta = {"central_llm_provider": "anthropic"}
+                request_meta["llm_temperature_requested"] = float(temperature)
+                request_meta["llm_determinism_guaranteed"] = False
+                request_meta["llm_determinism_basis"] = "provider_dependent"
                 provider = "anthropic"
                 model_name = str(model or settings.anthropic_model)
                 attempt_count = 1
@@ -608,6 +635,8 @@ def run_central_structured_stage(
                     model=model,
                     verbose=verbose,
                     input_variants=input_variants,
+                    temperature=temperature,
+                    correlation_id=resolved_correlation_id or None,
                 )
                 request_meta = dict(groq_stage.get("request_meta") or {})
                 provider = str(
@@ -633,6 +662,8 @@ def run_central_structured_stage(
                 model=model,
                 verbose=verbose,
                 input_variants=input_variants,
+                temperature=temperature,
+                correlation_id=resolved_correlation_id or None,
             )
             request_meta = dict(groq_stage.get("request_meta") or {})
             provider = str(
@@ -652,7 +683,7 @@ def run_central_structured_stage(
 
     latency_ms = int(round((time.monotonic() - started) * 1000))
 
-    # Krok 5: Zapisz odpowiedz w cache (tylko dla temperature=0, jesli nie cache hit)
+    # Store only temperature=0 requests; the cache, not the sampling value, makes replay exact.
     if temperature == 0 and not request_meta.get("cache_hit") and raw_text:
         db_url = _get_cache_db_url()
         if db_url:

@@ -124,6 +124,7 @@ def run_reply_drafter(
             verbose=verbose,
             output_model=ReplyDraftResult,
             context_bundle=context_bundle,
+            correlation_id=str((snapshot.get("source_message") or {}).get("message_id") or "").strip() or None,
         )
         if stage_call is None:
             return fallback_reply_drafter(reason="central_llm_stage_unavailable")

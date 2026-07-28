@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 import re
@@ -64,21 +65,12 @@ IMPORTANT_MAILS_SCHEMA: dict[str, Any] = {
 RETRYABLE_HTTP_STATUSES = {408, 424, 429, 500, 502, 503, 504}
 _RUNTIME_COOLDOWNS: dict[int, float] = {}
 _RUNTIME_THROTTLE_LEVELS: dict[int, int] = {}
-_STRUCTURED_ALT_SEQ = 0
-_STRUCTURED_ALT_LOCK = threading.Lock()
-_STAGE_ALT_SLOTS: dict[str, tuple[int, str]] = {}
-_INTAKE_PIPELINE_STAGES = frozenset({"signal_extraction", "intake_reasoning", "intake_second_pass"})
 _GROQ_KEY_ROTATION_SEQ = 0
 _GROQ_KEY_ROTATION_LOCK = threading.Lock()
 
 
 def reset_structured_alternation_counter_for_tests() -> None:
-    """Reset process-local structured LLM alternation counter (tests only)."""
-
-    global _STRUCTURED_ALT_SEQ
-    with _STRUCTURED_ALT_LOCK:
-        _STRUCTURED_ALT_SEQ = 0
-        _STAGE_ALT_SLOTS.clear()
+    """Compatibility no-op: provider selection is now correlation-keyed."""
 
 
 def reset_groq_key_rotation_counter_for_tests() -> None:
@@ -107,37 +99,22 @@ def _rotate_groq_key_pool(groq_keys: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def reset_structured_alternation_stage_slots_for_message() -> None:
-    """Clear per-stage slot cache so each mail gets a fresh pipeline assignment."""
-
-    with _STRUCTURED_ALT_LOCK:
-        _STAGE_ALT_SLOTS.clear()
+    """Compatibility no-op retained for existing intake callers."""
 
 
-def _alternation_stage_key(stage_name: str | None) -> str:
-    key = str(stage_name or "").strip()
-    if key in _INTAKE_PIPELINE_STAGES:
-        return "intake_pipeline"
-    return key
+def _alternation_slot_for_stage(
+    stage_name: str | None,
+    *,
+    correlation_id: str,
+) -> tuple[int, str, str]:
+    """Select a provider from stable request identity, independent of process history."""
 
-
-def _alternation_slot_for_stage(stage_name: str | None) -> tuple[int, str]:
-    """Reserve one groq/cerebras slot per stage; reuse across input variants.
-
-    Intake-related stages share ``intake_pipeline`` so signal extraction does not
-    steal Groq before ``intake_reasoning``. Calls without ``stage_name`` still bump
-    per request (legacy direct callers).
-    """
-    key = _alternation_stage_key(stage_name)
-    with _STRUCTURED_ALT_LOCK:
-        if key and key in _STAGE_ALT_SLOTS:
-            return _STAGE_ALT_SLOTS[key]
-        global _STRUCTURED_ALT_SEQ
-        idx = _STRUCTURED_ALT_SEQ
-        _STRUCTURED_ALT_SEQ += 1
-        slot = "groq" if (idx % 2 == 0) else "cerebras"
-        if key:
-            _STAGE_ALT_SLOTS[key] = (idx, slot)
-        return idx, slot
+    stage_key = str(stage_name or "unscoped_stage").strip() or "unscoped_stage"
+    correlation_key = str(correlation_id or "uncorrelated").strip() or "uncorrelated"
+    digest = hashlib.sha256(f"{correlation_key}\x1f{stage_key}".encode("utf-8")).hexdigest()
+    bucket = int(digest[:8], 16) % 2
+    slot = "groq" if bucket == 0 else "cerebras"
+    return bucket, slot, digest[:16]
 
 
 class GroqClientError(RuntimeError):
@@ -214,6 +191,8 @@ def request_structured_output(
     input_variants: list[dict[str, Any]] | None = None,
     stage_name: str | None = None,
     providers_builder: Callable[[str, Any], list[LLMProvider]] | None = None,
+    correlation_id: str | None = None,
+    temperature: float = 0,
 ) -> GroqResult:
     """Send a schema-guided Responses API request without connector tools.
 
@@ -224,6 +203,14 @@ def request_structured_output(
     while still degrading through ``input_variants`` like every other provider.
     """
     variants = input_variants or [{"mode": "default", "input": input_data, "metadata": {}}]
+    resolved_correlation_id = str(correlation_id or "").strip()
+    if not resolved_correlation_id:
+        serialized_identity = (
+            input_data
+            if isinstance(input_data, str)
+            else json.dumps(input_data, ensure_ascii=False, sort_keys=True)
+        )
+        resolved_correlation_id = "input:" + hashlib.sha256(serialized_identity.encode("utf-8")).hexdigest()
     variant_attempts: list[dict[str, Any]] = []
     degradations: list[dict[str, Any]] = []
     last_error: GroqClientError | None = None
@@ -241,6 +228,8 @@ def request_structured_output(
                 model=model,
                 mode=mode,
                 stage_name=stage_name,
+                correlation_id=resolved_correlation_id,
+                temperature=temperature,
                 providers_override=(
                     providers_builder(mode, variant_payload) if providers_builder is not None else None
                 ),
@@ -292,10 +281,21 @@ def run_structured_stage(
     model: str | None = None,
     verbose: bool = False,
     input_variants: list[dict[str, Any]] | None = None,
+    temperature: float = 0,
+    correlation_id: str | None = None,
 ) -> dict[str, Any]:
     """Execute a structured stage call and return normalized call telemetry."""
     started = time.monotonic()
     serialized_input = json.dumps(prompt_input, indent=2, ensure_ascii=False)
+    source_message = prompt_input.get("source_message") if isinstance(prompt_input.get("source_message"), dict) else {}
+    resolved_correlation_id = str(
+        correlation_id
+        or source_message.get("message_id")
+        or prompt_input.get("message_id")
+        or prompt_input.get("signal_id")
+        or prompt_input.get("case_id")
+        or ""
+    ).strip()
     result = request_structured_output(
         settings,
         instructions,
@@ -306,6 +306,8 @@ def run_structured_stage(
         verbose=verbose,
         input_variants=input_variants,
         stage_name=stage_name,
+        correlation_id=resolved_correlation_id or None,
+        temperature=temperature,
     )
     latency_ms = int(round((time.monotonic() - started) * 1000))
     request_meta = sanitize_for_storage(result.request_meta)
@@ -362,6 +364,7 @@ def _deepseek_providers(
     schema_name: str,
     model: str | None,
     mode: str | None,
+    temperature: float,
 ) -> list[LLMProvider]:
     """Single-provider chain for the DeepSeek priority-1 tier (see run_deepseek_structured_stage)."""
     provider_model = str(model or getattr(settings, "deepseek_model", "") or "").strip() or "deepseek-v4-flash"
@@ -397,10 +400,14 @@ def _deepseek_providers(
                 base_url=deepseek_base_url,
                 api_key=_api_key,
                 extra_payload=thinking_payload,
+                temperature=temperature,
             )
             request_meta["llm_backend"] = "deepseek"
             request_meta["llm_api_key_slot"] = _key_index + 1
             request_meta["llm_deepseek_thinking_enabled"] = bool(thinking_payload)
+            request_meta["llm_temperature_effective"] = (
+                "provider_managed" if thinking_payload else float(temperature)
+            )
             return synthetic, request_meta
 
         providers.append(
@@ -427,6 +434,8 @@ def run_deepseek_structured_stage(
     model: str | None = None,
     verbose: bool = False,
     input_variants: list[dict[str, Any]] | None = None,
+    temperature: float = 0,
+    correlation_id: str | None = None,
 ) -> dict[str, Any]:
     """Priority-1 structured-stage attempt via DeepSeek only.
 
@@ -447,6 +456,7 @@ def run_deepseek_structured_stage(
             schema_name=schema_name,
             model=model,
             mode=mode,
+            temperature=temperature,
         )
 
     result = request_structured_output(
@@ -460,6 +470,8 @@ def run_deepseek_structured_stage(
         input_variants=input_variants,
         stage_name=stage_name,
         providers_builder=_build_deepseek_providers,
+        correlation_id=correlation_id,
+        temperature=temperature,
     )
     latency_ms = int(round((time.monotonic() - started) * 1000))
     request_meta = sanitize_for_storage(result.request_meta)
@@ -721,6 +733,8 @@ def _post_structured_with_router(
     model: str | None,
     mode: str | None,
     stage_name: str | None = None,
+    correlation_id: str,
+    temperature: float,
     providers_override: list[LLMProvider] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     providers = (
@@ -735,11 +749,17 @@ def _post_structured_with_router(
             model=model,
             mode=mode,
             stage_name=stage_name,
+            correlation_id=correlation_id,
+            temperature=temperature,
         )
     )
     router = LLMRouter(providers)
     try:
-        return router.run()
+        response_json, request_meta = router.run()
+        request_meta["llm_temperature_requested"] = float(temperature)
+        request_meta["llm_determinism_guaranteed"] = False
+        request_meta["llm_determinism_basis"] = "provider_dependent"
+        return response_json, request_meta
     except LLMRouterError as exc:
         raise GroqClientError(str(exc), details=sanitize_for_storage(exc.details)) from exc
 
@@ -748,6 +768,7 @@ def _structured_provider_plan(
     settings: Settings,
     *,
     stage_name: str | None = None,
+    correlation_id: str,
 ) -> tuple[list[str], dict[str, Any] | None]:
     """Return ordered provider names for one structured LLM request.
 
@@ -762,11 +783,16 @@ def _structured_provider_plan(
     alt_meta: dict[str, Any] | None = None
     ordered: tuple[str, ...]
     if getattr(settings, "llm_structured_provider_alternation", False):
-        idx, slot = _alternation_slot_for_stage(stage_name)
+        idx, slot, selection_key = _alternation_slot_for_stage(
+            stage_name,
+            correlation_id=correlation_id,
+        )
         alt_meta = {
             "llm_structured_provider_alternation": True,
             "llm_alternation_index": idx,
             "llm_alternation_slot": slot,
+            "llm_alternation_key": selection_key,
+            "llm_alternation_strategy": "stable_correlation_hash_v1",
         }
         ordered = (slot, primary, *fallback_providers)
     else:
@@ -822,8 +848,14 @@ def _structured_providers(
     model: str | None,
     mode: str | None,
     stage_name: str | None = None,
+    correlation_id: str,
+    temperature: float,
 ) -> list[LLMProvider]:
-    names, alt_meta = _structured_provider_plan(settings, stage_name=stage_name)
+    names, alt_meta = _structured_provider_plan(
+        settings,
+        stage_name=stage_name,
+        correlation_id=correlation_id,
+    )
     providers: list[LLMProvider] = []
     for provider in names:
         if provider == "groq":
@@ -852,6 +884,7 @@ def _structured_providers(
                         "model": provider_model,
                         "instructions": instructions,
                         "input": user_payload,
+                        "temperature": float(temperature),
                         "text": {
                             "format": {
                                 "type": "json_schema",
@@ -896,6 +929,7 @@ def _structured_providers(
                     model=provider_model,
                     mode=mode,
                     schema_name=schema_name,
+                    temperature=temperature,
                 )
                 if alt_meta:
                     request_meta.update(alt_meta)
@@ -945,6 +979,7 @@ def _structured_providers(
                         schema_name=schema_name,
                         base_url=cerebras_base_url,
                         api_key=_api_key,
+                        temperature=temperature,
                     )
                     request_meta["llm_api_key_slot"] = _key_index + 1
                     if alt_meta:
@@ -996,6 +1031,7 @@ def _structured_providers(
                         schema_name=schema_name,
                         base_url=openrouter_base_url,
                         api_key=_api_key,
+                        temperature=temperature,
                     )
                     request_meta["llm_api_key_slot"] = _key_index + 1
                     if alt_meta:
@@ -1046,6 +1082,7 @@ def _structured_providers(
                         schema_name=schema_name,
                         base_url=nvidia_base_url,
                         api_key=_api_key,
+                        temperature=temperature,
                     )
                     request_meta["llm_api_key_slot"] = _key_index + 1
                     if alt_meta:
@@ -1135,6 +1172,7 @@ def _post_openai_chat_structured(
     base_url: str | None = None,
     api_key: str | None = None,
     extra_payload: dict[str, Any] | None = None,
+    temperature: float = 0,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """POST Chat Completions and return Responses-compatible JSON for `_build_result`.
 
@@ -1167,7 +1205,7 @@ def _post_openai_chat_structured(
             {"role": "user", "content": user_content},
         ],
         "response_format": {"type": "json_object"},
-        "temperature": 0,
+        "temperature": float(temperature),
         "stream": False,
     }
     if extra_payload:

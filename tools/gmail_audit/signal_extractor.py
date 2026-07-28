@@ -99,6 +99,7 @@ def run_signal_extraction(
             context_bundle=context_bundle,
             client_timeout=30,
             max_retries=2,
+            correlation_id=str((snapshot.get("source_message") or {}).get("message_id") or "").strip() or None,
         )
         if stage is None:
             return {"parse_status": "extraction_failed", "error_reason": "central_stage_unavailable"}

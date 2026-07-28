@@ -186,6 +186,7 @@ def run_business_reasoning(
             context_bundle=context_bundle,
             client_timeout=45,
             max_retries=2,
+            correlation_id=str((snapshot.get("source_message") or {}).get("message_id") or "").strip() or None,
         )
         if stage_call is None:
             return fallback_business_reasoning(reason="central_llm_stage_unavailable")
