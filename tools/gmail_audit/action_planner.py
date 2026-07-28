@@ -2,9 +2,36 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from intake_schema import validate_action_plan_result
+
+
+# BusinessReasoning is prompted to put "niesprawdzone twierdzenia" (unverified,
+# calibrated-uncertainty assertions) into unsupported_claims -- honesty about what
+# it could not confirm, not necessarily a dangerous promise. Only a categorical
+# guarantee/commitment the system can never actually support deterministically is
+# treated as genuinely unsafe here. Mirrors the categorical-guarantee vocabulary
+# already used for draft rewriting in reply_drafter.py's _COMMITMENT_PATTERNS
+# (kept as a separate, smaller pattern: that gate rewrites draft body text against
+# case_state; this one classifies BusinessReasoning's own claim list before it can
+# become a planner blocker).
+_UNSAFE_CLAIM_MARKERS = re.compile(
+    r"gwarantuj\w*|na pewno|sto procent pewn\w*|obiecuj\w*|zapewniamy",
+    re.IGNORECASE,
+)
+
+
+def _is_unsafe_claim(text: str) -> bool:
+    return bool(_UNSAFE_CLAIM_MARKERS.search(text))
+
+
+def _is_blocking(item: dict[str, Any]) -> bool:
+    """A 'low' severity item (currently: a calibrated-uncertainty unsupported claim)
+    is surfaced to the operator but must not reduce confidence or block execution
+    on its own -- only genuinely risky blockers do."""
+    return str(item.get("severity") or "").lower() != "low"
 
 
 def plan_actions(
@@ -151,7 +178,7 @@ def is_safe_for_live_push(
     blockers: list[dict[str, Any]] | None = None,
 ) -> bool:
     """Keep live-push safety extremely conservative at the start of v2."""
-    if blockers:
+    if any(_is_blocking(item) for item in blockers or []):
         return False
     if primary_action != "ignore":
         return False
@@ -188,7 +215,8 @@ def _action_confidence(
     business_action = _clamp01(business_confidence.get("action_confidence"))
     evidence_ledger = _evidence_ledger_confidence(business_result or {})
     weighted = (intake_decision * 0.30) + (case_link * 0.25) + (business_action * 0.25) + (evidence_ledger * 0.20)
-    blocker_penalty = min(0.45, 0.12 * len(blockers or []))
+    blocking_count = sum(1 for item in blockers or [] if _is_blocking(item))
+    blocker_penalty = min(0.45, 0.12 * blocking_count)
     score = max(0.0, min(1.0, weighted - blocker_penalty))
     components = {
         "intake_decision": round(intake_decision, 4),
@@ -212,9 +240,12 @@ def _evidence_ledger_confidence(business_result: dict[str, Any]) -> float:
     evidence = business_result.get("evidence_refs")
     unsupported = business_result.get("unsupported_claims")
     conflicts = business_result.get("conflict_refs")
+    has_unsafe_claim = isinstance(unsupported, list) and any(
+        _is_unsafe_claim(str(claim or "")) for claim in unsupported
+    )
     if isinstance(evidence, list) and evidence:
         score = 0.85
-    elif isinstance(unsupported, list) and unsupported:
+    elif has_unsafe_claim:
         score = 0.2
     else:
         score = 0.65
@@ -254,8 +285,12 @@ def _reasoning_blockers(
         blockers.append({"kind": "calendar risk", "label": risk, "severity": "high"})
     for claim in (business_result or {}).get("unsupported_claims") or []:
         text = str(claim or "").strip()
-        if text:
-            blockers.append({"kind": "unsupported claim", "label": text[:120], "severity": "medium"})
+        if not text:
+            continue
+        if _is_unsafe_claim(text):
+            blockers.append({"kind": "unsupported claim", "label": text[:120], "severity": "high"})
+        else:
+            blockers.append({"kind": "unconfirmed claim", "label": text[:120], "severity": "low"})
     return blockers
 
 

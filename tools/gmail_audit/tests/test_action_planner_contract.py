@@ -51,10 +51,17 @@ class ActionPlannerContractTests(unittest.TestCase):
         self.assertFalse(result["safe_for_operator_projection"])
         self.assertIn("document conflict", joined)
         self.assertIn("calendar", joined)
-        self.assertIn("unsupported claim", joined)
+        # "Niepotwierdzony termin" is a calibrated uncertainty disclosure, not a
+        # categorical guarantee -- surfaced for awareness under its own label, but
+        # review_priority/safe_for_live_push above are already forced by the
+        # document/calendar blockers regardless of this claim's classification.
+        self.assertIn("unconfirmed claim", joined)
         self.assertLess(result["confidence"], 0.85)
 
-    def test_weighted_confidence_penalizes_weak_evidence_ledger(self) -> None:
+    def test_weighted_confidence_penalizes_unsafe_guarantee_claim(self) -> None:
+        # "Gwarantujemy" is a categorical guarantee BusinessReasoning can never
+        # actually support -- this is the genuinely unsafe class of unsupported_claims,
+        # distinct from a calibrated uncertainty disclosure (see the test below).
         result = plan_actions(
             {
                 "decision": {"action": "ignore"},
@@ -67,12 +74,41 @@ class ActionPlannerContractTests(unittest.TestCase):
                 "urgency": "low",
                 "confidence": {"action_confidence": 1.0},
                 "evidence_refs": [],
-                "unsupported_claims": ["Brak dowodu"],
+                "unsupported_claims": ["Gwarantujemy termin realizacji na jutro"],
             },
             {},
         )
         self.assertEqual(result["execution_metadata"]["confidence_components"]["evidence_ledger"], 0.2)
         self.assertLess(result["confidence"], 1.0)
+        self.assertFalse(result["safe_for_live_push"])
+
+    def test_calibrated_uncertainty_claim_does_not_penalize_confidence_or_block(self) -> None:
+        # "Brak dowodu na wskazany termin dostawy" is BusinessReasoning honestly
+        # disclosing it could not verify something -- exactly what unsupported_claims
+        # is prompted to record (business_reasoner.py's BUSINESS_REASONING_INSTRUCTIONS:
+        # "niesprawdzone twierdzenia w unsupported_claims"). It is not a categorical
+        # guarantee/promise and must not be treated the same as one.
+        result = plan_actions(
+            {
+                "decision": {"action": "ignore"},
+                "review_required": False,
+                "confidence": {"decision_confidence": 1.0, "case_link_confidence": 1.0},
+            },
+            {"decision": "linked", "confidence": 1.0},
+            {
+                "recommended_next_action": "wait",
+                "urgency": "low",
+                "confidence": {"action_confidence": 1.0},
+                "evidence_refs": [],
+                "unsupported_claims": ["Brak dowodu na wskazany termin dostawy"],
+            },
+            {},
+        )
+        self.assertEqual(result["execution_metadata"]["confidence_components"]["evidence_ledger"], 0.65)
+        self.assertGreaterEqual(result["confidence"], 0.85)
+        self.assertTrue(result["safe_for_live_push"])
+        joined = " | ".join(result["operator_checklist"])
+        self.assertIn("unconfirmed claim", joined)
 
 
 if __name__ == "__main__":
