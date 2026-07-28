@@ -21,9 +21,15 @@ def run_skrzat_bounded_proof(
 ) -> dict[str, Any]:
     """Krok 5–6: Skrzat ask + answer quality envelope validation."""
     settings = settings or load_settings(require_groq=False, require_google=False)
-    runtime = build_mailbox_memory_runtime(settings, allow_in_memory=True)
+    if not str(getattr(settings, "mailbox_memory_database_url", "") or "").strip():
+        return {
+            "ok": False,
+            "skipped": False,
+            "reason": "mailbox_memory_database_url_required",
+        }
+    runtime = build_mailbox_memory_runtime(settings, allow_in_memory=False)
     if runtime is None:
-        return {"ok": False, "skipped": True, "reason": "no_mailbox_runtime"}
+        return {"ok": False, "skipped": False, "reason": "durable_mailbox_runtime_unavailable"}
 
     runtime.bootstrap()
     pack = runtime.get_context_pack(case_id=case_id, query_text=question)

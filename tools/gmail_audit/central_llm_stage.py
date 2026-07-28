@@ -243,7 +243,7 @@ def _mailbox_case_loader(settings: Settings) -> CaseContextLoader | None:
     def loader(case_id: str, query_text: str, max_chunks: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         from mailbox_memory_runtime import build_mailbox_memory_runtime
 
-        runtime = build_mailbox_memory_runtime(settings, allow_in_memory=True)
+        runtime = build_mailbox_memory_runtime(settings, allow_in_memory=False)
         if runtime is None:
             return {}, []
         pack = runtime.get_context_pack(case_id=case_id, query_text=query_text)

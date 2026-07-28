@@ -4,7 +4,7 @@ import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -49,7 +49,10 @@ def test_execute_hitl_gmail_send_bounded_dry_run_without_scope(monkeypatch: pyte
     monkeypatch.setenv("AGENT_HITL_EXECUTE_SEND", "1")
     monkeypatch.setenv("AGENT_HITL_SEND_TO", "klient@example.com")
     out = execute_hitl_gmail_send(
-        settings=SimpleNamespace(google_oauth_scopes=["https://www.googleapis.com/auth/gmail.readonly"]),
+        settings=SimpleNamespace(
+            google_oauth_scopes=["https://www.googleapis.com/auth/gmail.readonly"],
+            mailbox_memory_database_url="configured_for_explicit_override",
+        ),
         snapshot=_snapshot_with_draft(),
         action_id="draft_reply",
         operator_id="konrad",
@@ -62,7 +65,10 @@ def test_execute_hitl_gmail_send_bounded_dry_run_without_scope(monkeypatch: pyte
 def test_execute_hitl_gmail_send_live_when_scope_present(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AGENT_HITL_EXECUTE_SEND", "1")
     monkeypatch.setenv("AGENT_HITL_SEND_TO", "klient@example.com")
-    settings = SimpleNamespace(google_oauth_scopes=[GMAIL_SEND_SCOPE])
+    settings = SimpleNamespace(
+        google_oauth_scopes=[GMAIL_SEND_SCOPE],
+        mailbox_memory_database_url="configured_for_explicit_override",
+    )
     with patch(
         "google_gmail_api.send_raw_message",
         return_value={"id": "msg_123", "threadId": "thr_456"},
@@ -76,3 +82,67 @@ def test_execute_hitl_gmail_send_live_when_scope_present(monkeypatch: pytest.Mon
     assert out["executed"] is True
     assert out["mode"] == "live"
     assert out["message_id"] == "msg_123"
+
+
+def test_execute_hitl_gmail_send_fails_closed_without_mailbox_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_HITL_EXECUTE_SEND", "1")
+    monkeypatch.delenv("AGENT_HITL_SEND_TO", raising=False)
+    effect_started: list[bool] = []
+    settings = SimpleNamespace(
+        google_oauth_scopes=[GMAIL_SEND_SCOPE],
+        mailbox_memory_database_url="",
+        mailbox_memory_stage_mode="live",
+    )
+
+    with patch("google_gmail_api.send_raw_message") as send_raw:
+        out = execute_hitl_gmail_send(
+            settings=settings,
+            snapshot=_snapshot_with_draft(),
+            action_id="draft_reply",
+            operator_id="konrad",
+            on_effect_start=lambda: effect_started.append(True),
+        )
+
+    assert out == {
+        "executed": False,
+        "reason": "mailbox_memory_database_url_required",
+        "effect_started": False,
+        "decision_status": "failed_before_execution",
+    }
+    assert effect_started == []
+    send_raw.assert_not_called()
+
+
+def test_execute_hitl_gmail_send_does_not_report_unresolved_recipient_as_executed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_HITL_EXECUTE_SEND", "1")
+    monkeypatch.delenv("AGENT_HITL_SEND_TO", raising=False)
+    effect_started: list[bool] = []
+    settings = SimpleNamespace(
+        google_oauth_scopes=[GMAIL_SEND_SCOPE],
+        mailbox_memory_database_url="postgresql://configured.invalid/mailbox",
+        mailbox_memory_stage_mode="live",
+    )
+    runtime = MagicMock()
+    runtime.get_context_pack.return_value = {"intake_output": {}, "facts": []}
+
+    with (
+        patch("mailbox_memory_runtime.build_mailbox_memory_runtime", return_value=runtime),
+        patch("google_gmail_api.send_raw_message") as send_raw,
+    ):
+        out = execute_hitl_gmail_send(
+            settings=settings,
+            snapshot=_snapshot_with_draft(),
+            action_id="draft_reply",
+            on_effect_start=lambda: effect_started.append(True),
+        )
+
+    assert out["executed"] is False
+    assert out["reason"] == "recipient_unresolved"
+    assert out["effect_started"] is False
+    assert out["decision_status"] == "failed_before_execution"
+    assert effect_started == []
+    send_raw.assert_not_called()
