@@ -167,6 +167,40 @@ class SemanticPolicyPlanConsistencyV1(StrictModel):
     ] = "NO_SAFE_MAPPING_EXISTS"
 
 
+class DecisionDivergenceObservationV1(StrictModel):
+    """Detection-only comparison of existing decision views and the selected tool.
+
+    Different literals are not automatically conflicts: the three action surfaces
+    and the two case-type surfaces have different owners and no exhaustive mapping.
+    """
+
+    schema_version: Literal["decision_divergence_observation.v1"] = (
+        "decision_divergence_observation.v1"
+    )
+    status: Literal["divergence_detected", "not_evaluable", "missing_inputs"]
+    action_tree_status: Literal[
+        "divergence_detected",
+        "same_literal",
+        "not_evaluable",
+        "missing_inputs",
+    ]
+    case_typing_status: Literal[
+        "same_literal",
+        "different_unmapped_literals",
+        "missing_inputs",
+    ]
+    tool_relation_status: Literal["not_evaluable", "missing_inputs"]
+    reason_codes: list[str] = Field(default_factory=list)
+    source_signal_id: str = ""
+    business_recommended_action: str = ""
+    action_planner_primary_action: str = ""
+    next_best_action_type: str = ""
+    reply_draft_enabled: bool | None = None
+    case_family: str = ""
+    case_kind: str = ""
+    tool_name: str = ""
+
+
 class ToolCallItem(StrictModel):
     tool: str
     status: str = "idle"
@@ -261,6 +295,7 @@ class EngagementSnapshotV2(StrictModel):
     case_understanding_provenance: CaseUnderstandingProvenance | None = None
     policy_action_envelope: PolicyActionEnvelopeV1 | None = None
     semantic_policy_plan_consistency: SemanticPolicyPlanConsistencyV1 | None = None
+    decision_divergence_observation: DecisionDivergenceObservationV1 | None = None
     feed_visibility: FeedVisibility | None = None
 
 

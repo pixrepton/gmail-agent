@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent_runtime.constitution import AgentConstitution
+from agent_runtime.decision_divergence import evaluate_decision_divergence
 from agent_runtime.metrics import record_agent_turn
 from agent_runtime.planner import ToolPlanner
 from agent_runtime.policy_action_spine import (
@@ -175,7 +176,13 @@ class AgentGraphEngine:
                     available_tools=available_tools,
                     constitution=self._constitution,
                 )
-                plan, current = _observe_policy_plan(current, plan)
+                plan, current = _observe_policy_plan(
+                    current,
+                    plan,
+                    decision_inputs=ctx.signal_payload.get(
+                        "decision_comparison_inputs"
+                    ),
+                )
                 ctx.snapshot = current
             except Exception as exc:
                 # Failure convergence (DELIVERY-1): a planner-call exception (ghost-tool
@@ -191,7 +198,13 @@ class AgentGraphEngine:
                     exc,
                 )
                 plan = ToolCallPlan(tool_name="planner_error", arguments={})
-                plan, current = _observe_policy_plan(current, plan)
+                plan, current = _observe_policy_plan(
+                    current,
+                    plan,
+                    decision_inputs=ctx.signal_payload.get(
+                        "decision_comparison_inputs"
+                    ),
+                )
                 ctx.snapshot = current
                 result = ToolResult(
                     status="error",
@@ -499,6 +512,8 @@ def _ground_current_signal(
     # inherit the previous turn's planner result.
     if snapshot.semantic_policy_plan_consistency is not None:
         delta["semantic_policy_plan_consistency"] = None
+    if snapshot.decision_divergence_observation is not None:
+        delta["decision_divergence_observation"] = None
     if not delta:
         return snapshot
     return apply_snapshot_delta(snapshot, delta)
@@ -507,6 +522,8 @@ def _ground_current_signal(
 def _observe_policy_plan(
     snapshot: EngagementSnapshotV2,
     plan: ToolCallPlan,
+    *,
+    decision_inputs: dict[str, Any] | None = None,
 ) -> tuple[ToolCallPlan, EngagementSnapshotV2]:
     """Correlate and observe a plan without changing its selected tool/arguments."""
     correlated = correlate_tool_plan(plan, snapshot.policy_action_envelope)
@@ -514,8 +531,16 @@ def _observe_policy_plan(
         snapshot.policy_action_envelope,
         correlated,
     )
+    divergence = evaluate_decision_divergence(
+        decision_inputs,
+        case_kind=str(snapshot.case_kind or ""),
+        plan=correlated,
+    )
     return correlated, snapshot.model_copy(
-        update={"semantic_policy_plan_consistency": telemetry}
+        update={
+            "semantic_policy_plan_consistency": telemetry,
+            "decision_divergence_observation": divergence,
+        }
     )
 
 
@@ -659,25 +684,32 @@ _BRAIN1_OWNED_SNAPSHOT_FIELDS = (
     "case_understanding",
     "case_understanding_provenance",
     "policy_action_envelope",
+)
+_RUNTIME_OWNED_SNAPSHOT_FIELDS = (
     "semantic_policy_plan_consistency",
+    "decision_divergence_observation",
+)
+_PROTECTED_SNAPSHOT_FIELDS = (
+    *_BRAIN1_OWNED_SNAPSHOT_FIELDS,
+    *_RUNTIME_OWNED_SNAPSHOT_FIELDS,
 )
 
 
-def _strip_brain1_owned_fields(*, delta_source: Any, tool_name: str) -> Any:
-    """Central authority guard: a tool delta may never write upstream-owned fields.
+def _strip_protected_snapshot_fields(*, delta_source: Any, tool_name: str) -> Any:
+    """Central authority guard: a tool delta may never write protected fields.
 
     One place, not one check per tool: `_apply_tool_result` is the single point at which every
-    `ToolResult.snapshot_delta` reaches the snapshot, so a new tool cannot bypass this by
-    forgetting to opt in. Policy/action projection and consistency telemetry are authored by
-    the runtime around the planner, never by an individual tool.
+    `ToolResult.snapshot_delta` reaches the snapshot, so a new tool cannot bypass
+    this by forgetting to opt in. Brain 1 projections and runtime observations
+    are authored around the planner, never by an individual tool.
     """
     if not isinstance(delta_source, dict):
         return delta_source
-    blocked = [field for field in _BRAIN1_OWNED_SNAPSHOT_FIELDS if field in delta_source]
+    blocked = [field for field in _PROTECTED_SNAPSHOT_FIELDS if field in delta_source]
     if not blocked:
         return delta_source
     logger.warning(
-        "BRAIN1_FIELD_WRITE_REJECTED tool=%s fields=%s",
+        "PROTECTED_SNAPSHOT_FIELD_WRITE_REJECTED tool=%s fields=%s",
         tool_name,
         ",".join(blocked),
     )
@@ -697,7 +729,10 @@ def _apply_tool_result(
         return updated.model_copy(
             update={"hitl_gate": HitlGate(required=True, reason="node_a_error")}
         )
-    delta = _strip_brain1_owned_fields(delta_source=result.snapshot_delta, tool_name=plan.tool_name)
+    delta = _strip_protected_snapshot_fields(
+        delta_source=result.snapshot_delta,
+        tool_name=plan.tool_name,
+    )
     incoming_trace = (
         ((delta or {}).get("agent_memory") or {}).get("reasoning_trace")
         if isinstance(delta, dict)

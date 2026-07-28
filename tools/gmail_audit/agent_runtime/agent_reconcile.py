@@ -6,6 +6,7 @@ import uuid
 from typing import Any
 
 from agent_runtime.database_url import resolve_mailbox_memory_database_url
+from agent_runtime.decision_divergence import build_decision_comparison_inputs
 from agent_runtime.engagement_resolver import (
     EngagementResolution,
     extract_case_id_from_signal,
@@ -632,6 +633,10 @@ def run_agent_reconcile(
                 message_id=str(agent_signal.get("message_id") or ""),
             )
             agent_signal["case_understanding_provenance"] = build_case_understanding_provenance_projection(
+                case_intelligence_result,
+                message_id=str(agent_signal.get("message_id") or ""),
+            )
+            agent_signal["decision_comparison_inputs"] = build_decision_comparison_inputs(
                 case_intelligence_result,
                 message_id=str(agent_signal.get("message_id") or ""),
             )

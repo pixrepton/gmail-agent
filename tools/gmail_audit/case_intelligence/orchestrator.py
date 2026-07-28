@@ -117,6 +117,7 @@ def build_case_intelligence(
         "stage_name": "case_intelligence", "shadow_only": True,
         "input_primary_action": str((action_plan_result or {}).get("primary_action") or ""),
         "input_business_next_action": str((business_result or {}).get("recommended_next_action") or ""),
+        "input_reply_draft_enabled": bool((reply_result or {}).get("draft_enabled")),
         "input_case_link_decision": str((case_link_result or {}).get("decision") or ""),
     }
     return normalized

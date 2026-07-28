@@ -225,6 +225,116 @@
       "title": "CaseUnderstandingProvenance",
       "type": "object"
     },
+    "DecisionDivergenceObservationV1": {
+      "additionalProperties": false,
+      "description": "Detection-only comparison of existing decision views and the selected tool.\n\nDifferent literals are not automatically conflicts: the three action surfaces\nand the two case-type surfaces have different owners and no exhaustive mapping.",
+      "properties": {
+        "schema_version": {
+          "const": "decision_divergence_observation.v1",
+          "default": "decision_divergence_observation.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "divergence_detected",
+            "not_evaluable",
+            "missing_inputs"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "action_tree_status": {
+          "enum": [
+            "divergence_detected",
+            "same_literal",
+            "not_evaluable",
+            "missing_inputs"
+          ],
+          "title": "Action Tree Status",
+          "type": "string"
+        },
+        "case_typing_status": {
+          "enum": [
+            "same_literal",
+            "different_unmapped_literals",
+            "missing_inputs"
+          ],
+          "title": "Case Typing Status",
+          "type": "string"
+        },
+        "tool_relation_status": {
+          "enum": [
+            "not_evaluable",
+            "missing_inputs"
+          ],
+          "title": "Tool Relation Status",
+          "type": "string"
+        },
+        "reason_codes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reason Codes",
+          "type": "array"
+        },
+        "source_signal_id": {
+          "default": "",
+          "title": "Source Signal Id",
+          "type": "string"
+        },
+        "business_recommended_action": {
+          "default": "",
+          "title": "Business Recommended Action",
+          "type": "string"
+        },
+        "action_planner_primary_action": {
+          "default": "",
+          "title": "Action Planner Primary Action",
+          "type": "string"
+        },
+        "next_best_action_type": {
+          "default": "",
+          "title": "Next Best Action Type",
+          "type": "string"
+        },
+        "reply_draft_enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reply Draft Enabled"
+        },
+        "case_family": {
+          "default": "",
+          "title": "Case Family",
+          "type": "string"
+        },
+        "case_kind": {
+          "default": "",
+          "title": "Case Kind",
+          "type": "string"
+        },
+        "tool_name": {
+          "default": "",
+          "title": "Tool Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "action_tree_status",
+        "case_typing_status",
+        "tool_relation_status"
+      ],
+      "title": "DecisionDivergenceObservationV1",
+      "type": "object"
+    },
     "FeedVisibility": {
       "additionalProperties": false,
       "description": "SLICE-2B: routing/projection metadata deciding operator MAIN-feed membership.\n\nThis is NOT a new semantic truth about the case — it records how the signal was routed and\nwhy, so `snapshot exists` stops implying `belongs in the operator feed`. Optional and\nadditive: snapshots written before this slice validate unchanged and are treated as\n`main_feed` by an explicit legacy fallback.",
@@ -843,6 +953,17 @@
       "anyOf": [
         {
           "$ref": "#/$defs/SemanticPolicyPlanConsistencyV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "decision_divergence_observation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DecisionDivergenceObservationV1"
         },
         {
           "type": "null"
