@@ -901,8 +901,11 @@ def create_app(
             return {"ok": False, "error": str(exc)[:200]}
 
     @app.post("/system/patterns/discover")
-    def discover_patterns() -> dict[str, Any]:
+    def discover_patterns(
+        principal=Depends(_require_mutation_principal),  # noqa: B008 — D1 default-deny gate
+    ) -> dict[str, Any]:
         """Uruchom pattern discovery i zwroc propozycje nowych regexow."""
+        _ = principal
         from pattern_discovery import PatternDiscovery
         from mailbox_memory_runtime import build_mailbox_memory_runtime as _build
         import psycopg
@@ -1518,7 +1521,15 @@ def create_app(
             conn.close()
 
     @app.post("/cases/{case_id}/skrzat/ask")
-    def skrzat_ask(case_id: str, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    def skrzat_ask(
+        case_id: str,
+        payload: dict[str, Any] = Body(default_factory=dict),
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Read-only for the case (no writes), but triggers a real LLM call --
+        bounded by the same registry/internal bearer as attachment downloads."""
+        if not verify_registry_bearer(authorization):
+            raise HTTPException(status_code=401, detail="Registry bearer token required.")
         query_text = str(payload.get("query_text") or "")
         contract = _context_contract(get_runtime, case_id=case_id, query_text=query_text)
         try:

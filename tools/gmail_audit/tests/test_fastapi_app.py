@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -62,10 +63,15 @@ def test_fastapi_read_only_case_context_routes() -> None:
         assert trays.json()["read_only"] is True
         assert trays.json()["gaps_tray"]
 
-        skrzat = client.post(
-            "/cases/case_api_1/skrzat/ask",
-            json={"question": "Czego brakuje?", "mode": "investigate"},
-        )
+        os.environ["NODE_B_REGISTRY_TOKEN"] = "test-registry-token"
+        try:
+            skrzat = client.post(
+                "/cases/case_api_1/skrzat/ask",
+                json={"question": "Czego brakuje?", "mode": "investigate"},
+                headers={"Authorization": "Bearer test-registry-token"},
+            )
+        finally:
+            os.environ.pop("NODE_B_REGISTRY_TOKEN", None)
         assert skrzat.status_code == 200
         answer = skrzat.json()
         assert answer["schema_version"] == "conversation_answer_envelope.v1"

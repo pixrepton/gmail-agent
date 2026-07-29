@@ -55,14 +55,21 @@ def run_skrzat_bounded_proof(
     try:
         from fastapi.testclient import TestClient
 
+        from correlation_registry.auth import registry_token_configured
+
         app = create_app(
             runtime_provider=lambda: runtime,
             cohort_reader=lambda _rid: None,
         )
         client = TestClient(app)
+        headers: dict[str, str] = {}
+        token = registry_token_configured()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         resp = client.post(
             f"/cases/{case_id}/skrzat/ask",
             json={"question": question, "mode": mode, "query_text": question},
+            headers=headers,
         )
         http_status = resp.status_code
         if resp.status_code != 200:

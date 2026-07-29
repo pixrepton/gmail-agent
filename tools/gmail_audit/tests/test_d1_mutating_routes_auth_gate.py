@@ -14,6 +14,14 @@ already proven for /engagements/*/hitl/approve, /materialize/approve and
 /agent-chat (see test_auth02_auth03_mutation_gate.py): no configured
 credential must reject the request (not admit it), and a client-supplied
 identity field in the body must never override the verified principal.
+
+Also covers 2 routes found unauthenticated in the 2026-07-29 repair pass:
+
+  * POST /system/patterns/discover -- writes learning_rule_candidates rows.
+  * POST /cases/{case_id}/skrzat/ask -- read-only for the case, but triggers
+    a real (costed) LLM call, so it is bounded by the registry/internal
+    bearer used elsewhere for bounded reads (see case_attachment_download)
+    rather than the heavier mutation-principal gate.
 """
 
 from __future__ import annotations
@@ -509,6 +517,103 @@ class TestBindingSuggestionStatusAuth:
         assert second.status_code == 404
         assert len(registry.store.merge_logs) == 1
         assert registry.store.merge_logs[0]["operator_id"] == "operator"
+
+
+# ── Route 5: POST /system/patterns/discover ─────────────────────────────────
+
+
+class TestPatternsDiscoverAuth:
+    ROUTE = "/system/patterns/discover"
+
+    def test_no_token_configured_is_default_deny(self) -> None:
+        client = _make_client()
+        _clear_all_tokens()
+        with patch("pattern_discovery.PatternDiscovery") as mock_pd:
+            response = client.post(self.ROUTE)
+        assert response.status_code == 401
+        mock_pd.assert_not_called()
+
+    def test_token_configured_missing_header_rejected(self) -> None:
+        client = _make_client()
+        _clear_all_tokens()
+        os.environ["DASZEK_NODE_B_API_TOKEN"] = "good-token"
+        try:
+            with patch("pattern_discovery.PatternDiscovery") as mock_pd:
+                response = client.post(self.ROUTE)
+        finally:
+            os.environ.pop("DASZEK_NODE_B_API_TOKEN", None)
+        assert response.status_code == 401
+        mock_pd.assert_not_called()
+
+    def test_token_configured_bad_bearer_rejected(self) -> None:
+        client = _make_client()
+        _clear_all_tokens()
+        os.environ["DASZEK_NODE_B_API_TOKEN"] = "good-token"
+        try:
+            with patch("pattern_discovery.PatternDiscovery") as mock_pd:
+                response = client.post(self.ROUTE, headers=_auth_headers("bad-token"))
+        finally:
+            os.environ.pop("DASZEK_NODE_B_API_TOKEN", None)
+        assert response.status_code == 401
+        mock_pd.assert_not_called()
+
+    def test_valid_bearer_reaches_handler(self) -> None:
+        client = _make_client()
+        _clear_all_tokens()
+        os.environ["DASZEK_NODE_B_API_TOKEN"] = "good-token"
+        try:
+            with patch("pattern_discovery.PatternDiscovery") as mock_pd_cls:
+                mock_pd_cls.return_value.run_discovery.return_value = [{"proposed_regex": "x"}]
+                with patch("psycopg.connect"):
+                    response = client.post(self.ROUTE, headers=_auth_headers("good-token"))
+        finally:
+            os.environ.pop("DASZEK_NODE_B_API_TOKEN", None)
+        assert response.status_code == 200
+        assert response.json()["ok"] is True
+        mock_pd_cls.return_value.run_discovery.assert_called_once()
+
+
+# ── Route 6: POST /cases/{case_id}/skrzat/ask ───────────────────────────────
+
+
+class TestSkrzatAskAuth:
+    ROUTE = "/cases/case_1/skrzat/ask"
+
+    def test_no_token_configured_is_default_deny(self) -> None:
+        client = _make_client()
+        _clear_all_tokens()
+        with patch("api_app._context_contract") as mock_contract:
+            response = client.post(self.ROUTE, json={"question": "Co dalej?"})
+        assert response.status_code == 401
+        mock_contract.assert_not_called()
+
+    def test_token_configured_missing_header_rejected(self) -> None:
+        client = _make_client()
+        _clear_all_tokens()
+        os.environ["NODE_B_REGISTRY_TOKEN"] = "good-token"
+        try:
+            with patch("api_app._context_contract") as mock_contract:
+                response = client.post(self.ROUTE, json={"question": "Co dalej?"})
+        finally:
+            os.environ.pop("NODE_B_REGISTRY_TOKEN", None)
+        assert response.status_code == 401
+        mock_contract.assert_not_called()
+
+    def test_token_configured_bad_bearer_rejected(self) -> None:
+        client = _make_client()
+        _clear_all_tokens()
+        os.environ["NODE_B_REGISTRY_TOKEN"] = "good-token"
+        try:
+            with patch("api_app._context_contract") as mock_contract:
+                response = client.post(
+                    self.ROUTE,
+                    json={"question": "Co dalej?"},
+                    headers=_auth_headers("bad-token"),
+                )
+        finally:
+            os.environ.pop("NODE_B_REGISTRY_TOKEN", None)
+        assert response.status_code == 401
+        mock_contract.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -45,16 +46,21 @@ def run_smoke(*, json_out: bool = False) -> int:
 
     from unittest.mock import patch
 
-    with patch("api_app.registry_token_configured", return_value=False):
-        app = create_app(runtime_provider=lambda: _FixtureRuntime(), cohort_reader=lambda _rid: None)
-        client = TestClient(app)
+    os.environ["NODE_B_REGISTRY_TOKEN"] = "smoke-registry-token"
+    try:
+        with patch("api_app.registry_token_configured", return_value=False):
+            app = create_app(runtime_provider=lambda: _FixtureRuntime(), cohort_reader=lambda _rid: None)
+            client = TestClient(app)
 
-        health = client.get("/health")
-        trays = client.get("/cases/smoke_case_1/context-trays")
-        skrzat = client.post(
-            "/cases/smoke_case_1/skrzat/ask",
-            json={"question": "Czego brakuje w sprawie?", "mode": "ask"},
-        )
+            health = client.get("/health")
+            trays = client.get("/cases/smoke_case_1/context-trays")
+            skrzat = client.post(
+                "/cases/smoke_case_1/skrzat/ask",
+                json={"question": "Czego brakuje w sprawie?", "mode": "ask"},
+                headers={"Authorization": "Bearer smoke-registry-token"},
+            )
+    finally:
+        os.environ.pop("NODE_B_REGISTRY_TOKEN", None)
 
     errors: list[str] = []
     if health.status_code != 200 or health.json().get("mode") not in {"read_only", "read_mostly"}:

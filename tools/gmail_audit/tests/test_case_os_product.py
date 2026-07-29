@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -81,11 +82,16 @@ def test_p1_skrzat_returns_rag_advisory_and_lineage() -> None:
     }
     app = create_app(runtime_provider=lambda: _Runtime(), cohort_reader=lambda _r: None, registry_provider=lambda: None)
     client = TestClient(app)
-    with patch("skrzat_copilot.assemble_skrzat_context_audit", return_value=fake_assembled):
-        resp = client.post(
-            "/cases/case_product_1/skrzat/ask",
-            json={"question": "Czego brakuje?", "mode": "ask"},
-        )
+    os.environ["NODE_B_REGISTRY_TOKEN"] = "test-registry-token"
+    try:
+        with patch("skrzat_copilot.assemble_skrzat_context_audit", return_value=fake_assembled):
+            resp = client.post(
+                "/cases/case_product_1/skrzat/ask",
+                json={"question": "Czego brakuje?", "mode": "ask"},
+                headers={"Authorization": "Bearer test-registry-token"},
+            )
+    finally:
+        os.environ.pop("NODE_B_REGISTRY_TOKEN", None)
     assert resp.status_code == 200
     body = resp.json()
     assert body.get("context_pack_lineage", {}).get("case_id") == "case_product_1"
