@@ -33,6 +33,10 @@ def test_p1_rag_advisory_slice_from_assembled_context() -> None:
     assert slice_["company_knowledge_chunks"] == 1
     assert slice_["case_facts_count"] == 1
     assert slice_["boundary"] == "D1_advisory_only"
+    # No caller ever wired the cross-repo core_chat.unified_pipeline import (it always
+    # returned {} silently, since gmail-agent's PYTHONPATH never includes the separate
+    # rag-chat-asystent repo) -- removed rather than left as dead, always-empty output.
+    assert "unified_pipeline" not in slice_
 
 
 def test_p2_merge_decision_view_includes_pipeline_proposals() -> None:
