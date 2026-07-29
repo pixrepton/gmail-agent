@@ -8,7 +8,6 @@ fetch_cases() audit (Phase 1):
   - drive_case_linker.link_drive_candidate — filtered
   - gmail_intake cohort context-pack path — filtered
   - event_spine/health_monitor._detect_risk_stale_engagements — filtered
-  - agent_runtime/lifecycle_monitor._find_cases_in_state_over_hours — filtered (dict rows)
   - agent_runtime/business_pulse — SQL ACTIVE_CUSTOMER_CASES_SQL_WHERE
   - agent_runtime/business_pulse.get_agent_health — connectivity probe only (limit=1)
   - mailbox_memory store protocol — unfiltered (callers apply boundary)
