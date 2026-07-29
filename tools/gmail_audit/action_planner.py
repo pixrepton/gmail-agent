@@ -281,7 +281,12 @@ def _reasoning_blockers(
             )
     cal = cp.get("calendar") if isinstance(cp.get("calendar"), dict) else {}
     risk = str(cal.get("calendar_risk") or "")
-    if risk in {"possible_conflict", "needs_scheduling_review"}:
+    # calendar_runtime.infer_calendar_risk only ever emits calendar_event_exists,
+    # customer_proposed_date, or calendar_event_missing today; possible_conflict is a
+    # declared-but-not-yet-detected future state (CALENDAR_RISKS) kept here so wiring it
+    # up later needs no planner change. customer_proposed_date is the real, reachable risk:
+    # a customer named a date but nothing on the calendar confirms it yet.
+    if risk in {"possible_conflict", "customer_proposed_date"}:
         blockers.append({"kind": "calendar risk", "label": risk, "severity": "high"})
     for claim in (business_result or {}).get("unsupported_claims") or []:
         text = str(claim or "").strip()

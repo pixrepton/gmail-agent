@@ -13,7 +13,6 @@ CALENDAR_RISKS = (
     "calendar_event_missing",
     "customer_proposed_date",
     "possible_conflict",
-    "needs_scheduling_review",
 )
 
 

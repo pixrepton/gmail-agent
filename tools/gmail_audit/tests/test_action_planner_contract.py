@@ -110,6 +110,32 @@ class ActionPlannerContractTests(unittest.TestCase):
         joined = " | ".join(result["operator_checklist"])
         self.assertIn("unconfirmed claim", joined)
 
+    def test_customer_proposed_date_without_confirmed_event_blocks_review(self) -> None:
+        # infer_calendar_risk (calendar_runtime.py) only ever emits calendar_event_exists,
+        # customer_proposed_date, or calendar_event_missing -- it never emits
+        # "possible_conflict"/"needs_scheduling_review", so the blocker check must react to
+        # the state that is actually reachable: a customer proposed a date but nothing on
+        # the calendar confirms it yet.
+        result = plan_actions(
+            {
+                "decision": {"action": "reply"},
+                "review_required": False,
+                "confidence": {"decision_confidence": 0.9, "case_link_confidence": 0.9},
+            },
+            {"decision": "linked", "confidence": 0.9},
+            {
+                "recommended_next_action": "reply",
+                "urgency": "normal",
+                "confidence": {"action_confidence": 0.9},
+            },
+            {},
+            case_context_pack={"calendar": {"calendar_risk": "customer_proposed_date"}},
+        )
+        joined = " | ".join(result["operator_checklist"])
+        self.assertEqual(result["review_priority"], "high")
+        self.assertFalse(result["safe_for_live_push"])
+        self.assertIn("calendar", joined)
+
 
 if __name__ == "__main__":
     unittest.main()
