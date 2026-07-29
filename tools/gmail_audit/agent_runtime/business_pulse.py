@@ -121,7 +121,7 @@ def get_pipeline_summary(store: Any, settings: Any) -> dict[str, Any]:
             top_items.append({
                 "case_id": r[0] if not isinstance(r, dict) else r.get("case_id", ""),
                 "client": str(r[1] if not isinstance(r, dict) else r.get("customer_name", "") or ""),
-                "value_pln": 0,
+                "value_pln": None,  # no per-case monetary column exists yet (see pipeline.value_tracking)
                 "stage": str(r[4] if not isinstance(r, dict) else r.get("stage", "") or ""),
             })
 
@@ -136,7 +136,10 @@ def get_pipeline_summary(store: Any, settings: Any) -> dict[str, Any]:
         pipeline = {
             "active_cases": int(total),
             "offers_in_progress": offers_in_progress,
-            "total_value_pln": 0,
+            # No table persists a per-case monetary value today (pricing/OfferDTO is
+            # kalk-top's SoT, not gmail-agent's) -- untracked, not zero.
+            "total_value_pln": None,
+            "value_tracking": "not_implemented",
             "cases_by_stage": by_status,
             "top_3_by_value": top_items,
         }
@@ -195,7 +198,8 @@ def _fallback_from_dash_projection(settings: Any) -> dict[str, Any] | None:
                 "active_cases": cases_count,
                 "offers_in_progress": offers_count,
                 "desk_active_count": desk_count,
-                "total_value_pln": 0,
+                "total_value_pln": None,
+                "value_tracking": "not_implemented",
                 "cases_by_stage": {},
                 "top_3_by_value": [],
                 "source": "operational_feed_projection",
@@ -364,7 +368,9 @@ def get_win_rate(store: Any, settings: Any) -> dict[str, Any]:
             "lost": lost,
             "in_progress": int(by_status.get("active", 0)),
             "rate_pct": rate,
-            "trend": "stable"
+            # No prior-period snapshot is compared against, so no trend can be
+            # computed honestly yet -- untracked, not a claimed "stable".
+            "trend": None,
         }
     except Exception as exc:
         result = {"ok": False, "error": str(exc)}
@@ -416,8 +422,10 @@ def get_top_clients(store: Any, settings: Any) -> dict[str, Any]:
 
             result["top_clients"].append({
                 "client_name": name,
-                "pipeline_value_pln": 0,
-                "active_offers": 1,
+                # No monetary column and no per-client offer count are computed
+                # yet -- untracked, not a fabricated value_pln=0/active_offers=1.
+                "pipeline_value_pln": None,
+                "active_offers": None,
                 "status": status,
                 "days_since_contact": max(0, days),
             })
@@ -437,13 +445,29 @@ def get_revenue_forecast(store: Any, settings: Any) -> dict[str, Any]:
     win = get_win_rate(store, settings)
     rate = win.get("win_rate", {}).get("rate_pct", 50) if win.get("ok") else 50
 
-    pipeline_val = 0
+    pipeline_val = None
     try:
         pipe = get_pipeline_summary(store, settings)
         if pipe.get("ok"):
-            pipeline_val = pipe.get("pipeline", {}).get("total_value_pln", 0)
+            pipeline_val = pipe.get("pipeline", {}).get("total_value_pln")
     except Exception:
-        pipeline_val = 85000  # fallback placeholder
+        pipeline_val = None
+
+    if pipeline_val is None:
+        # No real pipeline value exists to forecast from -- untracked, not a
+        # fabricated number derived from a hardcoded fallback.
+        return {
+            "ok": True,
+            "forecast": {
+                "pipe_pln": None,
+                "confident_pln": None,
+                "probable_pln": None,
+                "potential_pln": None,
+                "total_forecast_pln": None,
+                "method": f"pipeline x {rate}% win_rate",
+                "value_tracking": "not_implemented",
+            },
+        }
 
     forecast = pipeline_val * rate / 100
 
