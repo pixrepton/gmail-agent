@@ -126,6 +126,23 @@ class QuotedCustomerTextIsNotTreatedAsOwnCommitment(unittest.TestCase):
         self.assertIn("sprawa jest pilna", body)
         self.assertNotIn("Gwarantujemy", body)
 
+    def test_unattributed_quotes_do_not_shield_the_companys_own_unsupported_claim(self) -> None:
+        """Quote characters alone are not customer attribution: an LLM can wrap
+        its OWN guarantee in quotes (for emphasis or to evade the gate) without
+        ever attributing it to the customer's message. Only a quoted span that
+        is actually preceded by an attribution cue (``napisali Panstwo``,
+        ``cytujac Panstwa`` etc.) may be exempted."""
+        text = 'Dzien dobry. "Gwarantujemy najlepsza cene na rynku." Pozdrawiamy.'
+        result = gate_reply_draft_commitments(_parsed(text), case_state={})
+        body = result["drafts"][0]["body"].lower()
+        self.assertNotIn("gwarantujemy", body)
+
+    def test_unattributed_quoted_scheduled_visit_claim_is_still_rewritten(self) -> None:
+        text = 'Potwierdzamy: "wizyta jest juz umowiona na jutro".'
+        result = gate_reply_draft_commitments(_parsed(text), case_state={"visit_confirmed": False})
+        body = result["drafts"][0]["body"].lower()
+        self.assertNotIn("umowiona", body)
+
 
 class RealAuthoritativeEvidenceIsConsulted(unittest.TestCase):
     """The gate must not treat "no dedicated boolean field" as proof no

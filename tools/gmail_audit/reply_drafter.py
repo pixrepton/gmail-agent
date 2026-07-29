@@ -236,6 +236,28 @@ _COMMITMENT_PATTERNS: tuple[tuple[re.Pattern[str], str, str], ...] = (
 # is making, and must never be rewritten as if it were the company's own claim.
 _QUOTED_SPAN = re.compile(r'"[^"]*"|„[^”"]*[”"]')
 
+# Quote characters alone are not proof of customer attribution: an LLM can wrap
+# its OWN guarantee in quotes (for emphasis, or to evade the gate) without ever
+# attributing it to the customer's message. A quoted span is only exempted from
+# rewriting when it is actually preceded, within a short lookback window, by an
+# explicit attribution cue naming the customer as the source of those words.
+_CUSTOMER_ATTRIBUTION = re.compile(
+    r"napisal\w*|napisali\w*|cytuj\w*|w (?:panstwa|twojej) wiadomosci|panstwa slowami",
+    re.IGNORECASE,
+)
+_ATTRIBUTION_LOOKBACK = 100
+
+
+def _attributed_quoted_spans(text: str) -> list[tuple[int, int]]:
+    """Quoted spans whose preceding text actually attributes them to the customer."""
+    spans: list[tuple[int, int]] = []
+    for match in _QUOTED_SPAN.finditer(text):
+        window_start = max(0, match.start() - _ATTRIBUTION_LOOKBACK)
+        preceding = text[window_start : match.start()]
+        if _CUSTOMER_ATTRIBUTION.search(preceding):
+            spans.append((match.start(), match.end()))
+    return spans
+
 
 def _gate_commitment_text(text: str, *, case_state: dict[str, Any]) -> tuple[str, list[str]]:
     reasons: list[str] = []
@@ -244,7 +266,7 @@ def _gate_commitment_text(text: str, *, case_state: dict[str, Any]) -> tuple[str
         supported = bool(case_state.get(required_state_key)) if required_state_key else False
         if supported:
             continue
-        quoted_spans = [(m.start(), m.end()) for m in _QUOTED_SPAN.finditer(out)]
+        quoted_spans = _attributed_quoted_spans(out)
 
         def _replace(
             match: "re.Match[str]", _replacement: str = replacement, _spans: list[tuple[int, int]] = quoted_spans
