@@ -1919,7 +1919,11 @@ def split_conflicting_facts(facts: list[dict[str, Any]]) -> tuple[list[dict[str,
     active: list[dict[str, Any]] = []
     conflicts: list[dict[str, Any]] = []
     for (entity_scope, fact_key), items in grouped.items():
-        ranked = sorted(items, key=lambda item: (-float(item.get("confidence") or 0.0), str(item.get("observed_at") or "")))
+        # Two stable passes: newest-first, then confidence-descending. A stable
+        # sort preserves the newest-first order among ties, so a confidence tie
+        # keeps the most recently observed fact active instead of the oldest.
+        ranked = sorted(items, key=lambda item: str(item.get("observed_at") or ""), reverse=True)
+        ranked = sorted(ranked, key=lambda item: float(item.get("confidence") or 0.0), reverse=True)
         if ranked:
             active.append(ranked[0])
         values = {str(item.get("normalized_value") or "").strip() for item in items if str(item.get("normalized_value") or "").strip()}
