@@ -365,8 +365,9 @@ def _missing_fields(missing: dict[str, Any], business: dict[str, Any]) -> list[s
 def _facts_invalidated(pack: dict[str, Any]) -> list[dict[str, Any]]:
     """SLICE-1 (B5): supersessions that already exist in the real fact contract.
 
-    `mailbox_memory_facts` has no status column, so there is no `stale`/`rejected` flag to read.
-    The contract's actual invalidation semantics live in
+    `mailbox_memory_facts.status` exists in the schema (default `'active'`) but no writer ever
+    sets it to anything else and no reader ever filters on it -- it carries no `stale`/`rejected`
+    signal in practice. The contract's actual invalidation semantics live in
     `mailbox_memory_runtime.split_conflicting_facts`: for one `(entity_scope, fact_key)` it keeps
     `ranked[0]` (highest confidence, then `observed_at`) as the active fact and reports the whole
     value set as a conflict. Any conflicted value that is not the active one is therefore
