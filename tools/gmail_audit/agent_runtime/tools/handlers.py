@@ -317,7 +317,6 @@ def _run_llm_extraction(ctx: ToolExecutionContext, text: str) -> dict[str, Any] 
     try:
         from signal_extractor import run_signal_extraction
         from intake_payload import coerce_source_snapshot
-        from config import load_settings
 
         sp = ctx.signal_payload or {}
         snap = coerce_source_snapshot({"source_message": {
@@ -327,7 +326,11 @@ def _run_llm_extraction(ctx: ToolExecutionContext, text: str) -> dict[str, Any] 
             "from": sp.get("customer_email", ""),
             "message_id": sp.get("message_id", ""),
         }})
-        settings = load_settings(require_groq=False, require_google=False)
+        settings = ctx.settings
+        if settings is None:
+            from config import load_settings
+
+            settings = load_settings(require_groq=False, require_google=False)
 
         def _call():
             return run_signal_extraction(
@@ -420,7 +423,7 @@ def extract_facts_from_text(_plan: ToolCallPlan, ctx: ToolExecutionContext) -> T
         cid = ctx.snapshot.case_id or ctx.signal_payload.get("case_id", "") or ""
         return ToolResult(
             status="error",
-            turn_summary_pl=f"Sprawa {cid} istnieje. Nie wywoluj extract_facts_from_text. Uzyj propose_mutation z update_case_status lub schedule_visit.",
+            turn_summary_pl=f"Sprawa {cid} istnieje. Nie wywoluj extract_facts_from_text. Uzyj search_rag_knowledge, propose_mutation albo przygotuj draft dla operatora.",
         )
     text = _collect_source_text(ctx)
     if not text.strip():
@@ -639,19 +642,6 @@ def request_operator_clarification(plan: ToolCallPlan, ctx: ToolExecutionContext
     )
 
 
-def request_human_handoff(plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolResult:
-    """Oznacz, ze agent nie moze obsluzyc i potrzeba czlowieka."""
-    reason = str(plan.arguments.get("reason") or ctx.snapshot.operational_status.code or "").strip()
-    return ToolResult(
-        status="ok",
-        turn_summary_pl=f"Przekazuje do recznego przetworzenia. Powod: {reason or 'Brak informacji'}.",
-        snapshot_delta={
-            "operational_status": {"code": "pending_operator", "blocking": True},
-            "hitl_gate": {"required": True, "reason": f"human_handoff: {reason}"},
-        },
-    )
-
-
 def report_gaps_and_stop(_plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolResult:
     gaps = [g.model_dump(mode="python") for g in ctx.snapshot.gaps]
     if not gaps:
@@ -765,109 +755,16 @@ def retry_hard_parse(plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolResul
     except Exception as exc:  # noqa: BLE001
         logger.error("Tool execution failed: retry_hard_parse", exc_info=True)
         return ToolResult(status="error", turn_summary_pl=f"retry_hard_parse failed: {exc}")
-
-
-def query_anything(plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolResult:
-    """Generyczny prymityw czytania — agent pyta o cokolwiek, system odpowiada z dostępnych źródeł."""
-    query = str(plan.arguments.get("query") or "").strip()
-    if not query:
-        return ToolResult(status="error", turn_summary_pl="query jest wymagane.")
-
-    sources_requested = plan.arguments.get("sources") or ["rag", "temporal", "similar", "mail"]
-    if isinstance(sources_requested, str):
-        sources_requested = [sources_requested]
-
-    results: dict[str, str] = {}
-    store = ctx.mailbox_store
-
-    # 1. RAG — wiedza firmowa
-    if "rag" in sources_requested:
-        try:
-            if store is not None:
-                fetch = getattr(store, "fetch_semantic_chunk_candidates_for_case", None)
-                if callable(fetch):
-                    rows = fetch(ctx.snapshot.case_id, query_text=query, limit=5) or []
-                    hits = [str(r.get("chunk_text") or "")[:160] for r in rows if isinstance(r, dict)]
-                    results["rag"] = f"{len(hits)} fragmentów: " + "; ".join(hits[:3])
-                else:
-                    results["rag"] = "Brak dostępu do RAG."
-            else:
-                results["rag"] = "Brak mailbox store — RAG pominięty."
-        except Exception as exc:
-            results["rag"] = f"RAG błąd: {exc}"
-
-    # 2. Temporal — fakty o encjach
-    if "temporal" in sources_requested:
-        try:
-            from agent_runtime.temporal_recall import recall_temporal_fact
-
-            row = recall_temporal_fact(entity_id=ctx.snapshot.case_id, fact_key="summary", limit=10)
-            if row and str(row.get("value") or "").strip():
-                results["temporal"] = str(row.get("value", ""))[:300]
-            else:
-                results["temporal"] = "Brak faktów temporalnych."
-        except Exception as exc:
-            results["temporal"] = f"Temporal błąd: {exc}"
-
-    # 3. Similar Cases — precedensy
-    if "similar" in sources_requested:
-        try:
-            from similar_cases_precedent import find_similar_cases
-
-            rows = find_similar_cases(ctx.snapshot.case_id, limit=5)
-            labels = [str(r.get("case_id") or "")[:16] for r in rows[:3]]
-            results["similar"] = f"{len(rows)} podobnych spraw: " + ", ".join(labels) if labels else "Brak podobnych spraw."
-        except Exception as exc:
-            results["similar"] = f"Similar błąd: {exc}"
-
-    # 4. Mailbox — kontekst sprawy
-    if "mail" in sources_requested:
-        try:
-            if store is not None:
-                fetch = getattr(store, "fetch_messages_for_case", None)
-                if callable(fetch):
-                    messages = fetch(ctx.snapshot.case_id, limit=5) or []
-                    subjects = [str(m.get("subject") or "")[:120] for m in messages if isinstance(m, dict)]
-                    results["mail"] = f"{len(messages)} wiadomości: " + "; ".join(subjects[:3])
-                else:
-                    results["mail"] = "Brak dostępu do wiadomości."
-            else:
-                results["mail"] = "Brak mailbox store."
-        except Exception as exc:
-            results["mail"] = f"Mail błąd: {exc}"
-
-    total = sum(1 for v in results.values() if not v.startswith("Brak"))
-    return ToolResult(
-        status="ok",
-        turn_summary_pl=f"query_anything: {query[:80]} — {total} źródeł odpowiedziało.",
-        snapshot_delta={
-            "agent_memory": {
-                "reasoning_trace": [{"turn": 0, "summary_pl": f"query_anything: {query[:120]} — wyniki: {dict(results)}"}],
-            },
-        },
-    )
-
-
 _PROPOSAL_ARG_SCHEMAS: dict[str, dict[str, Any]] = {
     # create_case: wymaga minimum customer_email lub name
     "create_case": {
         "required_fields": [],  # Wszystkie opcjonalne — case_id może być auto
         "optional_fields": {"customer_email", "customer_name", "case_family", "email", "name", "family"},
     },
-    # send_email: wymaga adresata
-    "send_email": {
-        "required_one_of": [{"to", "recipient"}],
-        "optional_fields": {"subject", "body", "message", "case_id"},
-    },
     # generate_draft: wymaga case_id
     "generate_draft": {
         "required_one_of": [{"case_id", "target"}],
         "optional_fields": {"to", "recipient", "subject", "body", "message"},
-    },
-    # schedule_visit: wymaga daty
-    "schedule_visit": {
-        "required_one_of": [{"date", "scheduled_date"}],
-        "optional_fields": {"case_id", "address", "visit_address", "technician", "assignee"},
     },
     # add_deadline: wymaga daty
     "add_deadline": {
@@ -1088,8 +985,6 @@ HANDLERS: dict[str, Callable[[ToolCallPlan, ToolExecutionContext], ToolResult]] 
     "search_gmail_thread": search_gmail_thread,
     "list_drive_folder": list_drive_folder,
     "generate_draft_reply": generate_draft_reply,
-    # Generyczne prymitywy (Generic Hands)
-    "query_anything": query_anything,
     "propose_mutation": propose_mutation,
     "propose_plan": propose_plan,
     # Domain-specific (wymagają specyficznej logiki — nie da się uogólnić)
@@ -1099,7 +994,6 @@ HANDLERS: dict[str, Callable[[ToolCallPlan, ToolExecutionContext], ToolResult]] 
     "call_kalk_top_quote": call_kalk_top_quote,
     "request_operator_clarification": request_operator_clarification,
     "report_gaps_and_stop": report_gaps_and_stop,
-    "request_human_handoff": request_human_handoff,
     "retry_hard_parse": retry_hard_parse,
     # Wyszukiwanie RAG (I4: GENERAL_GATEWAY_SYSTEM_NOTE referencjonuje to narzedzie)
     "search_rag_knowledge": search_rag_knowledge,

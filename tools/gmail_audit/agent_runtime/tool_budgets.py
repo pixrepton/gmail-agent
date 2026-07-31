@@ -1,7 +1,6 @@
 """Per-tool invocation budgets for one AgentRun (PR-C).
 
 Tylko narzędzia w HANDLERS — stare, skonsolidowane narzędzia usunięte.
-query_anything jest bez limitu (generyczne czytanie).
 """
 
 from __future__ import annotations

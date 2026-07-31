@@ -256,6 +256,10 @@ def reconcile_signal(
         }})
         return result
     except Exception as exc:
+        failure_code = str(getattr(exc, "failure_code", "") or "signal_reconcile_failed")
+        retryable = bool(getattr(exc, "retryable", False))
+        severity = str(getattr(exc, "severity", "") or "attention_required")
+        exception_class = str(getattr(exc, "exception_class", "") or type(exc).__name__)
         logger.error("SIGNAL_FAILED", extra={"x": {
             "signal_id": getattr(signal, "signal_id", ""),
             "source_kind": getattr(signal, "source_kind", ""),
@@ -264,7 +268,13 @@ def reconcile_signal(
             signal=signal,
             status="failed",
             error_text=str(exc),
-            details={"dry_run": dry_run},
+            details={
+                "dry_run": dry_run,
+                "failure_code": failure_code,
+                "retryable": retryable,
+                "severity": severity,
+                "exception_class": exception_class,
+            },
         )
         raise
 
@@ -895,7 +905,7 @@ def _reconcile_operator_command(
 
     Generic Hands / Agent-as-Gateway (I4):
     - Gdy case_id w payload jest pusty — czat ogólny.
-    - W czacie ogólnym agent uzywa query_anything do znalezienia kontekstu.
+    - W czacie ogólnym agent korzysta z wyspecjalizowanych read tools do znalezienia kontekstu.
     - NIE klasyfikuj intencji przez if/elif — agent sam decyduje.
     """
     from agent_runtime.agent_reconcile import (
@@ -923,7 +933,7 @@ def _reconcile_operator_command(
 
     if is_general_chat:
         # I4.1: Czat ogólny — nie ma docelowej sprawy
-        # Agent sam uzyje query_anything do znalezienia kontekstu
+        # Agent sam wybierze dopuszczalne narzedzie read do znalezienia kontekstu
         synthetic_intake["case_id"] = ""
         # Wstrzyknij system note dla czatu ogólnego
         try:

@@ -12,7 +12,6 @@ CHAT_AGENT_TOOL_ALLOWLIST = (
     "search_rag_knowledge",
     "call_kalk_top_quote",
     "generate_draft_reply",
-    "query_anything",
     "propose_mutation",
     "propose_plan",
     "read_google_drive_file",
@@ -39,7 +38,6 @@ CHAT_AGENT_TOOL_BUDGET = {
     "search_rag_knowledge": 99,
     "call_kalk_top_quote": 99,
     "generate_draft_reply": 10,
-    "query_anything": 999,
     "propose_mutation": 10,
     "propose_plan": 5,
     "read_google_drive_file": 5,
@@ -93,5 +91,5 @@ PAMIEC O OPERATORZE:
 WAZNE — gdy case_id jest obecny w kontekscie:
 - To jest FOLLOW-UP do istniejacej sprawy.
 - NIE wywoluj extract_facts_from_text — sprawa juz istnieje.
-- Jesli operator pyta o informacje — uzyj query_anything lub search_rag_knowledge.
+- Jesli operator pyta o informacje — uzyj search_rag_knowledge albo search_gmail_thread.
 """

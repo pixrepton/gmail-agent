@@ -22,7 +22,6 @@ TOOL_SCOPE_MAP: dict[str, SubAgentKind] = {
     # Policy tools
     "check_cp2025_eligibility": "policy",
     "search_rag_knowledge": "policy",
-    "query_anything": "policy",
     # Draft tools
     "generate_draft_reply": "draft",
 }

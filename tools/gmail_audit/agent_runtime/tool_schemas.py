@@ -20,7 +20,7 @@ def _all_operations() -> list[str]:
             "archive_case", "create_case", "delete_document",
             "generate_draft", "link_case_to_case", "merge_cases",
             "move_document", "reassign_case", "restore_case",
-            "schedule_visit", "send_email", "update_case_status",
+            "update_case_status",
             "update_customer_info",
         ]
 
@@ -64,14 +64,10 @@ def openai_tool_definitions(allowlist: tuple[str, ...]) -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "call_kalk_top_quote",
-                "description": "WYWOŁAJ TYLKO gdy sprawa ma case_id i potrzebujesz wyceny. NIE uzywaj dla nowego leada bez case_id. Najpierw utworz sprawe przez propose_mutation(operation=create_case).",
+                "description": "WYWOŁAJ TYLKO gdy sprawa ma case_id i potrzebujesz wyceny. Payload jest budowany wyłącznie z aktualnego snapshotu sprawy; model nie przekazuje własnych parametrów HVAC.",
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        "heated_area_m2": {"type": "number", "description": "Powierzchnia ogrzewana (m2)"},
-                        "location": {"type": "string", "description": "Miasto/miejscowosc"},
-                        "building_type": {"type": "string", "description": "Typ budynku"},
-                    },
+                    "properties": {},
                     "additionalProperties": False,
                 },
             },
@@ -114,31 +110,11 @@ def openai_tool_definitions(allowlist: tuple[str, ...]) -> list[dict[str, Any]]:
                 },
             },
         },
-        "query_anything": {
-            "type": "function",
-            "function": {
-                "name": "query_anything",
-                "description": "Zadaj pytanie do wszystkich źródeł wiedzy: RAG, pamięć temporalna, podobne sprawy, kontekst sprawy. Czytanie nie wymaga zgody operatora.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "Pytanie w języku polskim"},
-                        "sources": {
-                            "type": "array",
-                            "items": {"type": "string", "enum": ["rag", "temporal", "similar", "mail"]},
-                            "description": "Które źródła przeszukać (domyślnie wszystkie)",
-                        },
-                    },
-                    "required": ["query"],
-                    "additionalProperties": False,
-                },
-            },
-        },
         "propose_mutation": {
             "type": "function",
             "function": {
                 "name": "propose_mutation",
-                "description": "GŁÓWNE narzędzie do tworzenia spraw i generowania draftów. Dla nowego leada: operation=create_case. Po utworzeniu: operation=generate_draft. Dostępne operacje: create_case, generate_draft, update_case_status, schedule_visit, send_email, add_case_note.",
+                "description": "GŁÓWNE narzędzie do tworzenia spraw i generowania draftów. Dla nowego leada: operation=create_case. Po utworzeniu: operation=generate_draft. Dostępne operacje pochodzą wyłącznie z aktywnego WRITE_EXECUTORS i nie obejmują Gmail send ani Google Calendar write.",
                 "parameters": {
                     "type": "object",
                     "properties": {

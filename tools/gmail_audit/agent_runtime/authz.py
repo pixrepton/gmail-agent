@@ -26,7 +26,6 @@ TOOL_PERMISSION_LEVELS: dict[str, str] = {
     "generate_draft_reply": "service",
     "search_rag_knowledge": "service",
     # Read tools — operator i service
-    "query_anything": "service",
     "read_google_drive_file": "service",
     "extract_facts_from_text": "service",
     "check_cp2025_eligibility": "service",
@@ -52,9 +51,7 @@ WRITE_OPERATION_PERMISSIONS: dict[str, str] = {
     "reassign_case": "operator",
     "link_case_to_case": "operator",
     "update_customer_info": "operator",
-    "send_email": "operator",
     "generate_draft": "operator",
-    "schedule_visit": "operator",
     "add_deadline": "operator",
 }
 
@@ -262,7 +259,7 @@ def guard_tool_authz(
     """Sprawdza uprawnienia dla narzędzia na poziomie graph engine.
 
     Args:
-        tool_name: Nazwa narzędzia (np. 'propose_mutation', 'query_anything')
+        tool_name: Nazwa narzędzia (np. 'propose_mutation', 'search_rag_knowledge')
         scope: Scope operatora ('operator' lub '')
         operation: Opcjonalna operacja write (np. 'delete_document')
 

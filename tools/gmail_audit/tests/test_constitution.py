@@ -22,11 +22,15 @@ class TestConstitutionChat(unittest.TestCase):
 
     def test_chat_allowlist_contains_core_tools(self):
         from agent_runtime.constitution_chat import CHAT_AGENT_TOOL_ALLOWLIST
-        core = {"search_gmail_thread", "search_rag_knowledge", "query_anything"}
+        core = {"search_gmail_thread", "search_rag_knowledge"}
         self.assertTrue(
             core.issubset(set(CHAT_AGENT_TOOL_ALLOWLIST)),
             f"Missing core tools: {core - set(CHAT_AGENT_TOOL_ALLOWLIST)}"
         )
+
+    def test_chat_allowlist_does_not_expose_query_anything(self):
+        from agent_runtime.constitution_chat import CHAT_AGENT_TOOL_ALLOWLIST
+        self.assertNotIn("query_anything", CHAT_AGENT_TOOL_ALLOWLIST)
 
     def test_chat_allowlist_no_duplicates(self):
         from agent_runtime.constitution_chat import CHAT_AGENT_TOOL_ALLOWLIST

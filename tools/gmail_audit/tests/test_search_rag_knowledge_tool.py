@@ -149,6 +149,7 @@ def _wire_embedding_runtime(monkeypatch: pytest.MonkeyPatch, runtime: object | N
 def test_mail_and_chat_allowlists_contain_search_rag_knowledge() -> None:
     assert "search_rag_knowledge" in MAIL_AGENT_TOOL_ALLOWLIST
     assert "search_rag_knowledge" in CHAT_AGENT_TOOL_ALLOWLIST
+    assert "query_anything" not in CHAT_AGENT_TOOL_ALLOWLIST
 
 
 def test_active_constitution_allows_search_rag_knowledge() -> None:
@@ -174,6 +175,7 @@ def test_schema_not_present_when_tool_not_allowlisted() -> None:
     defs = openai_tool_definitions(("read_google_drive_file",))
     names = [d["function"]["name"] for d in defs]
     assert "search_rag_knowledge" not in names
+    assert "query_anything" not in names
 
 
 def test_search_rag_knowledge_schema_matches_handler_contract() -> None:
