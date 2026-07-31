@@ -76,6 +76,7 @@ _MAX_CONSECUTIVE_SOURCE_FAILURES = 2
 _MAX_CONSECUTIVE_PROJECTION_FAILURES = 2
 _POLL_RETRY_ATTEMPTS = 2  # 1 initial + 1 retry
 _POLL_RETRY_BASE_DELAY_SECONDS = 0.25
+_SLA_WATCHER_INTERVAL_SEC = 15 * 60
 
 
 def _classify_worker_error(exc: BaseException) -> str:
@@ -1215,6 +1216,7 @@ def _run_worker_idle_maintenance(
         maybe_heartbeat_operational_feed(run_state=run_state, settings=settings)
     except Exception as exc:  # noqa: BLE001
         logger.warning("worker_idle_feed_heartbeat_failed: %s", exc)
+    _maybe_run_sla_watcher_tick(run_state=run_state, settings=settings)
     bridge_interval = max(1, int(getattr(settings, "daszek_bridge_drain_interval_iterations", 5) or 5))
     if iteration % bridge_interval != 0:
         return
@@ -1229,6 +1231,35 @@ def _run_worker_idle_maintenance(
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("worker_idle_bridge_drain_failed: %s", exc)
+
+
+def _maybe_run_sla_watcher_tick(*, run_state: dict[str, Any], settings: Settings) -> None:
+    summary = run_state.setdefault("summary", {})
+    now_mono = time.monotonic()
+    last_mono = float(summary.get("last_sla_watcher_monotonic") or 0.0)
+    if last_mono and (now_mono - last_mono) < _SLA_WATCHER_INTERVAL_SEC:
+        return
+    summary["last_sla_watcher_monotonic"] = now_mono
+    try:
+        from sla_watcher import sla_watcher_oneshot
+
+        result = sla_watcher_oneshot(settings)
+        summary["sla_watcher_tick_count"] = int(summary.get("sla_watcher_tick_count") or 0) + 1
+        violations = result.get("violations") if isinstance(result, dict) else {}
+        summary["last_sla_watcher_result"] = {
+            "ok": bool(result.get("ok")) if isinstance(result, dict) else False,
+            "checked_at": str((violations or {}).get("checked_at") or ""),
+            "total_pending": int((violations or {}).get("total_pending") or 0),
+            "escalated": int(result.get("escalated") or 0) if isinstance(result, dict) else 0,
+        }
+        if not bool(result.get("ok")):
+            summary["sla_watcher_error_count"] = int(summary.get("sla_watcher_error_count") or 0) + 1
+            summary["last_sla_watcher_error"] = str(result.get("error") or "unknown")[:500]
+            logger.warning("worker_idle_sla_watcher_failed: %s", summary["last_sla_watcher_error"])
+    except Exception as exc:  # noqa: BLE001
+        summary["sla_watcher_error_count"] = int(summary.get("sla_watcher_error_count") or 0) + 1
+        summary["last_sla_watcher_error"] = str(exc)[:500]
+        logger.warning("worker_idle_sla_watcher_failed: %s", exc)
 
 
 def _apply_projection_refresh(*, run_state: dict[str, Any], processed: dict[str, Any]) -> None:

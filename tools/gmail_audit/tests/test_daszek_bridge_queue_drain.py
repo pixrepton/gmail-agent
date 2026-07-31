@@ -26,6 +26,7 @@ from daszek_bridge_queue_drain import (  # noqa: E402
     load_completion_ids,
     operator_payload_from_row,
     pending_adjudication_rows,
+    pending_bridge_rows,
 )
 
 
@@ -125,6 +126,66 @@ class BridgeQueueDrainTests(unittest.TestCase):
             self.assertEqual(load_completion_ids(tmp), {"bq_1"})
             pending = pending_adjudication_rows(tmp)
             self.assertEqual([r["queue_id"] for r in pending], ["bq_2"])
+        finally:
+            if tmp.exists():
+                tmp.unlink()
+
+    def test_pending_includes_retry_rows_when_due(self) -> None:
+        fd, name = tempfile.mkstemp(suffix=".jsonl")
+        os.close(fd)
+        tmp = Path(name)
+        try:
+            rows = [
+                {
+                    "queue_id": "bq_retry_due",
+                    "schema_version": "daszek_bridge_queue.v1",
+                    "domain": "agent_hitl",
+                    "adjudication_kind": "hitl_action_execute",
+                    "engagement_id": "eng-1",
+                    "bridge_status": "pending",
+                },
+                {
+                    "queue_id": "bq_retry_due",
+                    "schema_version": "daszek_bridge_queue.v1",
+                    "bridge_status": "retry",
+                    "retry_count": 1,
+                    "next_retry_at": "2026-07-31T00:00:00+00:00",
+                },
+            ]
+            tmp.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
+            pending = pending_bridge_rows(tmp)
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0]["queue_id"], "bq_retry_due")
+            self.assertEqual(pending[0]["bridge_status"], "retry")
+            self.assertEqual(pending[0]["retry_count"], 1)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
+
+    def test_pending_skips_retry_rows_before_due_time(self) -> None:
+        fd, name = tempfile.mkstemp(suffix=".jsonl")
+        os.close(fd)
+        tmp = Path(name)
+        try:
+            rows = [
+                {
+                    "queue_id": "bq_retry_future",
+                    "schema_version": "daszek_bridge_queue.v1",
+                    "domain": "agent_hitl",
+                    "adjudication_kind": "hitl_action_execute",
+                    "engagement_id": "eng-1",
+                    "bridge_status": "pending",
+                },
+                {
+                    "queue_id": "bq_retry_future",
+                    "schema_version": "daszek_bridge_queue.v1",
+                    "bridge_status": "retry",
+                    "retry_count": 1,
+                    "next_retry_at": "2026-08-01T00:00:00+00:00",
+                },
+            ]
+            tmp.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
+            self.assertEqual(pending_bridge_rows(tmp), [])
         finally:
             if tmp.exists():
                 tmp.unlink()
@@ -541,6 +602,72 @@ class BridgeQueueDrainTests(unittest.TestCase):
         err_payload = json.loads(completions[0][2])
         self.assertEqual(err_payload.get("stage"), "process_item")
         self.assertIn("sig_shadow", err_payload.get("source_signal_ids", []))
+
+    def test_drain_bridge_rows_marks_retryable_transport_error_for_retry(self) -> None:
+        completions: list[tuple[str, str, str]] = []
+
+        def fake_bridge_operator_feedback(**kwargs: object) -> dict[str, object]:
+            raise RuntimeError("503 service unavailable")
+
+        rows = [
+            {
+                "queue_id": "bq_retryable",
+                "schema_version": "daszek_bridge_queue.v1",
+                "domain": "adjudication",
+                "adjudication_kind": "reject_same_case",
+                "case_id": "case_1",
+                "source_signal_id": "sig_1",
+                "bridge_status": "pending",
+            }
+        ]
+        results = drain_bridge_rows(
+            pending=rows,
+            append_completion=lambda queue_id, status, error="": completions.append((queue_id, status, error)),
+            bridge_operator_feedback=fake_bridge_operator_feedback,
+            store=object(),
+            journal=FakeJournal([FakeSignal("sig_1")]),
+            runtime_context=object(),
+            max_items=10,
+            dry_run=False,
+        )
+        self.assertEqual(results[0]["bridge_status"], "retry")
+        self.assertTrue(results[0]["retryable"])
+        self.assertEqual(completions[0][1], "retry")
+        err_payload = json.loads(completions[0][2])
+        self.assertEqual(err_payload.get("retry_count"), 1)
+        self.assertTrue(err_payload.get("retryable"))
+        self.assertIn("next_retry_at", err_payload)
+
+    def test_drain_bridge_rows_exhausted_retryable_error_becomes_dead_letter(self) -> None:
+        completions: list[tuple[str, str, str]] = []
+
+        def fake_bridge_operator_feedback(**kwargs: object) -> dict[str, object]:
+            raise RuntimeError("timeout while reaching node b")
+
+        rows = [
+            {
+                "queue_id": "bq_dead_letter",
+                "schema_version": "daszek_bridge_queue.v1",
+                "domain": "adjudication",
+                "adjudication_kind": "reject_same_case",
+                "case_id": "case_1",
+                "source_signal_id": "sig_1",
+                "bridge_status": "retry",
+                "retry_count": 3,
+            }
+        ]
+        results = drain_bridge_rows(
+            pending=rows,
+            append_completion=lambda queue_id, status, error="": completions.append((queue_id, status, error)),
+            bridge_operator_feedback=fake_bridge_operator_feedback,
+            store=object(),
+            journal=FakeJournal([FakeSignal("sig_1")]),
+            runtime_context=object(),
+            max_items=10,
+            dry_run=False,
+        )
+        self.assertEqual(results[0]["bridge_status"], "dead_letter")
+        self.assertEqual(completions[0][1], "dead_letter")
 
     def test_format_bridge_error_json_roundtrip(self) -> None:
         s = format_bridge_error(

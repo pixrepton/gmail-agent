@@ -64,16 +64,18 @@ def maybe_escalate(settings: Any, conn: DatabaseConnection) -> list[dict[str, An
     return escalated
 
 
-def _emit_sla_escalation(settings: Any, item: dict[str, Any], severity: str, db_url: str = "") -> None:
+def _emit_sla_escalation(settings: Any, item: dict[str, Any], severity: str, db_url: str = "") -> bool:
     """Write SLA escalation as os_event."""
     try:
         from event_spine.emitter import publish_os_event
-        from datetime import datetime, timezone
 
-        publish_os_event(
-            db_url=db_url,
+        event_id = publish_os_event(
+            database_url=db_url,
             event_type=f"sla.violation.{severity}",
-            source="sla_watcher",
+            source_repo="gmail-agent",
+            case_id=str(item.get("case_id", "")),
+            severity=severity,
+            success=False,
             payload={
                 "proposal_id": str(item.get("proposal_id", "")),
                 "case_id": str(item.get("case_id", "")),
@@ -83,8 +85,12 @@ def _emit_sla_escalation(settings: Any, item: dict[str, Any], severity: str, db_
                 "summary_pl": item.get("summary_pl", ""),
             },
         )
+        if not event_id:
+            raise RuntimeError("publish_os_event returned None")
+        return True
     except Exception as exc:
         logger.warning("Failed to emit SLA escalation: %s", exc)
+        return False
 
 
 def sla_watcher_oneshot(settings: Any) -> dict[str, Any]:

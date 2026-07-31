@@ -11,6 +11,26 @@ from typing import Any, Iterator
 from config import Settings
 
 SCHEMA_VERSION = "daszek_bridge_queue.v1"
+_BRIDGE_TERMINAL_STATUSES = frozenset({"completed", "failed", "skipped", "dead_letter"})
+_BRIDGE_ACTIONABLE_STATUSES = frozenset({"pending", "retry"})
+_BRIDGE_RETRYABLE_TOKENS = (
+    "timeout",
+    "timed out",
+    "connection",
+    "network",
+    "temporary failure",
+    "temporarily unavailable",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+    "too many requests",
+    "429",
+    "502",
+    "503",
+    "504",
+)
+_BRIDGE_RETRY_BASE_DELAY_SEC = 30
+_BRIDGE_RETRY_MAX_ATTEMPTS = 3
 
 
 def filter_bridge_rows_by_domain(rows: list[dict[str, Any]], domain_filter: str | None) -> list[dict[str, Any]]:
@@ -28,6 +48,7 @@ def format_bridge_error(
     stage: str,
     queue_id: str = "",
     source_signal_ids: list[str] | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> str:
     """Bounded JSON string for Daszek ``bridge_error`` (no secrets / mail bodies)."""
     payload: dict[str, Any] = {
@@ -38,6 +59,11 @@ def format_bridge_error(
     }
     if source_signal_ids:
         payload["source_signal_ids"] = [str(s)[:128] for s in source_signal_ids[:24]]
+    if isinstance(extra, dict):
+        for key, value in extra.items():
+            if key in payload or value in (None, ""):
+                continue
+            payload[str(key)[:120]] = value
     raw = json.dumps(payload, ensure_ascii=False)
     return raw[:4000]
 
@@ -165,6 +191,77 @@ def iter_jsonl(path: Path) -> Iterator[dict[str, Any]]:
             yield row
 
 
+def _parse_bridge_error_payload(error: str) -> dict[str, Any]:
+    try:
+        data = json.loads(str(error or ""))
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _status_retry_due(row: dict[str, Any]) -> bool:
+    next_retry_at = str(row.get("next_retry_at") or "").strip()
+    if not next_retry_at:
+        return True
+    try:
+        due_ts = __import__("datetime").datetime.fromisoformat(next_retry_at.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return True
+    return due_ts <= __import__("time").time()
+
+
+def _merge_bridge_status(base_row: dict[str, Any], status_row: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base_row)
+    merged["bridge_status"] = str(status_row.get("bridge_status") or merged.get("bridge_status") or "pending").strip().lower()
+    for key in ("bridge_error", "retry_count", "next_retry_at", "retryable"):
+        value = status_row.get(key)
+        if value not in (None, ""):
+            merged[key] = value
+    return merged
+
+
+def _actionable_bridge_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    creation_rows: list[dict[str, Any]] = []
+    latest_by_queue: dict[str, dict[str, Any]] = {}
+    seen_creations: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        queue_id = str(row.get("queue_id") or "").strip()
+        if not queue_id:
+            continue
+        status = str(row.get("bridge_status") or "pending").strip().lower()
+        if str(row.get("schema_version") or "") != SCHEMA_VERSION:
+            continue
+        domain = str(row.get("domain") or "")
+        if domain in {"adjudication", "action_decision", "agent_hitl"} and queue_id not in seen_creations:
+            if domain == "adjudication":
+                kind = str(row.get("adjudication_kind") or "").strip()
+                if kind != "reject_same_case":
+                    continue
+            if domain == "agent_hitl":
+                kind = str(row.get("adjudication_kind") or "").strip()
+                if kind != "hitl_action_execute":
+                    continue
+            creation_rows.append(row)
+            seen_creations.add(queue_id)
+        latest_by_queue[queue_id] = row if status else latest_by_queue.get(queue_id, row)
+
+    actionable: list[dict[str, Any]] = []
+    for base_row in creation_rows:
+        queue_id = str(base_row.get("queue_id") or "").strip()
+        latest = latest_by_queue.get(queue_id) or base_row
+        status = str(latest.get("bridge_status") or "pending").strip().lower()
+        if status in _BRIDGE_TERMINAL_STATUSES:
+            continue
+        if status not in _BRIDGE_ACTIONABLE_STATUSES:
+            continue
+        if status == "retry" and not _status_retry_due(latest):
+            continue
+        actionable.append(_merge_bridge_status(base_row, latest))
+    return actionable
+
+
 def load_completion_ids(path: Path) -> set[str]:
     done: set[str] = set()
     for row in iter_jsonl(path):
@@ -172,41 +269,14 @@ def load_completion_ids(path: Path) -> set[str]:
         if not qid:
             continue
         st = str(row.get("bridge_status") or "").strip().lower()
-        if st in {"completed", "failed", "skipped"}:
+        if st in _BRIDGE_TERMINAL_STATUSES:
             done.add(qid)
     return done
 
 
 def pending_bridge_rows(path: Path) -> list[dict[str, Any]]:
-    """Return creation rows that are not superseded by a completion line."""
-    completed = load_completion_ids(path)
-    pending: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    for row in iter_jsonl(path):
-        qid = str(row.get("queue_id") or "").strip()
-        if not qid or qid in seen_ids:
-            continue
-        if str(row.get("schema_version") or "") != SCHEMA_VERSION:
-            continue
-        domain = str(row.get("domain") or "")
-        if domain not in {"adjudication", "action_decision", "agent_hitl"}:
-            continue
-        if domain == "adjudication":
-            kind = str(row.get("adjudication_kind") or "").strip()
-            if kind != "reject_same_case":
-                continue
-        if domain == "agent_hitl":
-            kind = str(row.get("adjudication_kind") or "").strip()
-            if kind != "hitl_action_execute":
-                continue
-        st = str(row.get("bridge_status") or "pending").strip().lower()
-        if st != "pending":
-            continue
-        if qid in completed:
-            continue
-        pending.append(row)
-        seen_ids.add(qid)
-    return pending
+    """Return actionable creation rows with latest retry metadata merged in."""
+    return _actionable_bridge_rows(list(iter_jsonl(path)))
 
 
 def pending_adjudication_rows(path: Path) -> list[dict[str, Any]]:
@@ -249,6 +319,7 @@ def bridge_payload_from_row(row: dict[str, Any]) -> dict[str, Any]:
 
 def append_bridge_completion(path: Path, *, queue_id: str, status: str, error: str = "") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    error_payload = _parse_bridge_error_payload(error)
     row = {
         "queue_id": queue_id,
         "schema_version": SCHEMA_VERSION,
@@ -256,6 +327,16 @@ def append_bridge_completion(path: Path, *, queue_id: str, status: str, error: s
         "bridge_error": error[:4000] if error else "",
         "bridge_completed_at": __import__("datetime").datetime.now().astimezone().isoformat(),
     }
+    if "retry_count" in error_payload:
+        try:
+            row["retry_count"] = max(0, int(error_payload["retry_count"]))
+        except (TypeError, ValueError):
+            pass
+    next_retry_at = str(error_payload.get("next_retry_at") or "").strip()
+    if next_retry_at:
+        row["next_retry_at"] = next_retry_at[:64]
+    if "retryable" in error_payload:
+        row["retryable"] = bool(error_payload["retryable"])
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
@@ -272,6 +353,34 @@ def _append_completion_result(
         return True, ""
     except Exception as exc:  # noqa: BLE001 - completion channel must not stop bounded drain
         return False, str(exc)
+
+
+def _is_retryable_bridge_error(exc: BaseException) -> bool:
+    message = str(exc or "").lower()
+    return any(token in message for token in _BRIDGE_RETRYABLE_TOKENS)
+
+
+def _bridge_retry_error(
+    *,
+    exc: BaseException,
+    queue_id: str,
+    row: dict[str, Any],
+    attempt: int,
+) -> str:
+    delay = min(5 * 60, _BRIDGE_RETRY_BASE_DELAY_SEC * (2 ** max(0, attempt - 1)))
+    next_retry_at = __import__("datetime").datetime.now(__import__("datetime").timezone.utc) + __import__("datetime").timedelta(seconds=delay)
+    return format_bridge_error(
+        error_type=type(exc).__name__,
+        error_message=str(exc),
+        stage="process_item",
+        queue_id=queue_id,
+        source_signal_ids=_source_signal_ids_from_row(row) or None,
+        extra={
+            "retryable": True,
+            "retry_count": attempt,
+            "next_retry_at": next_retry_at.isoformat(),
+        },
+    )
 
 
 def validate_reject_same_case_bridge_result(out: Any) -> None:
@@ -643,6 +752,7 @@ def drain_bridge_rows(
         qid = str(row.get("queue_id") or "").strip()
         domain = str(row.get("domain") or "")
         payload = bridge_payload_from_row(row)
+        retry_count = max(0, int(row.get("retry_count") or 0))
         if dry_run:
             results.append({"queue_id": qid, "dry_run": True, "would_payload": payload})
             continue
@@ -735,20 +845,45 @@ def drain_bridge_rows(
                 continue
             results.append({"queue_id": qid, "ok": True, "bridge_out": out})
         except Exception as exc:  # noqa: BLE001
-            ber = format_bridge_error(
-                error_type=type(exc).__name__,
-                error_message=str(exc),
-                stage="process_item",
-                queue_id=qid,
-                source_signal_ids=_source_signal_ids_from_row(row) or None,
-            )
+            retryable = _is_retryable_bridge_error(exc)
+            if retryable:
+                next_attempt = retry_count + 1
+                if next_attempt <= _BRIDGE_RETRY_MAX_ATTEMPTS:
+                    status = "retry"
+                    ber = _bridge_retry_error(exc=exc, queue_id=qid, row=row, attempt=next_attempt)
+                else:
+                    status = "dead_letter"
+                    ber = format_bridge_error(
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                        stage="process_item",
+                        queue_id=qid,
+                        source_signal_ids=_source_signal_ids_from_row(row) or None,
+                        extra={"retryable": True, "retry_count": next_attempt},
+                    )
+            else:
+                status = "failed"
+                ber = format_bridge_error(
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                    stage="process_item",
+                    queue_id=qid,
+                    source_signal_ids=_source_signal_ids_from_row(row) or None,
+                )
             completion_ok, completion_error = _append_completion_result(
                 append_completion,
                 queue_id=qid,
-                status="failed",
+                status=status,
                 error=ber,
             )
-            row_result = {"queue_id": qid, "ok": False, "error": str(exc), "bridge_error": ber}
+            row_result = {
+                "queue_id": qid,
+                "ok": False,
+                "error": str(exc),
+                "bridge_error": ber,
+                "bridge_status": status,
+                "retryable": retryable,
+            }
             if not completion_ok:
                 row_result["bridge_completion_status"] = "failure_completion_failed"
                 row_result["bridge_completion_error"] = completion_error

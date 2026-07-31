@@ -113,3 +113,35 @@ class TestSlaWatcherOneshot:
 
         assert result["ok"] is False
         assert "Database not configured" in result["error"]
+
+
+class TestEmitSlaEscalation:
+    def test_emit_uses_database_url_keyword_and_returns_true(self):
+        from sla_watcher import _emit_sla_escalation
+
+        settings = MagicMock()
+        with patch("event_spine.emitter.publish_os_event", return_value="osevt_1") as publish_mock:
+            ok = _emit_sla_escalation(
+                settings,
+                {"proposal_id": "prop-1", "case_id": "case-1", "hours_waiting": 5},
+                severity="critical",
+                db_url="postgres://example",
+            )
+
+        assert ok is True
+        assert publish_mock.call_args.kwargs["database_url"] == "postgres://example"
+        assert publish_mock.call_args.kwargs["event_type"] == "sla.violation.critical"
+
+    def test_emit_returns_false_when_publisher_returns_none(self):
+        from sla_watcher import _emit_sla_escalation
+
+        settings = MagicMock()
+        with patch("event_spine.emitter.publish_os_event", return_value=None):
+            ok = _emit_sla_escalation(
+                settings,
+                {"proposal_id": "prop-1", "case_id": "case-1", "hours_waiting": 5},
+                severity="high",
+                db_url="postgres://example",
+            )
+
+        assert ok is False

@@ -13,7 +13,7 @@ if str(TOOL_DIR) not in sys.path:
 
 from config import Settings
 from mailbox_memory_store import InMemoryMailboxMemoryStore
-from signal_worker import _apply_projection_refresh, _record_drive_result, run_signal_loop
+from signal_worker import _apply_projection_refresh, _record_drive_result, _run_worker_idle_maintenance, run_signal_loop
 
 
 def _settings() -> Settings:
@@ -663,6 +663,34 @@ def test_signal_worker_poll_no_retry_for_auth_error() -> None:
 
     assert result.stop_reason in {"gmail_poll_failed", "max_consecutive_source_failures"}
     assert len(calls) == 1
+
+
+def test_signal_worker_runs_sla_watcher_during_idle_maintenance() -> None:
+    settings = _settings()
+    fake_runtime = _FakeMailboxRuntime()
+
+    run_state = {"summary": {}, "manifest": {"daszek_operational_feed_auto_push_enabled": False}}
+
+    with patch(
+        "sla_watcher.sla_watcher_oneshot",
+        return_value={
+            "ok": True,
+            "violations": {"checked_at": "2026-07-31T06:00:00+00:00", "total_pending": 2},
+            "escalated": 1,
+        },
+    ) as watcher_mock:
+        _run_worker_idle_maintenance(
+            run_state=run_state,
+            settings=settings,
+            mailbox_runtime=fake_runtime,
+            iteration=1,
+        )
+
+    watcher_mock.assert_called_once()
+    summary = run_state["summary"]
+    assert summary["sla_watcher_tick_count"] == 1
+    assert summary["last_sla_watcher_result"]["total_pending"] == 2
+    assert summary["last_sla_watcher_result"]["escalated"] == 1
 
 
 def test_signal_worker_drive_poll_failure_is_run_level_not_item_level() -> None:
