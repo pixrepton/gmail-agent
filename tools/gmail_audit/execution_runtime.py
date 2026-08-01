@@ -103,7 +103,7 @@ def action_risk_class(action_type: str, payload: dict[str, Any] | None = None) -
     if action in {"apply_gmail_label", "archive_gmail"}:
         return "R2", ["gmail_external_write_requires_owner_review", "live_write_not_proven_in_repo"]
     if action == "create_calendar_event":
-        return "R2", ["calendar_external_write_requires_owner_review"]
+        return "R4", ["calendar_write_disabled_read_only"]
     return "R4", ["unknown_action_type_forbidden"]
 
 
@@ -315,16 +315,10 @@ def execute_action_proposal(
             error_message = "repo-local Gmail helper is read-only; no live Gmail write was executed"
             result_payload = {"dry_run": dry_run, "not_proven_live": True}
         elif proposal.action_type == "create_calendar_event":
-            if dry_run:
-                status = "skipped"
-                error_code = "dry_run"
-                result_payload = {"would_create_calendar_event": proposal.payload}
-            elif calendar_client is None:
-                status = "blocked"
-                error_code = "not_configured"
-                error_message = "calendar client is not configured"
-            else:
-                result_payload = calendar_client.create_event(proposal.payload)
+            status = "blocked"
+            error_code = "calendar_write_disabled_read_only"
+            error_message = "Node B never creates, updates or deletes Google Calendar events"
+            result_payload = {"manual_operator_delivery": True, "calendar_write_attempted": False}
         else:
             status = "blocked"
             error_code = "unsupported_action"

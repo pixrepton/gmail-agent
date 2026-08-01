@@ -145,6 +145,10 @@ def _active_fact_present(context_bundle: dict[str, Any] | None, *, fact_key: str
     bundle = context_bundle if isinstance(context_bundle, dict) else {}
     pack = bundle.get("case_context_pack") if isinstance(bundle.get("case_context_pack"), dict) else {}
     facts = pack.get("active_facts") if isinstance(pack.get("active_facts"), list) else []
+    if fact_key == "scheduled_visit":
+        from calendar_models import scheduled_visit_fact_has_calendar_event
+
+        return any(isinstance(row, dict) and scheduled_visit_fact_has_calendar_event(row) for row in facts)
     for row in facts:
         if not isinstance(row, dict):
             continue

@@ -148,10 +148,26 @@ class RealAuthoritativeEvidenceIsConsulted(unittest.TestCase):
     """The gate must not treat "no dedicated boolean field" as proof no
     confirmation exists anywhere -- it must consult real, existing structured
     case evidence (CaseContextPack.active_facts, persisted by the real
-    schedule_visit / add_deadline write executors) before defaulting to
-    unsupported."""
+    Calendar-ingested scheduled visits / add_deadline write facts) before
+    defaulting to unsupported. A scheduled_visit fact without calendar_event_id
+    is only a proposal-like historical text and must not confirm a visit."""
 
     def test_scheduled_visit_fact_in_case_context_pack_is_recognized(self) -> None:
+        context_bundle = {
+            "case_context_pack": {
+                "active_facts": [
+                    {
+                        "fact_key": "scheduled_visit",
+                        "normalized_value": "Date: 2026-02-01, Address: X",
+                        "metadata": {"calendar_event_id": "evt-1"},
+                    }
+                ]
+            }
+        }
+        state = _draft_case_state({}, {}, context_bundle)
+        self.assertTrue(state["visit_confirmed"])
+
+    def test_scheduled_visit_without_calendar_event_id_is_not_confirmation(self) -> None:
         context_bundle = {
             "case_context_pack": {
                 "active_facts": [
@@ -160,7 +176,7 @@ class RealAuthoritativeEvidenceIsConsulted(unittest.TestCase):
             }
         }
         state = _draft_case_state({}, {}, context_bundle)
-        self.assertTrue(state["visit_confirmed"])
+        self.assertFalse(state["visit_confirmed"])
 
     def test_case_deadline_fact_in_case_context_pack_is_recognized(self) -> None:
         context_bundle = {
@@ -187,7 +203,13 @@ class RealAuthoritativeEvidenceIsConsulted(unittest.TestCase):
     def test_real_scheduled_visit_evidence_flows_through_the_gate_end_to_end(self) -> None:
         context_bundle = {
             "case_context_pack": {
-                "active_facts": [{"fact_key": "scheduled_visit", "normalized_value": "Date: 2026-02-01"}]
+                "active_facts": [
+                    {
+                        "fact_key": "scheduled_visit",
+                        "normalized_value": "Date: 2026-02-01",
+                        "metadata": {"calendar_event_id": "evt-1"},
+                    }
+                ]
             }
         }
         state = _draft_case_state({}, {}, context_bundle)

@@ -1641,13 +1641,16 @@ def build_case_context_pack(
     )
     action_proposals = store.fetch_action_proposals(case_id=case_id, limit=20) if hasattr(store, "fetch_action_proposals") else []
     execution_results = store.fetch_execution_results(case_id=case_id, limit=20) if hasattr(store, "fetch_execution_results") else []
-    calendar_events = store.fetch_calendar_events_for_case(case_id, limit=10) if hasattr(store, "fetch_calendar_events_for_case") else []
+    raw_calendar_events = store.fetch_calendar_events_for_case(case_id, limit=10) if hasattr(store, "fetch_calendar_events_for_case") else []
+    from calendar_models import active_calendar_events, infer_calendar_risk
+
+    calendar_events = active_calendar_events(raw_calendar_events)
     document_intelligence_rows = (
         store.fetch_document_intelligence_for_case(case_id, limit=20)
         if hasattr(store, "fetch_document_intelligence_for_case")
         else []
     )
-    calendar_risk = "calendar_event_exists" if calendar_events else "calendar_event_missing"
+    calendar_risk = infer_calendar_risk(events=raw_calendar_events, facts=active_facts + drive_active_facts)
     doc_conflicts = [conf for row in document_intelligence_rows for conf in list(row.get("conflicts") or [])]
     source_refs = build_source_refs(
         snapshot=snapshot,
@@ -1722,9 +1725,11 @@ def build_case_context_pack(
         calendar={
             "case_id": case_id,
             "events": calendar_events,
+            "observed_events": raw_calendar_events,
             "next_event": calendar_events[0] if calendar_events else {},
             "has_calendar_event": bool(calendar_events),
             "calendar_risk": calendar_risk,
+            "visit_lifecycle": "scheduled_visit" if calendar_events else ("proposed_visit" if calendar_risk == "customer_proposed_date" else "no_calendar_event"),
         },
         document_intelligence={
             "important_documents": document_intelligence_rows[:8],

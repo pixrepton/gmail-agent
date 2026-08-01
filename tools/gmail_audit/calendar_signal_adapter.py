@@ -6,6 +6,7 @@ from typing import Any
 
 from raw_observation_contract import RawObservation, build_raw_observation
 from signal_contract import CanonicalSignal, build_canonical_signal
+from calendar_models import CALENDAR_SIGNAL_SOURCE_KIND, GOOGLE_CALENDAR_PROVIDER
 
 
 def build_calendar_raw_observation(
@@ -17,7 +18,7 @@ def build_calendar_raw_observation(
 ) -> RawObservation:
     return build_raw_observation(
         observation_kind="calendar_event_observed",
-        source_kind="google_calendar",
+        source_kind=CALENDAR_SIGNAL_SOURCE_KIND,
         source_ref=source_ref,
         observed_at=observed_at,
         occurred_at=str(payload.get("start_at") or payload.get("created") or observed_at),
@@ -45,7 +46,7 @@ def build_calendar_signal(
     summary = str(payload.get("summary") or "")
     return build_canonical_signal(
         signal_kind="calendar_event_observed",
-        source_kind="google_calendar",
+        source_kind=CALENDAR_SIGNAL_SOURCE_KIND,
         source_ref=observation.source_ref,
         observed_at=observed_at,
         effective_at=str(payload.get("start_at") or observed_at),
@@ -54,7 +55,7 @@ def build_calendar_signal(
         business_lane="operations",
         signal_summary_pl=f"Kalendarz: {summary}".strip(),
         payload=payload,
-        artifacts={"source": "calendar_runtime", "raw_observation_id": observation.observation_id},
+        artifacts={"source": "calendar_runtime", "provider": GOOGLE_CALENDAR_PROVIDER, "raw_observation_id": observation.observation_id},
         revision_marker=str(source_ref.get("calendar_event_id") or ""),
         created_by_runtime=created_by_runtime,
     )

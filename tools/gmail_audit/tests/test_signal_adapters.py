@@ -177,6 +177,8 @@ def test_build_calendar_signal_without_case_uses_empty_store_hints() -> None:
         created_by_runtime="test",
     )
 
+    assert signal.source_kind == "calendar"
+    assert signal.artifacts["provider"] == "google_calendar"
     assert signal.case_key_hint == ""
     assert signal.thread_key_hint == ""
 

@@ -19,6 +19,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from daszek_v3_operational_feed_contract import strip_forbidden_nested
+from calendar_models import calendar_event_is_cancelled
 from llm_contracts.engagement_snapshot_v2 import EngagementSnapshotV2
 
 # Explicit, visible operator-day contract for X1 v0. This is the single place
@@ -146,6 +147,8 @@ def _calendar_items_for_case(
     items: list[dict[str, Any]] = []
     for ev in events:
         if not isinstance(ev, dict):
+            continue
+        if calendar_event_is_cancelled(ev):
             continue
         if not _event_is_today(ev, day_start=day_start, day_end=day_end, today=today):
             continue

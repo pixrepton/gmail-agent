@@ -1,4 +1,4 @@
-"""Google Calendar V1 runtime: read, normalize, link, context, approved create."""
+"""Google Calendar V1 runtime: read-only ingest, link, context and proposals."""
 
 from __future__ import annotations
 
@@ -7,23 +7,18 @@ from typing import Any
 from calendar_case_linker import link_calendar_event_to_case
 from case_family_boundary import filter_operational_feed_case_rows
 from calendar_client import GoogleCalendarClient
-from calendar_models import CalendarCaseLink, normalize_google_calendar_event, now_iso
+from calendar_models import (
+    CalendarCaseLink,
+    active_calendar_events,
+    infer_calendar_risk,
+    normalize_google_calendar_event,
+    now_iso,
+)
 from calendar_signal_adapter import build_calendar_raw_observation, build_calendar_signal
-from execution_runtime import create_action_proposal
 from config import Settings
 from log_config import get_logger
 
 log = get_logger(__name__)
-
-
-def infer_calendar_risk(*, case_id: str, events: list[dict[str, Any]], facts: list[dict[str, Any]] | None = None) -> str:
-    if events:
-        return "calendar_event_exists"
-    facts = facts or []
-    has_date = any(str(item.get("field_type") or item.get("fact_key") or "").lower() in {"date", "service_date", "proposed_date"} for item in facts)
-    if has_date:
-        return "customer_proposed_date"
-    return "calendar_event_missing"
 
 
 class CalendarRuntime:
@@ -45,6 +40,8 @@ class CalendarRuntime:
             # Error isolation per event: wrap each event in try/except with log.warning
             try:
                 event = normalize_google_calendar_event(raw, calendar_id=calendar_id, ingested_at=observed_at)
+                if not event.calendar_event_id:
+                    raise ValueError("calendar_event_id is required for read-only visit lifecycle")
                 link = link_calendar_event_to_case(event.to_dict(), cases)
                 if link.get("link_status") == "linked" and link.get("case_id"):
                     event.case_id = str(link.get("case_id") or "")
@@ -70,7 +67,7 @@ class CalendarRuntime:
                             created_at=observed_at,
                         ).to_dict()
                     )
-                source_ref = {"calendar_id": calendar_id, "calendar_event_id": event.calendar_event_id}
+                source_ref = {"calendar_id": calendar_id, "calendar_event_id": event.calendar_event_id, "provider": event.source}
                 raw_obs = build_calendar_raw_observation(source_ref=source_ref, observed_at=observed_at, payload=event_row)
                 self.store.append_raw_observation(raw_obs.to_dict())
                 signal = build_calendar_signal(source_ref=source_ref, observed_at=observed_at, payload=event_row, raw_observation=raw_obs)
@@ -111,35 +108,28 @@ class CalendarRuntime:
         return summary
 
     def context_for_case(self, case_id: str) -> dict[str, Any]:
-        events = self.store.fetch_calendar_events_for_case(case_id, limit=10)
+        all_events = self.store.fetch_calendar_events_for_case(case_id, limit=10)
+        events = active_calendar_events(all_events)
         facts = self.store.fetch_facts_for_case(case_id) if hasattr(self.store, "fetch_facts_for_case") else []
-        risk = infer_calendar_risk(case_id=case_id, events=events, facts=facts)
+        risk = infer_calendar_risk(events=all_events, facts=facts)
         next_event = events[0] if events else {}
         return {
             "case_id": case_id,
             "events": events,
+            "observed_events": all_events,
             "next_event": next_event,
             "has_calendar_event": bool(events),
             "calendar_risk": risk,
             "possible_conflict": risk == "possible_conflict",
+            "visit_lifecycle": "scheduled_visit" if events else ("proposed_visit" if risk == "customer_proposed_date" else "no_calendar_event"),
         }
 
 
 def build_calendar_event_action_proposal(*, store: Any, case_id: str, payload: dict[str, Any], proposed_by: str = "ai") -> dict[str, Any]:
-    proposal = create_action_proposal(
-        store,
-        {
-            "case_id": case_id,
-            "action_type": "create_calendar_event",
-            "payload": payload,
-            "proposed_by": proposed_by,
-            "confidence": float(payload.get("confidence") or 0.0),
-            "risk_class": "R2",
-            "requires_review": True,
-            "policy_basis": ["calendar_event_create_requires_owner_approval"],
-        },
+    raise RuntimeError(
+        "calendar_event_action_proposal_disabled_read_only: Node B keeps proposed_visit text only; "
+        "scheduled_visit requires an ingested real calendar_event_id."
     )
-    return proposal.to_dict()
 
 
 __all__ = ["CalendarRuntime", "build_calendar_event_action_proposal", "infer_calendar_risk"]

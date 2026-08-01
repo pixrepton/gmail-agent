@@ -14,6 +14,8 @@ CALENDAR_RISKS = (
     "customer_proposed_date",
     "possible_conflict",
 )
+CALENDAR_SIGNAL_SOURCE_KIND = "calendar"
+GOOGLE_CALENDAR_PROVIDER = "google_calendar"
 
 
 @dataclass(slots=True)
@@ -77,6 +79,53 @@ def normalize_google_calendar_event(raw: dict[str, Any], *, calendar_id: str = "
     )
 
 
+def calendar_event_status(event: dict[str, Any]) -> str:
+    raw_payload = event.get("raw_payload") if isinstance(event.get("raw_payload"), dict) else {}
+    return str(event.get("event_status") or event.get("status") or raw_payload.get("status") or "confirmed").strip().lower()
+
+
+def calendar_event_is_cancelled(event: dict[str, Any]) -> bool:
+    return calendar_event_status(event) == "cancelled"
+
+
+def active_calendar_events(events: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    return [dict(event) for event in (events or []) if isinstance(event, dict) and not calendar_event_is_cancelled(event)]
+
+
+def scheduled_visit_fact_has_calendar_event(row: dict[str, Any]) -> bool:
+    """A scheduled_visit fact is authoritative only when linked to a real Calendar event."""
+    if str(row.get("fact_key") or row.get("predicate") or "").strip() != "scheduled_visit":
+        return False
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    raw_value = str(row.get("raw_value") or row.get("normalized_value") or row.get("value") or "")
+    candidates = [
+        row.get("calendar_event_id"),
+        metadata.get("calendar_event_id"),
+        metadata.get("google_calendar_event_id"),
+    ]
+    if any(str(value or "").strip() for value in candidates):
+        return True
+    return "calendar_event_id=" in raw_value or "google_calendar:" in raw_value
+
+
+def _has_customer_proposed_date_fact(facts: list[dict[str, Any]] | None) -> bool:
+    for item in facts or []:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("field_type") or item.get("fact_key") or item.get("predicate") or "").strip().lower()
+        if key in {"date", "service_date", "proposed_date", "proposed_visit"}:
+            return True
+    return False
+
+
+def infer_calendar_risk(*, events: list[dict[str, Any]], facts: list[dict[str, Any]] | None = None) -> str:
+    if active_calendar_events(events):
+        return "calendar_event_exists"
+    if _has_customer_proposed_date_fact(facts):
+        return "customer_proposed_date"
+    return "calendar_event_missing"
+
+
 def proposed_calendar_event_payload(raw: dict[str, Any]) -> dict[str, Any]:
     return {
         "title": str(raw.get("title") or raw.get("summary") or ""),
@@ -93,9 +142,16 @@ def proposed_calendar_event_payload(raw: dict[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "CALENDAR_RISKS",
+    "CALENDAR_SIGNAL_SOURCE_KIND",
     "CalendarCaseLink",
     "CalendarEvent",
+    "GOOGLE_CALENDAR_PROVIDER",
+    "active_calendar_events",
+    "calendar_event_is_cancelled",
+    "calendar_event_status",
+    "infer_calendar_risk",
     "normalize_google_calendar_event",
     "now_iso",
     "proposed_calendar_event_payload",
+    "scheduled_visit_fact_has_calendar_event",
 ]

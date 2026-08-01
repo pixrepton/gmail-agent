@@ -34,6 +34,7 @@ from mailbox_v2_desk_note import resolve_v2_desk_note_id as _resolve_v2_desk_not
 
 from case_family_boundary import is_operational_feed_case_row
 from case_routing import desk_eligible
+from calendar_models import active_calendar_events, infer_calendar_risk
 from cieplo_orchestrator_hook import CIEPLO_DESK_INFO_BRIEF_PL
 
 from case_context_contract import (
@@ -710,7 +711,9 @@ def assemble_mailbox_pack_dict(store: MailboxMemoryStoreLike, case_id: str) -> d
     next_action = store.fetch_next_action(case_id) or {}
     proposals = store.fetch_action_proposals(case_id=case_id, limit=40)
     executions = store.fetch_execution_results(case_id=case_id, limit=40)
-    calendar_events = store.fetch_calendar_events_for_case(case_id, limit=12)
+    raw_calendar_events = store.fetch_calendar_events_for_case(case_id, limit=12)
+    calendar_events = active_calendar_events(raw_calendar_events)
+    calendar_risk = infer_calendar_risk(events=raw_calendar_events, facts=active_facts + drive_active)
 
     runtime_state = {
         "latest_signal_id": str(case_row.get("latest_signal_id") or ""),
@@ -731,8 +734,11 @@ def assemble_mailbox_pack_dict(store: MailboxMemoryStoreLike, case_id: str) -> d
     calendar_payload = {
         "case_id": case_id,
         "events": calendar_events,
+        "observed_events": raw_calendar_events,
         "next_event": calendar_events[0] if calendar_events else {},
         "has_calendar_event": bool(calendar_events),
+        "calendar_risk": calendar_risk,
+        "visit_lifecycle": "scheduled_visit" if calendar_events else ("proposed_visit" if calendar_risk == "customer_proposed_date" else "no_calendar_event"),
     }
 
     source_refs: list[dict[str, Any]] = []
