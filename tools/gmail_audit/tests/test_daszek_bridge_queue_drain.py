@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -167,6 +168,7 @@ class BridgeQueueDrainTests(unittest.TestCase):
         os.close(fd)
         tmp = Path(name)
         try:
+            future_retry_at = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
             rows = [
                 {
                     "queue_id": "bq_retry_future",
@@ -181,7 +183,7 @@ class BridgeQueueDrainTests(unittest.TestCase):
                     "schema_version": "daszek_bridge_queue.v1",
                     "bridge_status": "retry",
                     "retry_count": 1,
-                    "next_retry_at": "2026-08-01T00:00:00+00:00",
+                    "next_retry_at": future_retry_at,
                 },
             ]
             tmp.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
