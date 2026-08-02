@@ -143,7 +143,7 @@ class AgentMcpService:
             return _error("trigger_agent_run is forbidden in AGENT_RUNTIME_MODE=legacy")
         if not self.settings.enabled and not allow_when_disabled:
             if not _mcp_debug_override_enabled():
-                return _error("AGENT_RUNTIME_ENABLED must be 1 (or set AGENT_MCP_ALLOW_DEBUG=1)")
+                return _error("AGENT_RUNTIME_MODE must be prep|primary (or set AGENT_MCP_ALLOW_DEBUG=1)")
         try:
             runner = self.run_agent or execute_agent_run
             result = runner(
@@ -476,7 +476,7 @@ def build_agent_mcp_doctor_check() -> dict[str, Any]:
         warnings.append("python package 'mcp' not installed (pip install mcp)")
     if not settings.enabled:
         warnings.append(
-            "AGENT_RUNTIME_ENABLED=0 — read tools work; trigger_run needs agent on or AGENT_MCP_ALLOW_DEBUG=1"
+            "agent runtime off — read tools work; trigger_run needs AGENT_RUNTIME_MODE=prep|primary or AGENT_MCP_ALLOW_DEBUG=1"
         )
     mode = str(settings.mode or "").strip().lower()
     if mode == "legacy":

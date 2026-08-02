@@ -311,8 +311,8 @@ def legacy_downstream_reconcile_active(settings: AgentRuntimeSettings | None = N
     settings = settings or load_agent_runtime_settings()
     if settings.enabled and str(settings.mode or "").strip().lower() == "legacy":
         raise AgentRuntimeConfigError(
-            "AGENT_RUNTIME_ENABLED=1 with AGENT_RUNTIME_MODE=legacy is inconsistent; "
-            "set enabled=0 for rollback or use prep|primary"
+            "agent runtime enabled with AGENT_RUNTIME_MODE=legacy is inconsistent; "
+            "AGENT_RUNTIME_MODE is canonical — use legacy for rollback or prep|primary to run"
         )
     return not agent_runtime_reconcile_active(settings)
 

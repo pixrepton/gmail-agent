@@ -1,26 +1,13 @@
-"""RC-15 reproducer: the agent-runtime branch depends on loader order.
+"""DQ-17 / RC-15: one canonical setting owns the agent-runtime branch.
 
-`load_agent_runtime_settings()` reads `AGENT_RUNTIME_ENABLED` straight from the
-environment after loading the agent dotenv file. `config.load_settings()` writes
-that same variable from the Case OS runtime profile. Whichever runs first in a
-process decides the answer, so the retained agent branch is selected
-non-deterministically.
+`AGENT_RUNTIME_MODE` is canonical and owned by the server-side Node B control plane.
+`AGENT_RUNTIME_ENABLED` survives only as a deprecated legacy fallback, consulted for
+resolution only when `AGENT_RUNTIME_MODE` is unset.
 
-This is NOT fixed. It is left as a strict xfail because closing it requires a
-precedence decision that the current suite blocks in both directions:
+Precedence: mode -> legacy translation of enabled -> off.
 
-* profile default filling in only what is unset (dotenv wins) breaks 13 tests
-  that rely on the profile forcing the agent on
-  (`test_signal_reconciler_runtime`, `test_runtime_doctor_checks`,
-  `test_canonical_runtime_profile`, `test_x14_discard_audit`, ...);
-* the profile assigning unconditionally in both entrypoints breaks
-  `test_agent_primary_mode_pr_f`, which sets `AGENT_RUNTIME_MODE=primary`
-  and would have it overwritten with the profile's `prep`.
-
-Either resolution is a semantics change to the config plane plus test updates,
-so it belongs in the early-decision queue, not in a repair commit. When it is
-decided and implemented, this xfail turns into a failure and must become a
-plain assertion.
+Both set and agreeing: mode wins. Both set and contradicting: the agent stays off and
+the contradiction is raised explicitly — it is never silently resolved to one value.
 """
 
 from __future__ import annotations
@@ -36,11 +23,146 @@ TOOL_DIR = Path(__file__).resolve().parent.parent
 if str(TOOL_DIR) not in sys.path:
     sys.path.insert(0, str(TOOL_DIR))
 
+from agent_runtime.settings import (
+    AGENT_RUNTIME_DISABLED_MODE,
+    resolve_agent_runtime_branch,
+)
+from agent_runtime.validate import AgentRuntimeConfigError
+from config import apply_case_os_agent_runtime_plane
+
+_PLANE_ENV = (
+    "AGENT_RUNTIME_MODE",
+    "AGENT_RUNTIME_ENABLED",
+    "CASE_OS_RUNTIME_PROFILE",
+    "EMERGENCY_INTELLIGENCE_KILLSWITCH",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_plane_env(monkeypatch: pytest.MonkeyPatch):
+    for name in _PLANE_ENV:
+        monkeypatch.delenv(name, raising=False)
+    yield
+
+
+# --- precedence -------------------------------------------------------------
+
+
+def test_mode_is_canonical(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_RUNTIME_MODE", "prep")
+    assert resolve_agent_runtime_branch() == ("prep", True)
+
+    monkeypatch.setenv("AGENT_RUNTIME_MODE", "legacy")
+    assert resolve_agent_runtime_branch() == ("legacy", False)
+
+
+def test_mode_wins_when_both_are_set_and_agree(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_RUNTIME_MODE", "prep")
+    monkeypatch.setenv("AGENT_RUNTIME_ENABLED", "1")
+    assert resolve_agent_runtime_branch() == ("prep", True)
+
+    monkeypatch.setenv("AGENT_RUNTIME_MODE", "legacy")
+    monkeypatch.setenv("AGENT_RUNTIME_ENABLED", "0")
+    assert resolve_agent_runtime_branch() == ("legacy", False)
+
+
+def test_default_is_agent_runtime_off() -> None:
+    assert resolve_agent_runtime_branch() == (AGENT_RUNTIME_DISABLED_MODE, False)
+
+
+# --- contradiction ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("mode", "legacy"),
+    [("prep", "0"), ("legacy", "1"), ("primary", "0")],
+)
+def test_contradiction_fails_closed_and_loudly(
+    monkeypatch: pytest.MonkeyPatch, mode: str, legacy: str
+) -> None:
+    monkeypatch.setenv("AGENT_RUNTIME_MODE", mode)
+    monkeypatch.setenv("AGENT_RUNTIME_ENABLED", legacy)
+    with pytest.raises(AgentRuntimeConfigError) as excinfo:
+        resolve_agent_runtime_branch()
+    message = str(excinfo.value)
+    # The contradiction must be named, not silently resolved to one of the two.
+    assert "AGENT_RUNTIME_MODE" in message
+    assert "AGENT_RUNTIME_ENABLED" in message
+    assert "stays off" in message
+
+
+def test_invalid_mode_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_RUNTIME_MODE", "banana")
+    with pytest.raises(AgentRuntimeConfigError):
+        resolve_agent_runtime_branch()
+
+
+# --- deprecated legacy fallback --------------------------------------------
+# These run only with AGENT_RUNTIME_MODE absent. That is the whole contract of the
+# fallback: it is never a competing source of truth alongside the canonical setting.
+
+
+def test_legacy_fallback_translates_enabled_when_mode_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_RUNTIME_ENABLED", "1")
+    mode, enabled = resolve_agent_runtime_branch()
+    assert enabled is True
+    assert mode != AGENT_RUNTIME_DISABLED_MODE
+
+    monkeypatch.setenv("AGENT_RUNTIME_ENABLED", "0")
+    assert resolve_agent_runtime_branch() == (AGENT_RUNTIME_DISABLED_MODE, False)
+
+
+def test_legacy_fallback_is_ignored_for_resolution_once_mode_is_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_RUNTIME_ENABLED", "1")
+    assert resolve_agent_runtime_branch()[1] is True
+    # Same legacy value, now with the canonical setting saying off -> contradiction,
+    # never a silent win for either side.
+    monkeypatch.setenv("AGENT_RUNTIME_MODE", "legacy")
+    with pytest.raises(AgentRuntimeConfigError):
+        resolve_agent_runtime_branch()
+
+
+# --- control plane ----------------------------------------------------------
+
+
+def test_killswitch_forces_the_agent_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EMERGENCY_INTELLIGENCE_KILLSWITCH", "1")
+    monkeypatch.setenv("AGENT_RUNTIME_MODE", "prep")
+    apply_case_os_agent_runtime_plane()
+    assert resolve_agent_runtime_branch() == ("legacy", False)
+
+
+def test_permissive_profile_supplies_but_does_not_overwrite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CASE_OS_RUNTIME_PROFILE", "full")
+    apply_case_os_agent_runtime_plane()
+    assert resolve_agent_runtime_branch() == ("prep", True)
+
+    monkeypatch.setenv("AGENT_RUNTIME_MODE", "primary")
+    apply_case_os_agent_runtime_plane()
+    assert resolve_agent_runtime_branch()[0] == "primary"
+
+
+def test_the_profile_never_emits_the_deprecated_setting() -> None:
+    from config import _case_os_profile_env_overrides
+
+    for profile in ("minimal", "full"):
+        overrides = _case_os_profile_env_overrides(profile)
+        assert "AGENT_RUNTIME_ENABLED" not in overrides
+        assert overrides["AGENT_RUNTIME_MODE"] in ("prep", "legacy")
+
+
+# --- RC-15: loader order ----------------------------------------------------
+
 _PROBE = """
 import json, os, sys
 sys.path.insert(0, {tool_dir!r})
-for _name in ("AGENT_RUNTIME_ENABLED", "AGENT_RUNTIME_MODE", "CASE_OS_RUNTIME_PROFILE",
-              "EMERGENCY_INTELLIGENCE_KILLSWITCH"):
+for _name in {plane_env!r}:
     os.environ.pop(_name, None)
 {setup}
 from agent_runtime.settings import load_agent_runtime_settings
@@ -55,19 +177,29 @@ _PROFILE_FIRST = (
 
 
 def _probe(setup: str) -> dict:
-    """Resolve the agent branch in a fresh process, so dotenv memoisation is honest."""
-    src = _PROBE.format(tool_dir=str(TOOL_DIR), setup=setup)
+    """Resolve the branch in a fresh process, so dotenv memoisation stays honest."""
+    src = _PROBE.format(tool_dir=str(TOOL_DIR), plane_env=_PLANE_ENV, setup=setup)
     out = subprocess.run(
         [sys.executable, "-c", src], capture_output=True, text=True, cwd=str(TOOL_DIR), check=True
     )
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="RC-15 open: agent-runtime branch still depends on which config plane loads first",
-)
 def test_branch_is_identical_whichever_plane_runs_first() -> None:
-    agent_first = _probe("")
-    profile_first = _probe(_PROFILE_FIRST)
-    assert agent_first == profile_first
+    assert _probe("") == _probe(_PROFILE_FIRST)
+
+
+_EXPLICIT_MODE_ENV_SETUP = (
+    "os.environ['AGENT_RUNTIME_MODE'] = 'legacy'\n"
+    "os.environ['CASE_OS_RUNTIME_PROFILE'] = 'full'\n"
+)
+
+
+def test_an_explicit_operator_mode_survives_the_permissive_profile_either_order() -> None:
+    """The substantive RC-15 case: an explicit setting that DISAGREES with the
+    profile's own default. Coincidental agreement (both defaulting to "prep") would
+    pass even with the old order-dependent code; this does not.
+    """
+    agent_first = _probe(_EXPLICIT_MODE_ENV_SETUP)
+    profile_first = _probe(_EXPLICIT_MODE_ENV_SETUP + _PROFILE_FIRST)
+    assert agent_first == profile_first == {"enabled": False, "mode": "legacy"}

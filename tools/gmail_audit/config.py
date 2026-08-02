@@ -497,14 +497,16 @@ def resolve_case_os_runtime_profile_name() -> str:
 
 def _case_os_profile_env_overrides(profile: str) -> dict[str, str]:
     """Map Case OS runtime profile to env overrides (single resolution point)."""
+    # DQ-17: the profile speaks the canonical setting only. It must not emit the
+    # deprecated AGENT_RUNTIME_ENABLED, or it would manufacture the very
+    # mode/enabled contradiction the decision exists to forbid.
     if profile == CASE_OS_PROFILE_MINIMAL:
         overrides = {name: "0" for name in CASE_OS_INTELLIGENCE_FLAG_NAMES}
-        overrides["AGENT_RUNTIME_ENABLED"] = "0"
+        overrides["AGENT_RUNTIME_MODE"] = "legacy"
         overrides["DECISION_PIPELINE_DRY_RUN_ONLY"] = "1"
         return overrides
     if profile == CASE_OS_PROFILE_FULL:
         overrides = {name: "1" for name in CASE_OS_INTELLIGENCE_FLAG_NAMES}
-        overrides["AGENT_RUNTIME_ENABLED"] = "1"
         overrides["AGENT_RUNTIME_MODE"] = "prep"
         overrides["DECISION_PIPELINE_DRY_RUN_ONLY"] = "0"
         overrides["DASZEK_FEED_SOURCE"] = "engagement_snapshot_v2"
@@ -526,12 +528,50 @@ def validate_agent_runtime_mode_not_primary() -> None:
         )
 
 
+AGENT_RUNTIME_PLANE_ENV_NAMES = ("AGENT_RUNTIME_MODE",)
+
+
+def apply_case_os_agent_runtime_plane() -> str:
+    """Resolve `AGENT_RUNTIME_MODE` from the Case OS profile alone (DQ-17).
+
+    A restricting profile (`minimal`, incl. the emergency killswitch) assigns
+    unconditionally — it must be able to force the agent off regardless of what an
+    operator set. The permissive profile (`full`) only supplies the default branch
+    via `setdefault`, so it never silently overwrites an explicit `AGENT_RUNTIME_MODE`
+    the operator or the agent dotenv already set.
+
+    Loads the agent dotenv first, so an operator's explicit local `AGENT_RUNTIME_MODE`
+    is visible to the `setdefault` below regardless of whether this function or
+    `load_agent_runtime_settings()` happens to run first in the process (RC-15).
+    """
+    try:
+        from agent_runtime.settings import ensure_agent_runtime_env_loaded
+    except Exception:  # pragma: no cover - agent runtime not importable
+        pass
+    else:
+        ensure_agent_runtime_env_loaded()
+    profile = resolve_case_os_runtime_profile_name()
+    overrides = _case_os_profile_env_overrides(profile)
+    restricting = profile == CASE_OS_PROFILE_MINIMAL
+    for key in AGENT_RUNTIME_PLANE_ENV_NAMES:
+        if key not in overrides:
+            continue
+        if restricting:
+            os.environ[key] = overrides[key]
+        else:
+            os.environ.setdefault(key, overrides[key])
+    return profile
+
+
 def apply_case_os_runtime_profile_overrides() -> str:
     """Apply profile-derived env overrides before flag parsing. Returns profile name."""
     validate_agent_runtime_mode_not_primary()
     profile = resolve_case_os_runtime_profile_name()
     for key, value in _case_os_profile_env_overrides(profile).items():
+        if key in AGENT_RUNTIME_PLANE_ENV_NAMES:
+            continue
         os.environ[key] = value
+    apply_case_os_agent_runtime_plane()
     return profile
 
 
@@ -557,8 +597,8 @@ def format_case_os_runtime_profile_startup_line(settings: Settings) -> str:
     return (
         f"CASE_OS_RUNTIME profile={settings.case_os_runtime_profile} "
         f"flags=[{flag_bits}] "
-        f"AGENT_RUNTIME_ENABLED={'1' if agent.enabled else '0'} "
         f"AGENT_RUNTIME_MODE={agent.mode} "
+        f"agent_runtime_enabled={'1' if agent.enabled else '0'} "
         f"DECISION_PIPELINE_DRY_RUN_ONLY={dry}"
     )
 
@@ -624,7 +664,7 @@ def canonical_production_violations(settings: Settings) -> list[str]:
         if agent.enabled:
             if str(agent.mode or "").strip().lower() != "primary":
                 violations.append(
-                    "AGENT_RUNTIME_MODE must be `primary` when AGENT_RUNTIME_ENABLED=1 in canonical_production."
+                    "AGENT_RUNTIME_MODE must be `primary` when the agent runtime is enabled in canonical_production."
                 )
             feed_src = (os.getenv("DASZEK_FEED_SOURCE") or "").strip().lower()
             if feed_src in {"legacy", "mailbox_memory", "projection_v3"}:

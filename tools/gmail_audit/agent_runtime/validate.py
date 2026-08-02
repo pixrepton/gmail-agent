@@ -22,7 +22,7 @@ def validate_agent_runtime_settings(settings: AgentRuntimeSettings) -> list[str]
     if not settings.enabled:
         return issues
     if mode == "legacy":
-        issues.append("AGENT_RUNTIME_ENABLED=1 with mode=legacy is inconsistent (agent must be off in legacy)")
+        issues.append("agent runtime enabled with AGENT_RUNTIME_MODE=legacy is inconsistent (agent must be off in legacy)")
     if mode in {"prep", "primary"}:
         if not str(settings.openai_api_key or "").strip():
             issues.append("AGENT_OPENAI_API_KEY (or OPENAI_COMPAT_API_KEY) required when agent enabled")

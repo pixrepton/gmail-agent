@@ -26,7 +26,7 @@ def validate_primary_cutover_settings(settings: AgentRuntimeSettings | None = No
         return issues
     mode = str(settings.mode or "").strip().lower()
     if mode == "legacy":
-        issues.append("AGENT_RUNTIME_ENABLED=1 with mode=legacy is inconsistent (disable agent or use prep|primary)")
+        issues.append("agent runtime enabled with AGENT_RUNTIME_MODE=legacy is inconsistent (use legacy to disable, or prep|primary)")
     if mode == "primary" and not str(settings.openai_api_key or "").strip():
         issues.append("AGENT_OPENAI_API_KEY required for AGENT_RUNTIME_MODE=primary")
     if mode == "primary" and legacy_feed_explicitly_requested():

@@ -25,6 +25,12 @@ DEFAULT_AGENT_MODEL = "gpt-4o-mini"
 DEFAULT_AGENT_MODEL_FALLBACK = ""
 DEFAULT_AGENT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_AGENT_RUNTIME_MODE = "prep"
+# DQ-17: AGENT_RUNTIME_MODE is the single canonical setting for the agent branch.
+# AGENT_RUNTIME_ENABLED is retained only as a deprecated legacy fallback.
+CANONICAL_AGENT_RUNTIME_MODE_ENV = "AGENT_RUNTIME_MODE"
+DEPRECATED_AGENT_RUNTIME_ENABLED_ENV = "AGENT_RUNTIME_ENABLED"
+AGENT_RUNTIME_MODES = ("prep", "primary", "legacy")
+AGENT_RUNTIME_DISABLED_MODE = "legacy"
 DEFAULT_AGENT_MAX_ROUNDS = 12
 DEFAULT_KALK_TOP_TIMEOUT_SEC = 4
 DEFAULT_KALK_TOP_MAX_RETRIES = 3
@@ -56,17 +62,66 @@ class AgentRuntimeSettings:
     staging_ttl_hours: int = 72
 
 
-def load_agent_runtime_settings() -> AgentRuntimeSettings:
+def ensure_agent_runtime_env_loaded() -> None:
+    """Idempotently load the agent dotenv source. Safe to call from `config`.
+
+    Lets the Case OS profile plane (`config.apply_case_os_agent_runtime_plane`) see
+    an operator's explicit dotenv `AGENT_RUNTIME_MODE` before deciding its own
+    permissive default, regardless of which module runs first.
+    """
+    _load_agent_runtime_env_file()
+
+
+def resolve_agent_runtime_branch() -> tuple[str, bool]:
+    """Resolve `(mode, enabled)` under DQ-17.
+
+    `AGENT_RUNTIME_MODE` is the single canonical setting; the server-side Node B
+    control plane owns it. `AGENT_RUNTIME_ENABLED` survives only as a deprecated
+    legacy fallback and is consulted for resolution **only** when
+    `AGENT_RUNTIME_MODE` is unset.
+
+    Precedence: `AGENT_RUNTIME_MODE` -> legacy translation of
+    `AGENT_RUNTIME_ENABLED` -> agent runtime off.
+
+    When both are set and agree, the mode wins. When both are set and contradict,
+    the agent runtime stays off and the contradiction is raised as an explicit
+    configuration error — it must never be silently resolved to one of the two.
+    """
     from agent_runtime.validate import AgentRuntimeConfigError
 
+    raw_mode = (os.getenv(CANONICAL_AGENT_RUNTIME_MODE_ENV) or "").strip().lower()
+    raw_legacy = os.getenv(DEPRECATED_AGENT_RUNTIME_ENABLED_ENV)
+    legacy_is_set = raw_legacy is not None and str(raw_legacy).strip() != ""
+
+    if raw_mode:
+        if raw_mode not in AGENT_RUNTIME_MODES:
+            raise AgentRuntimeConfigError(
+                f"AGENT_RUNTIME_MODE invalid: {raw_mode!r} (expected prep|primary|legacy)"
+            )
+        enabled = raw_mode != AGENT_RUNTIME_DISABLED_MODE
+        if legacy_is_set and _parse_bool(raw_legacy, default=False) != enabled:
+            raise AgentRuntimeConfigError(
+                f"{CANONICAL_AGENT_RUNTIME_MODE_ENV}={raw_mode} contradicts deprecated "
+                f"{DEPRECATED_AGENT_RUNTIME_ENABLED_ENV}={str(raw_legacy).strip()}. "
+                "Agent runtime stays off; the contradiction is not silently resolved. "
+                f"{CANONICAL_AGENT_RUNTIME_MODE_ENV} is canonical — remove "
+                f"{DEPRECATED_AGENT_RUNTIME_ENABLED_ENV} or make it agree "
+                f"(legacy = off, prep|primary = on)."
+            )
+        return raw_mode, enabled
+
+    if legacy_is_set:
+        enabled = _parse_bool(raw_legacy, default=False)
+        return (DEFAULT_AGENT_RUNTIME_MODE if enabled else AGENT_RUNTIME_DISABLED_MODE), enabled
+
+    return AGENT_RUNTIME_DISABLED_MODE, False
+
+
+def load_agent_runtime_settings() -> AgentRuntimeSettings:
     _load_agent_runtime_env_file()
-    mode = (os.getenv("AGENT_RUNTIME_MODE", DEFAULT_AGENT_RUNTIME_MODE) or DEFAULT_AGENT_RUNTIME_MODE).strip().lower()
-    if mode not in {"prep", "primary", "legacy"}:
-        raise AgentRuntimeConfigError(
-            f"AGENT_RUNTIME_MODE invalid: {mode!r} (expected prep|primary|legacy)"
-        )
+    mode, agent_enabled = resolve_agent_runtime_branch()
     return AgentRuntimeSettings(
-        enabled=_parse_bool(os.getenv("AGENT_RUNTIME_ENABLED"), default=False),
+        enabled=agent_enabled,
         mode=mode,
         model=(os.getenv("AGENT_MODEL", DEFAULT_AGENT_MODEL) or DEFAULT_AGENT_MODEL).strip(),
         model_fallback=(
