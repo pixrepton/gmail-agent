@@ -714,27 +714,17 @@ def execute_send_email(
     mailbox_store: Any = None,
     **kwargs,
 ) -> dict:
-    """Wysyła email przez Gmail API — deleguje do execute_hitl_gmail_send."""
+    """Fail-closed tombstone: Node B no longer sends Gmail messages."""
+    _ = mailbox_store, kwargs
     to = str(args.get("to") or args.get("recipient") or "").strip()
-    subject = str(args.get("subject") or "").strip()
-    body = str(args.get("body") or args.get("message") or "").strip()
-    case_id = str(args.get("case_id") or args.get("target") or "").strip()
-    if not to:
-        return {"status": "error", "summary": "Brak adresata (to)."}
-    try:
-        from hitl_gmail_send import execute_hitl_gmail_send
-        result = execute_hitl_gmail_send(
-            to=to,
-            subject=subject or "(brak tematu)",
-            body_text=body,
-            case_id=case_id,
-        )
-        if result.get("executed"):
-            return {"status": "ok", "summary": f"Wysłano email do {to}: {subject}"}
-        return {"status": "ok", "summary": f"Email do {to} zakolejkowany (dry_run): {subject}"}
-    except Exception as exc:
-        logger.error("execute_send_email failed: %s", exc)
-        return {"status": "error", "summary": f"Błąd wysyłki email: {exc}"}
+    target = to or str(args.get("case_id") or args.get("target") or "").strip() or "manual_operator"
+    return {
+        "status": "error",
+        "summary": (
+            f"Google write disabled: Node B nie wysyła wiadomości. "
+            f"Zatwierdzony draft pozostaje do ręcznej wysyłki przez operatora ({target})."
+        ),
+    }
 
 
 def execute_generate_draft(
@@ -780,33 +770,17 @@ def execute_schedule_visit(
     mailbox_store: Any = None,
     **kwargs,
 ) -> dict:
-    """Planuje wizytę serwisową — zapisuje jako fakt w MailboxMemory."""
-    case_id = str(args.get("case_id") or args.get("target") or "").strip()
-    date = str(args.get("date") or args.get("scheduled_date") or "").strip()
-    address = str(args.get("address") or args.get("visit_address") or "").strip()
-    technician = str(args.get("technician") or args.get("assignee") or "").strip()
-    if not case_id:
-        return {"status": "error", "summary": "Brak case_id."}
-    if not date:
-        return {"status": "error", "summary": "Brak daty wizyty."}
-    try:
-        if mailbox_store is not None:
-            append = getattr(mailbox_store, "append_fact_rows", None)
-            if callable(append):
-                row = _write_fact_row(
-                    case_id=case_id,
-                    fact_key="scheduled_visit",
-                    normalized_value=f"Date: {date}, Address: {address}",
-                    raw_value=f"Technician: {technician}, Date: {date}, Address: {address}",
-                    source_ref="agent:write_executor:schedule_visit",
-                    metadata={"date": date, "address": address, "technician": technician},
-                )
-                append([row])
-                return {"status": "ok", "summary": f"Zaplanowano wizytę {date} dla sprawy {case_id}."}
-        return {"status": "error", "summary": "Brak mailbox_store do zapisu wizyty."}
-    except Exception as exc:
-        logger.error("execute_schedule_visit failed: %s", exc)
-        return {"status": "error", "summary": f"Błąd planowania wizyty: {exc}"}
+    """Fail-closed tombstone: Node B cannot create Calendar-backed visits."""
+    _ = mailbox_store, kwargs
+    case_id = str(args.get("case_id") or args.get("target") or "").strip() or "unknown_case"
+    date = str(args.get("date") or args.get("scheduled_date") or "").strip() or "unknown_date"
+    return {
+        "status": "error",
+        "summary": (
+            f"Google Calendar write disabled: Node B nie tworzy wizyt. "
+            f"Zachowaj propozycję terminu {date} jako proposed_visit dla operatora w sprawie {case_id}."
+        ),
+    }
 
 
 def execute_add_deadline(
@@ -914,9 +888,7 @@ WRITE_EXECUTORS: dict[str, Callable] = {
     "update_customer_info": _with_idempotency(execute_update_customer_info),
     # Stubby — do implementacji w PR-5B
     "create_case": _with_idempotency(execute_create_case),
-    "send_email": _with_idempotency(execute_send_email),
     "generate_draft": _with_idempotency(execute_generate_draft),
-    "schedule_visit": _with_idempotency(execute_schedule_visit),
     "add_deadline": _with_idempotency(execute_add_deadline),
 }
 

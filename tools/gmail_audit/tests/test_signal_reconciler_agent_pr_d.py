@@ -29,7 +29,7 @@ from mailbox_memory_store import InMemoryMailboxMemoryStore
 from signal_contract import build_canonical_signal
 from signal_journal import SignalJournal
 from signal_contract import build_canonical_signal
-from signal_reconciler import SignalRuntimeContext, _reconcile_drive_signal, _reconcile_gmail_signal
+from signal_reconciler import SignalRuntimeContext, _reconcile_drive_signal, _reconcile_gmail_signal, reconcile_signal
 
 
 @pytest.fixture(autouse=True)
@@ -342,12 +342,19 @@ def test_agent_dry_run_skips_execute_but_returns_projection() -> None:
     assert result.v2_projection is not None
 
 
-def test_agent_run_failure_does_not_break_reconcile() -> None:
+def test_agent_run_failure_fails_closed_and_records_typed_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     store, context = _context()
     signal = _gmail_signal()
     registry = CorrelationRegistryService(InMemoryCorrelationRegistryStore())
     registry.bootstrap()
     registry.sync_mailbox_case(case_id="case_agent_d", customer_email="klient@example.com")
+    operator_store = InMemoryOperatorEngagementStore()
+    monkeypatch.setattr(
+        "agent_runtime.agent_reconcile.build_operator_engagement_store",
+        lambda settings, *, allow_in_memory=False: operator_store,
+    )
     with patch.dict(
         os.environ,
         {"AGENT_RUNTIME_ENABLED": "1", "AGENT_RUNTIME_MODE": "prep", "AGENT_OPENAI_API_KEY": "sk-test"},
@@ -357,14 +364,28 @@ def test_agent_run_failure_does_not_break_reconcile() -> None:
             "agent_runtime.agent_reconcile.execute_agent_run",
             side_effect=RuntimeError("planner boom"),
         ):
-            result = _reconcile_gmail_signal(
-                signal,
-                runtime_context=context,
-                dry_run=False,
-                entity_link_dict={"case_id": "case_agent_d"},
-            )
-    assert result.processing_state == "reconciled"
-    assert any("agent_run_failed" in str(w) for w in result.warnings)
+            with pytest.raises(RuntimeError, match="planner boom"):
+                reconcile_signal(
+                    signal,
+                    runtime_context=context,
+                    dry_run=False,
+                )
+    attempts = store.fetch_signal_processing_attempts(signal.signal_id)
+    assert attempts
+    final = next(item for item in attempts if item.get("status") == "failed")
+    assert final["status"] == "failed"
+    details = dict(final.get("details_json") or {})
+    assert details["failure_code"] == "agent_execution_failed"
+    assert details["retryable"] is False
+    assert details["severity"] == "attention_required"
+    assert details["exception_class"] == "RuntimeError"
+    snapshot = operator_store.load_snapshot_by_case_id("case_agent_d")
+    assert snapshot is not None
+    assert snapshot.operational_status.code == "pending_operator"
+    assert snapshot.operational_status.blocking is True
+    assert snapshot.feed_visibility is not None
+    assert snapshot.feed_visibility.execution_attention is True
+    assert snapshot.feed_visibility.execution_attention_reason == "agent_execution_failed"
 
 
 def test_run_agent_reconcile_staging_refreshes_existing_snapshot_trace_id(

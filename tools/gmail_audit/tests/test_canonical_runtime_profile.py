@@ -15,7 +15,10 @@ if str(TOOL_DIR) not in sys.path:
 from config import (
     CANONICAL_PRODUCTION_RUNTIME_PROFILE,
     ConfigError,
+    GOOGLE_CALENDAR_EVENTS_SCOPE,
+    GOOGLE_GMAIL_SEND_SCOPE,
     Settings,
+    _parse_google_oauth_scopes,
     canonical_production_violations,
     load_settings,
 )
@@ -100,6 +103,25 @@ def _minimal_canonical_settings(**overrides: object) -> Settings:
 
 
 class CanonicalRuntimeProfileTests(unittest.TestCase):
+    def test_google_oauth_scopes_reject_gmail_send(self) -> None:
+        with self.assertRaises(ConfigError) as ctx:
+            _parse_google_oauth_scopes(
+                f"https://www.googleapis.com/auth/gmail.readonly {GOOGLE_GMAIL_SEND_SCOPE}",
+                field_name="GOOGLE_OAUTH_SCOPES",
+            )
+        self.assertIn("forbidden", str(ctx.exception))
+
+    def test_google_oauth_scopes_reject_calendar_write(self) -> None:
+        with self.assertRaises(ConfigError) as ctx:
+            _parse_google_oauth_scopes(
+                (
+                    "https://www.googleapis.com/auth/gmail.readonly "
+                    f"{GOOGLE_CALENDAR_EVENTS_SCOPE}"
+                ),
+                field_name="GOOGLE_OAUTH_SCOPES",
+            )
+        self.assertIn("forbidden", str(ctx.exception))
+
     def test_canonical_production_violations_empty_when_satisfied(self) -> None:
         s = _minimal_canonical_settings()
         self.assertEqual(canonical_production_violations(s), [])

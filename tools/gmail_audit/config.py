@@ -77,6 +77,13 @@ CASE_OS_INTELLIGENCE_FLAG_NAMES: tuple[str, ...] = (
 GOOGLE_DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 GOOGLE_CALENDAR_READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
 GOOGLE_CALENDAR_EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events"
+GOOGLE_GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
+GOOGLE_GMAIL_COMPOSE_SCOPE = "https://www.googleapis.com/auth/gmail.compose"
+FORBIDDEN_GOOGLE_WRITE_SCOPES = (
+    GOOGLE_GMAIL_SEND_SCOPE,
+    GOOGLE_GMAIL_COMPOSE_SCOPE,
+    GOOGLE_CALENDAR_EVENTS_SCOPE,
+)
 DEFAULT_DOCLING_MAX_PAGES = 40
 DEFAULT_DOCLING_TIMEOUT_SEC = 45
 DEFAULT_ATTACHMENT_PARSER_CHAIN = "docling,unstructured,legacy"
@@ -1482,6 +1489,12 @@ def _parse_google_oauth_scopes(raw_value: str, *, field_name: str) -> tuple[str,
     if DEFAULT_GOOGLE_OAUTH_SCOPES[0] not in scopes:
         raise ConfigError(
             f"{field_name} must include {DEFAULT_GOOGLE_OAUTH_SCOPES[0]}."
+        )
+    forbidden = tuple(scope for scope in scopes if scope in FORBIDDEN_GOOGLE_WRITE_SCOPES)
+    if forbidden:
+        raise ConfigError(
+            f"{field_name} contains forbidden Google write scopes: {', '.join(forbidden)}. "
+            "Node B is read-only for Gmail and Google Calendar."
         )
     return scopes
 

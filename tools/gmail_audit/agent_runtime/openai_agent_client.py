@@ -302,7 +302,7 @@ class OpenAIToolPlanner:
             )
             followup_instruction = (
                 "NIE wywołuj extract_facts_from_text — przejdź od razu do propose_mutation z odpowiednią operacją "
-                "(update_case_status, schedule_visit, generate_draft). "
+                "(np. update_case_status lub generate_draft). "
             )
         elif "generate_draft_reply" in available_tools:
             draft_instruction = (

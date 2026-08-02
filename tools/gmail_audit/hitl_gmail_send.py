@@ -14,6 +14,7 @@ from config import Settings
 GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
 GMAIL_COMPOSE_SCOPE = "https://www.googleapis.com/auth/gmail.compose"
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+GOOGLE_WRITE_DISABLED_REASON = "google_write_disabled_manual_operator_only"
 
 
 class SendTargetResolutionError(RuntimeError):
@@ -100,10 +101,12 @@ def execute_hitl_gmail_send(
     operator_id: str = "",
     on_effect_start: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
-    """Execute or record a bounded HITL Gmail send for an approved draft_reply action."""
-    execute_flag = str(os.environ.get("AGENT_HITL_EXECUTE_SEND") or "").strip().lower() in {"1", "true", "yes"}
-    if not execute_flag:
-        return {"executed": False, "reason": "queue_only_mvp", "effect_started": False, "decision_status": "failed_before_execution"}
+    """Fail-closed tombstone for legacy Gmail send entrypoints.
+
+    Node B is read-only for Gmail and Google Calendar. The approved draft stays
+    durable in Node B/Daszek for manual operator delivery, but this function
+    must never start a real side effect and must never report dry-run success.
+    """
 
     action = _action_draft(snapshot, action_id)
     if action is None:
@@ -119,81 +122,17 @@ def execute_hitl_gmail_send(
         return {"executed": False, "reason": "draft_body_empty", "effect_started": False, "decision_status": "failed_before_execution"}
 
     resolved_case = str(case_id or snapshot.case_id or "").strip()
-    try:
-        target = _resolve_send_target(settings=settings, snapshot=snapshot, case_id=resolved_case)
-    except SendTargetResolutionError as exc:
-        return {
-            "executed": False,
-            "reason": str(exc),
-            "effect_started": False,
-            "decision_status": "failed_before_execution",
-        }
-    to_addr = str(target.get("to") or "").strip()
-    if not to_addr:
-        return {
-            "executed": False,
-            "reason": "recipient_unresolved",
-            "effect_started": False,
-            "decision_status": "failed_before_execution",
-            "operator_id": operator_id,
-            "case_id": resolved_case,
-        }
-
-    mime = _build_mime_message(to_addr=to_addr, subject="", body=body)
-    raw_bytes = mime.as_bytes()
-    digest = hashlib.sha256(raw_bytes).hexdigest()[:16]
-
-    if not _has_gmail_send_scope(settings):
-        if callable(on_effect_start):
-            on_effect_start()
-        return {
-            "executed": True,
-            "mode": "bounded_dry_run",
-            "reason": "gmail_send_scope_missing",
-            "effect_started": True,
-            "decision_status": "executed",
-            "to": to_addr,
-            "draft_sha256": digest,
-            "operator_id": operator_id,
-            "case_id": resolved_case,
-            "target_source": target.get("source"),
-        }
-
-    try:
-        from google_gmail_api import GoogleGmailApiError, send_raw_message
-
-        if callable(on_effect_start):
-            on_effect_start()
-        response = send_raw_message(
-            settings,
-            raw_bytes=raw_bytes,
-            thread_id=str(target.get("thread_id") or "").strip() or None,
-        )
-        return {
-            "executed": True,
-            "mode": "live",
-            "effect_started": True,
-            "decision_status": "executed",
-            "message_id": str(response.get("id") or ""),
-            "thread_id": str(response.get("threadId") or target.get("thread_id") or ""),
-            "to": to_addr,
-            "draft_sha256": digest,
-            "operator_id": operator_id,
-            "case_id": resolved_case,
-            "target_source": target.get("source"),
-        }
-    except GoogleGmailApiError as exc:
-        return {
-            "executed": False,
-            "reason": "gmail_api_error",
-            "effect_started": True,
-            "decision_status": "outcome_unknown",
-            "error": str(exc),
-            "to": to_addr,
-            "draft_sha256": digest,
-            "operator_id": operator_id,
-            "case_id": resolved_case,
-        }
+    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+    return {
+        "executed": False,
+        "reason": GOOGLE_WRITE_DISABLED_REASON,
+        "effect_started": False,
+        "decision_status": "failed_before_execution",
+        "delivery_mode": "manual_operator",
+        "draft_sha256": digest,
+        "operator_id": operator_id,
+        "case_id": resolved_case,
+    }
 
 
 __all__ = ["execute_hitl_gmail_send", "GMAIL_SEND_SCOPE"]

@@ -22,6 +22,7 @@ from divergence_loop import (
     _find_similar_candidates,
     adaptive_threshold,
     classify_operator_response,
+    fetch_open_proposals_for_case,
     fetch_decision_queue,
     maybe_create_learning_candidate,
     record_agent_proposal,
@@ -80,6 +81,26 @@ class TestFetchDecisionQueueRowFactory:
         assert queue[0]["case_id"] == "case1"
         assert queue[0]["proposal_type"] == "draft_reply"
         assert queue[0]["summary_pl"] == "Testowa propozycja."
+
+
+class TestFetchOpenProposalsForCaseRowFactory:
+    def test_requests_dict_row_cursor_explicitly(self):
+        from psycopg.rows import dict_row
+
+        conn = _mock_conn()
+        fetch_open_proposals_for_case(conn, case_id="case1")
+        conn.cursor.assert_called_once_with(row_factory=dict_row)
+
+    def test_tuple_rows_are_rejected_fail_closed(self):
+        conn = _mock_conn()
+        cur = conn.cursor.return_value.__enter__.return_value
+        cur.fetchall.return_value = [("p1", "eng1", "case1")]
+        try:
+            fetch_open_proposals_for_case(conn, case_id="case1")
+        except TypeError as exc:
+            assert "dict_row" in str(exc)
+        else:
+            raise AssertionError("Expected tuple rows to be rejected fail-closed")
 
 
 # ============================================================================

@@ -89,6 +89,10 @@ def test_approve_hitl_engagement_clears_gate() -> None:
                     ),
                 )
     assert out["ok"] is True
+    assert out["decision_status"] == "approved"
+    assert out["execution_status"] == "not_applicable"
+    assert out["delivery_mode"] == "manual_operator"
+    assert out["effect_started"] is False
     publish_mock.assert_called_once()
     assert publish_mock.call_args.kwargs.get("event_type") == "gmail.hitl.approved"
     final = store.load_snapshot("eng_hitl")

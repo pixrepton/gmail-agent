@@ -122,11 +122,13 @@ def record_agent_proposal(
 
 
 def fetch_open_proposals_for_case(conn: DatabaseConnection, *, case_id: str, within_hours: int = DIVERGENCE_WINDOW_HOURS) -> list[dict[str, Any]]:
+    from psycopg.rows import dict_row
+
     cid = str(case_id or "").strip()
     if not cid:
         return []
     cutoff = _utc_now() - timedelta(hours=max(1, int(within_hours)))
-    with conn.cursor() as cur:
+    with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             """
             SELECT p.proposal_id, p.engagement_id, p.case_id, p.created_at,
@@ -159,7 +161,9 @@ def _row_to_proposal(row: Any) -> dict[str, Any]:
             except json.JSONDecodeError:
                 content = {}
         return {**row, "proposal_content_json": content}
-    return {"proposal_id": str(row[0])}
+    raise TypeError(
+        "_row_to_proposal requires dict_row; tuple rows silently lose proposal_type/case_id and are no longer accepted"
+    )
 
 
 def classify_operator_response(

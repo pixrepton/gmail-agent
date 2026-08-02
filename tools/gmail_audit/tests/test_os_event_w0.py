@@ -60,6 +60,9 @@ def test_approve_hitl_emits_gmail_hitl_approved_os_event() -> None:
     assert captured[0]["event_type"] == "gmail.hitl.approved"
     assert captured[0]["engagement_id"] == "eng_hitl"
     assert captured[0]["payload"]["summary_pl"]
+    assert captured[0]["payload"]["decision_status"] == "approved"
+    assert captured[0]["payload"]["execution_status"] == "not_applicable"
+    assert captured[0]["payload"]["delivery_mode"] == "manual_operator"
     assert captured[0]["trace_id"] == "t1"
     assert captured[0]["user_id"] == "konrad"
 

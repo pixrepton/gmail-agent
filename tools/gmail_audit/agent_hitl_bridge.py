@@ -376,7 +376,7 @@ def approve_hitl_engagement(
             )
 
         result["decision_key"] = _stable_bridge_key("approve", engagement_id, aid, operator_id)
-        result["decision_status"] = "accepted"
+        result.setdefault("decision_status", "accepted")
         result["feed_push"] = best_effort_push_engagement_feed_after_hitl(
             settings=settings,
             operator_store=operator_store,
@@ -414,17 +414,20 @@ def approve_hitl_engagement(
             event_type="gmail.hitl.approved",
             engagement_id=engagement_id,
             source_repo="gmail-agent",
-            payload={
-                "schema_version": "topinstal.os_event.v1",
-                "summary_pl": "Operator approved reply draft (HITL)",
-                "status": "ok",
-                "action_id": action_id,
-                "operator_id": operator_id,
-            },
-            correlation={
-                "case_id": case_id,
-                "adjudication_kind": "hitl_action_approved",
-                "approve_key": f"{engagement_id}|{action_id}|{operator_id}",
+                payload={
+                    "schema_version": "topinstal.os_event.v1",
+                    "summary_pl": "Operator approved reply draft for manual delivery (HITL)",
+                    "status": "ok",
+                    "action_id": action_id,
+                    "operator_id": operator_id,
+                    "decision_status": str(result.get("decision_status") or "approved"),
+                    "execution_status": str(result.get("execution_status") or "not_applicable"),
+                    "delivery_mode": str(result.get("delivery_mode") or "manual_operator"),
+                },
+                correlation={
+                    "case_id": case_id,
+                    "adjudication_kind": "hitl_action_approved",
+                    "approve_key": f"{engagement_id}|{action_id}|{operator_id}",
             },
             trace_id=trace_id,
             user_id=operator_id,
@@ -432,7 +435,6 @@ def approve_hitl_engagement(
         )
     result["os_event_id"] = os_event_id
     result["decision_key"] = _stable_bridge_key("approve", engagement_id, action_id, operator_id)
-    result["decision_status"] = "accepted"
     result["feed_push"] = best_effort_push_engagement_feed_after_hitl(
         settings=settings,
         operator_store=service.store,

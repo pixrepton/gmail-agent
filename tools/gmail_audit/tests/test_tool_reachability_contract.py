@@ -22,13 +22,6 @@ from agent_runtime.policy_guardrails import _FORBIDDEN_TOOL_NAMES
 from agent_runtime.tool_schemas import openai_tool_definitions
 from agent_runtime.tools.handlers import HANDLERS
 
-# request_human_handoff: implemented, but deliberately NOT in either allowlist and NOT
-# schema'd. Classified LEGACY/AMBIGUOUS in tool-reachability-inventory.md — its escalation
-# semantics (hitl_gate.required=True, operational_status=pending_operator) are already
-# fully covered by the reachable report_gaps_and_stop, and DELIVERY-1 does not reactivate
-# it (per the master brief's own "nie reaktywuj bez potrzeby" instruction).
-_KNOWN_HANDLER_NOT_ALLOWLISTED = {"request_human_handoff"}
-
 
 def _schema_covered_names(allowlist: tuple[str, ...]) -> set[str]:
     return {t["function"]["name"] for t in openai_tool_definitions(allowlist)}
@@ -80,9 +73,8 @@ def test_every_handler_is_either_allowlisted_or_explicitly_documented_as_not() -
     silent extra capability nobody can reach. Either way it must be a deliberate,
     named exception (tool-reachability-inventory.md), not an accident."""
     all_allowlisted = set(MAIL_AGENT_TOOL_ALLOWLIST) | set(CHAT_AGENT_TOOL_ALLOWLIST)
-    orphaned = set(HANDLERS) - all_allowlisted - _KNOWN_HANDLER_NOT_ALLOWLISTED
+    orphaned = set(HANDLERS) - all_allowlisted
     assert not orphaned, (
-        f"Handler(s) with no allowlist membership and not in the documented exception "
-        f"list: {orphaned}. Either allowlist them (with a schema) or add them to "
-        f"_KNOWN_HANDLER_NOT_ALLOWLISTED with a reason."
+        f"Handler(s) with no allowlist membership: {orphaned}. Either allowlist them "
+        f"(with a schema) or remove the orphaned runtime entrypoint."
     )

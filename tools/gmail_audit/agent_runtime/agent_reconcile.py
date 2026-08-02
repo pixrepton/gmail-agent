@@ -24,6 +24,7 @@ from agent_runtime.settings import AgentRuntimeSettings, load_agent_runtime_sett
 from agent_runtime.signal_engagement import patch_signal_engagement
 from log_config import get_trace_id
 from agent_runtime.store import (
+    AgentConcurrencyError,
     InMemoryOperatorEngagementStore,
     OperatorEngagementStore,
     PostgresOperatorEngagementStore,
@@ -36,6 +37,84 @@ from preclassifier import contains_noise_keyword
 from signal_contract import CanonicalSignal
 
 logger = get_logger(__name__)
+
+
+class AgentReconcileFailure(RuntimeError):
+    """Typed reconcile failure that must stay visible end-to-end."""
+
+    def __init__(
+        self,
+        *,
+        failure_code: str,
+        message: str,
+        retryable: bool,
+        severity: str = "attention_required",
+        exception_class: str = "RuntimeError",
+    ) -> None:
+        super().__init__(message)
+        self.failure_code = str(failure_code or "agent_execution_failed")
+        self.retryable = bool(retryable)
+        self.severity = str(severity or "attention_required")
+        self.exception_class = str(exception_class or "RuntimeError")
+
+
+def _raise_agent_reconcile_failure(
+    *,
+    failure_code: str,
+    exc: Exception,
+    retryable: bool,
+    severity: str = "attention_required",
+) -> None:
+    raise AgentReconcileFailure(
+        failure_code=failure_code,
+        message=str(exc),
+        retryable=retryable,
+        severity=severity,
+        exception_class=type(exc).__name__,
+    ) from exc
+
+
+def _failure_gap_message(failure_code: str) -> str:
+    messages = {
+        "case_intelligence_failed": "Case Intelligence nie zakonczyl przetwarzania sprawy. Wymagana uwaga operatora.",
+        "agent_concurrency_conflict": "Engagement zostal zmieniony rownolegle. Odswiez stan i powtorz probe operatora.",
+        "agent_execution_failed": "Agent Runtime nie zakonczyl wykonania sprawy. Wymagana uwaga operatora.",
+    }
+    return messages.get(str(failure_code or ""), "Agent Runtime zakonczyl sie bledem. Wymagana uwaga operatora.")
+
+
+def _project_reconcile_failure_best_effort(
+    operator_store: OperatorEngagementStore,
+    snapshot: EngagementSnapshotV2,
+    *,
+    failure_code: str,
+) -> EngagementSnapshotV2:
+    from feed_visibility import mark_execution_attention
+    from llm_contracts.engagement_snapshot_v2 import FeedVisibility, GapItem, OperationalStatus
+
+    filtered_gaps = [gap for gap in (snapshot.gaps or []) if str(getattr(gap, "field", "") or "") != "agent_runtime_failure"]
+    filtered_gaps.append(
+        GapItem(
+            field="agent_runtime_failure",
+            severity="blocking",
+            ask_pl=_failure_gap_message(failure_code),
+        )
+    )
+    patched = snapshot.model_copy(
+        update={
+            "feed_visibility": FeedVisibility(
+                **mark_execution_attention(snapshot.feed_visibility, reason=failure_code)
+            ),
+            "operational_status": OperationalStatus(
+                code="pending_operator",
+                steps_remaining=max(0, int(getattr(snapshot.operational_status, "steps_remaining", 0) or 0)),
+                blocking=True,
+            ),
+            "gaps": filtered_gaps[:8],
+        }
+    )
+    new_version = operator_store.save_snapshot(patched, expected_version=snapshot.version)
+    return patched.model_copy(update={"version": new_version})
 
 
 def build_case_understanding_projection(
@@ -597,7 +676,22 @@ def run_agent_reconcile(
             if resolved_case:
                 case_id = resolved_case
         except Exception as exc:  # noqa: BLE001
-            warnings.append(f"mailbox_intelligence_downstream_failed:{type(exc).__name__}:{exc}")
+            try:
+                snapshot = _project_reconcile_failure_best_effort(
+                    operator_store,
+                    snapshot,
+                    failure_code="case_intelligence_failed",
+                )
+            except Exception:  # noqa: BLE001 - visibility projection must never hide the root failure
+                logger.warning("RECONCILE_FAILURE_PROJECTION_FAILED", extra={"x": {
+                    "engagement_id": str(resolution.engagement_id or ""),
+                    "failure_code": "case_intelligence_failed",
+                }})
+            _raise_agent_reconcile_failure(
+                failure_code="case_intelligence_failed",
+                exc=exc,
+                retryable=True,
+            )
 
     run_result: AgentRunResult | None = None
     if dry_run:
@@ -651,9 +745,40 @@ def run_agent_reconcile(
             snapshot = run_result.snapshot
             if run_result.warnings:
                 warnings.extend(run_result.warnings)
+        except AgentConcurrencyError as exc:
+            try:
+                snapshot = _project_reconcile_failure_best_effort(
+                    operator_store,
+                    snapshot,
+                    failure_code="agent_concurrency_conflict",
+                )
+            except Exception:  # noqa: BLE001 - visibility projection must never hide the root failure
+                logger.warning("RECONCILE_FAILURE_PROJECTION_FAILED", extra={"x": {
+                    "engagement_id": str(resolution.engagement_id or ""),
+                    "failure_code": "agent_concurrency_conflict",
+                }})
+            _raise_agent_reconcile_failure(
+                failure_code="agent_concurrency_conflict",
+                exc=exc,
+                retryable=True,
+            )
         except Exception as exc:  # noqa: BLE001
-            warnings.append(f"agent_run_failed:{type(exc).__name__}:{exc}")
-            run_result = None
+            try:
+                snapshot = _project_reconcile_failure_best_effort(
+                    operator_store,
+                    snapshot,
+                    failure_code="agent_execution_failed",
+                )
+            except Exception:  # noqa: BLE001 - visibility projection must never hide the root failure
+                logger.warning("RECONCILE_FAILURE_PROJECTION_FAILED", extra={"x": {
+                    "engagement_id": str(resolution.engagement_id or ""),
+                    "failure_code": "agent_execution_failed",
+                }})
+            _raise_agent_reconcile_failure(
+                failure_code="agent_execution_failed",
+                exc=exc,
+                retryable=False,
+            )
 
         if mailbox_store is not None:
             patch_signal_engagement(
