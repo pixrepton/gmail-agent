@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 import uuid
 import zipfile
 from io import BytesIO
@@ -1140,6 +1141,80 @@ class MailboxMemoryRuntimeTests(unittest.TestCase):
                 conn.commit()
             after_cleanup = store.fetch_case(case_id)
             self.assertIsNone(after_cleanup)
+
+    def test_finalize_case_status_write_uses_mutate_case_not_fetch_then_upsert(self) -> None:
+        """RC-05: finalize_case used to fetch_case() then upsert_case() unlocked for
+        the status/lifecycle write — the exact TOCTOU window mutate_case exists to
+        close. A concurrent writer's field (simulated here as latest_signal_id, the
+        field _stamp_case_runtime_state writes) landing between fetch and finalize's
+        write must survive finalize, not be silently stomped by a stale re-upsert.
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            store = InMemoryMailboxMemoryStore()
+            runtime = MailboxMemoryRuntime(
+                store=store,
+                blob_root=Path(tmp_dir) / "blobs",
+                stage_mode="shadow",
+            )
+            runtime.bootstrap()
+
+            case_id = "case_finalize_toctou"
+            store.upsert_case(
+                {
+                    "case_id": case_id,
+                    "case_key": "CASE-FINALIZE-TOCTOU",
+                    "thread_id": "thr_finalize_toctou",
+                    "case_family": "test",
+                    "mailbox": "test@example.com",
+                    "subject": "TOCTOU check",
+                    "status": "open",
+                    "customer_name": "",
+                    "customer_email": "",
+                    "metadata": {},
+                }
+            )
+
+            upsert_case_calls: list[dict] = []
+            real_upsert_case = type(store).upsert_case
+            real_mutate_case = type(store).mutate_case
+
+            def _spy_upsert_case(self_store, row: dict) -> None:
+                upsert_case_calls.append(dict(row))
+                real_upsert_case(self_store, row)
+
+            # Simulate a concurrent writer (e.g. _stamp_case_runtime_state landing
+            # from a signal reconciled in parallel) that finalize_case's mutator
+            # must see and preserve, proving it reads the CURRENT row under the
+            # lock rather than a value captured before its own call started.
+            def _mutate_case_with_interleaved_write(self_store, cid, mutator, *, create_if_missing=False):
+                def _wrapped(row: dict) -> dict:
+                    row = dict(row)
+                    row["latest_signal_id"] = "sig-concurrent-writer"
+                    return mutator(row)
+
+                return real_mutate_case(self_store, cid, _wrapped, create_if_missing=create_if_missing)
+
+            with patch.object(type(store), "upsert_case", _spy_upsert_case), patch.object(
+                type(store), "mutate_case", _mutate_case_with_interleaved_write
+            ):
+                runtime.finalize_case(
+                    case_id=case_id,
+                    message_id="msg-toctou",
+                    thread_id="thr_finalize_toctou",
+                    business_result={},
+                    reply_result={},
+                    action_plan_result={},
+                    case_intelligence_result={},
+                )
+
+            # The old fetch_case()+upsert_case() pattern is gone from this path.
+            self.assertEqual(upsert_case_calls, [])
+
+            final_row = store.fetch_case(case_id)
+            self.assertIsNotNone(final_row)
+            # The concurrently-written field survived finalize's status update.
+            self.assertEqual(final_row["latest_signal_id"], "sig-concurrent-writer")
+            self.assertIn(final_row["status"], {"open", "awaiting_review", "closed", "resolved"})
 
 
 if __name__ == "__main__":

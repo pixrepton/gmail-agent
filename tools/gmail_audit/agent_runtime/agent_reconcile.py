@@ -22,6 +22,7 @@ from agent_runtime.jobs import build_agent_job_store
 from agent_runtime.run import AgentRunResult, execute_agent_run
 from agent_runtime.settings import AgentRuntimeSettings, load_agent_runtime_settings
 from agent_runtime.signal_engagement import patch_signal_engagement
+from case_intelligence_degradation import maybe_record_case_intelligence_degradation
 from log_config import get_trace_id
 from agent_runtime.store import (
     AgentConcurrencyError,
@@ -675,6 +676,18 @@ def run_agent_reconcile(
             resolved_case = str(mailbox_memory_result.get("case_id") or case_id).strip()
             if resolved_case:
                 case_id = resolved_case
+            # DQ-18: same durable degradation record as the signal_reconciler.py
+            # live path, keyed by the same case row, so both entrypoints converge
+            # on one degradation state per case rather than two.
+            if not dry_run and case_id:
+                warnings.extend(
+                    maybe_record_case_intelligence_degradation(
+                        runtime_context.resolved_store,
+                        case_id,
+                        case_intelligence_result,
+                        signal_id=str(signal.signal_id or ""),
+                    )
+                )
         except Exception as exc:  # noqa: BLE001
             try:
                 snapshot = _project_reconcile_failure_best_effort(

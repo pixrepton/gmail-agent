@@ -9,6 +9,7 @@ from typing import Any
 
 from agent_runtime.signal_registry import register_signal_handler
 from case_intelligence import apply_hot_state_to_case_intelligence
+from case_intelligence_degradation import maybe_record_case_intelligence_degradation
 from case_routing import enrich_case_row_before_upsert
 from case_snapshot_manager import CaseSnapshotManager
 from entity_linker import EntityLinker, apply_entity_link
@@ -300,6 +301,81 @@ def replay_signal(
     if signal is None:
         raise ValueError(f"Unknown signal_id: {signal_id}")
     return reconcile_signal(signal, runtime_context=runtime_context.for_replay(), dry_run=False)
+
+
+def retry_degraded_case_intelligence(
+    case_id: str,
+    *,
+    runtime_context: SignalRuntimeContext,
+) -> ReconcileResult | None:
+    """DQ-18: retry only the Case Intelligence stage for one degraded case.
+
+    Keyed by `case_id`, not `signal_id`: degradation is case-level durable state
+    (`case_intelligence_degradation.py`), and the caller of a retry action — an
+    operator dismissing a "needs review" case, or an automated sweep — knows which
+    *case* needs retrying, not which signal originally degraded it.
+
+    Reuses the existing journal replay path (`replay_signal`'s mechanism) rather
+    than a new stage-isolated executor: the earlier reconcile stages (intake, case
+    linking, mailbox persistence) are idempotent on replay, and Case Intelligence
+    itself is always recomputed fresh on every reconcile — so replaying the signal
+    that most recently degraded this case *is* "retry the Case Intelligence stage"
+    in effect, without repeating any Gmail/Drive fetch or Calendar effect (there are
+    none to repeat; replay never touches Google APIs, it recomputes from
+    already-persisted mailbox state).
+
+    Returns `None` (a documented no-op, not an exception) when there is nothing to
+    retry:
+    - the case has no recorded degradation,
+    - the case is terminally degraded (attempt budget exhausted — stop retrying),
+    - or a newer signal has since been reconciled for this case (staleness guard:
+      retrying an old signal must never overwrite understanding a newer signal
+      already produced).
+    """
+    from case_intelligence_degradation import (
+        case_intelligence_result_is_fallback,
+        clear_case_intelligence_degradation,
+        latest_signal_id_for_case,
+        read_case_intelligence_degradation,
+    )
+
+    case_id = str(case_id or "").strip()
+    if not case_id:
+        return None
+    store = runtime_context.resolved_store
+
+    degradation = read_case_intelligence_degradation(store, case_id)
+    if not degradation.get("degraded"):
+        return None
+    if degradation.get("terminally_degraded"):
+        return None
+
+    signal_id = str(degradation.get("last_degraded_signal_id") or "").strip()
+    if not signal_id:
+        return None
+    signal = runtime_context.journal.fetch_signal(signal_id)
+    if signal is None:
+        return None
+
+    current_latest = latest_signal_id_for_case(store, case_id)
+    if current_latest and current_latest != signal_id:
+        # A newer signal already superseded this one; its own reconcile already
+        # ran Case Intelligence fresh. Retrying the stale one must not run at all.
+        return None
+
+    # Deliberately NOT runtime_context.for_replay(): that scoping exists for
+    # verify-without-side-effects replay and silently redirects an in-memory-backed
+    # context to a fresh throwaway store (see for_replay()'s InMemoryMailboxMemoryStore
+    # check) — which is correct for read-only replay verification but wrong here,
+    # since a Case Intelligence retry's entire purpose is to durably persist a
+    # corrected result back to the real case store.
+    result = reconcile_signal(signal, runtime_context=runtime_context, dry_run=False)
+    retried_ci = result.stage_outputs.get("case_intelligence_result") if isinstance(result.stage_outputs, dict) else None
+    if retried_ci is None:
+        retried_ci = (result.mailbox_memory_result or {}).get("case_intelligence_result")
+    if not case_intelligence_result_is_fallback(retried_ci):
+        clear_case_intelligence_degradation(store, case_id)
+    return result
 
 
 @register_signal_handler("gmail")
@@ -603,6 +679,20 @@ def _reconcile_gmail_legacy_prepare(
         case_id=case_id,
         entity_link_dict=entity_link_dict,
     )
+    # DQ-18: core reconciliation (this function) succeeding is a separate state
+    # dimension from Case Intelligence enrichment succeeding. A guarded fallback
+    # must not look like success — persist it durably on the case row so it
+    # survives this process and reaches operator projection, distinct from the
+    # in-memory-only warnings list.
+    if not dry_run and case_id:
+        warnings.extend(
+            maybe_record_case_intelligence_degradation(
+                runtime_context.resolved_store,
+                case_id,
+                case_intelligence_result,
+                signal_id=signal.signal_id,
+            )
+        )
     return {
         "snapshot": snapshot,
         "intake_result": intake_result,

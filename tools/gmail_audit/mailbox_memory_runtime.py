@@ -593,16 +593,25 @@ class MailboxMemoryRuntime:
             source_refs=[{"type": "case", "case_id": case_id}],
         )
 
-        case_record = self.store.fetch_case(case_id) or {"case_id": case_id}
         inferred = infer_case_status(
             business_result=business_result or {},
             action_plan_result=action_plan_result or {},
             case_intelligence_result=case_intelligence_result or {},
         )
-        case_record["status"] = inferred
-        case_record["lifecycle_state"] = infer_lifecycle_from_case_status(inferred)
-        case_record["updated_at"] = next_action.get("updated_at")
-        self.store.upsert_case(case_record)
+        # RC-05: finalize used to fetch_case() then upsert_case() unlocked — the
+        # exact TOCTOU window _stamp_case_runtime_state's mutate_case exists to
+        # close (see its comment). Two concurrent finalizes (e.g. a live signal and
+        # a Case Intelligence retry landing at the same time) could both read the
+        # same prior row and one silently lose the other's status/lifecycle write.
+        # mutate_case's SELECT ... FOR UPDATE closes it the same way.
+        def _finalize_case_status(row: dict[str, Any]) -> dict[str, Any]:
+            case_row = dict(row)
+            case_row["status"] = inferred
+            case_row["lifecycle_state"] = infer_lifecycle_from_case_status(inferred)
+            case_row["updated_at"] = next_action.get("updated_at")
+            return case_row
+
+        case_record = self.store.mutate_case(case_id, _finalize_case_status, create_if_missing=True)
 
         snapshot_row = build_case_snapshot(
             case_id=case_id,

@@ -584,3 +584,94 @@ def test_legacy_mode_still_calls_shared_downstream() -> None:
                     entity_link_dict={"case_id": "case_legacy_d"},
                 )
             mock_ds.assert_called_once()
+
+
+def test_agent_path_records_case_intelligence_degradation() -> None:
+    """DQ-18, agent_runtime path: run_agent_reconcile must record durable
+    degradation the same way the legacy signal_reconciler.py path does, keyed on
+    the same case row, when Case Intelligence returns a fallback result.
+    """
+    from intake_shared_downstream import SharedDownstreamResult
+    from case_intelligence_degradation import read_case_intelligence_degradation
+
+    store, context = _context()
+    context.settings.case_intelligence_vnext_enabled = True
+    signal = _gmail_signal(case_id="case_agent_dq18")
+    registry = CorrelationRegistryService(InMemoryCorrelationRegistryStore())
+    registry.bootstrap()
+    registry.sync_mailbox_case(
+        case_id="case_agent_dq18",
+        customer_email="klient@example.com",
+        message_id="msg-agent-d",
+    )
+    initial = build_initial_snapshot(
+        case_id="case_agent_dq18",
+        engagement_id="eng_dq18_test",
+        trace_id=signal.signal_id,
+    )
+    initial.operational_status = OperationalStatus(code="enriching", steps_remaining=10)
+    graph_result = AgentGraphRunResult(snapshot=initial, turns=[])
+
+    fallback_ci = {
+        "case_understanding": {"case_id": "case_agent_dq18"},
+        "execution_metadata": {
+            "stage_name": "case_intelligence",
+            "source_mode": "fallback",
+            "fallback_reason": "case_intelligence_exception",
+            "error_type": "RuntimeError",
+        },
+    }
+    downstream_result = SharedDownstreamResult(
+        case_link_result={"selected_case_key": "case-key-dq18"},
+        business_result={},
+        reply_result={},
+        action_plan_result={},
+        case_intelligence_result=fallback_ci,
+        mailbox_memory_result={"case_id": "case_agent_dq18", "snapshot": {}, "context_pack": {}},
+        context_bundle={},
+        stage_config={},
+        policy_report=None,
+        policy_action_proposal=None,
+        warnings=["case_intelligence_exception"],
+    )
+
+    with patch.dict(
+        os.environ,
+        {"AGENT_RUNTIME_ENABLED": "1", "AGENT_RUNTIME_MODE": "prep", "AGENT_OPENAI_API_KEY": "sk-test"},
+        clear=False,
+    ):
+        assert agent_runtime_reconcile_active()
+        with patch(
+            "agent_runtime.agent_reconcile.build_registry_for_reconcile",
+            return_value=registry,
+        ), patch(
+            "agent_runtime.agent_reconcile.execute_agent_run",
+        ) as mock_run, patch(
+            "intake_shared_downstream.run_shared_downstream_stages",
+            return_value=downstream_result,
+        ):
+            mock_run.return_value = AgentRunResult(
+                snapshot=initial.model_copy(
+                    update={
+                        "version": 2,
+                        "operational_status": OperationalStatus(
+                            code="pending_operator", steps_remaining=0, blocking=True,
+                        ),
+                    }
+                ),
+                graph=graph_result,
+                version=2,
+            )
+            result = _reconcile_gmail_signal(
+                signal,
+                runtime_context=context,
+                dry_run=False,
+                entity_link_dict={"case_id": "case_agent_dq18"},
+            )
+
+    assert result.processing_state == "reconciled"
+    assert any(w.startswith("case_intelligence_degraded:attempts=1") for w in result.warnings)
+    degradation = read_case_intelligence_degradation(store, "case_agent_dq18")
+    assert degradation["degraded"] is True
+    assert degradation["attempts"] == 1
+    assert degradation["last_degraded_signal_id"] == signal.signal_id
