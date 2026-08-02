@@ -12,6 +12,10 @@ from llm_contracts.engagement_snapshot_v2 import EngagementSnapshotV2
 
 SubAgentKind = Literal["document", "policy", "draft", "general"]
 
+# Scope'y rozstrzygalne PRZED wyborem narzędzia. `document`/`draft` są sterowane
+# nazwą narzędzia (TOOL_SCOPE_MAP), więc nie da się ich uczciwie wybrać pre-plan.
+PreplanSubAgentKind = Literal["policy", "general"]
+
 # ── Registry: tool_name → sub-agent scope ────────────────────────────────
 # Dodanie nowego narzędzia = wpis w tym słowniku. Zero if/elif.
 TOOL_SCOPE_MAP: dict[str, SubAgentKind] = {
@@ -33,6 +37,13 @@ _POLICY_EXTRA_TOOLS = frozenset({
 })
 _DRAFT_EXTRA_TOOLS = frozenset({"request_operator_clarification", "propose_plan", "propose_mutation"})
 
+# Narzędzia terminalne/eskalacyjne. Każdy zawężony scope musi je zachować, inaczej
+# pętla tury nie ma czym się zbiec i wypala budżet aż do MAX_TOOL_CALLS_PER_TURN.
+_ALWAYS_AVAILABLE_TOOLS = frozenset({
+    "request_operator_clarification",
+    "report_gaps_and_stop",
+})
+
 
 def select_sub_agent(*, tool_name: str, snapshot: EngagementSnapshotV2) -> SubAgentKind:
     name = str(tool_name or "").strip()
@@ -46,26 +57,41 @@ def select_sub_agent(*, tool_name: str, snapshot: EngagementSnapshotV2) -> SubAg
     return "general"
 
 
+def select_preplan_sub_agent(*, snapshot: EngagementSnapshotV2) -> PreplanSubAgentKind:
+    """Wybór scope'u ZANIM planer wybierze narzędzie.
+
+    Pre-plan nie ma nazwy narzędzia, więc TOOL_SCOPE_MAP jest tu nierozstrzygalny —
+    `document`/`draft` są aktywowane dopiero po planie, w `select_sub_agent`.
+    Ta funkcja zwraca wyłącznie scope'y wyprowadzalne ze stanu snapshotu.
+    """
+    if snapshot.agent_memory.materialize_proposals:
+        return "policy"
+    return "general"
+
+
 def tools_for_sub_agent(kind: SubAgentKind, allowlist: frozenset[str] | set[str]) -> list[str]:
     """Restrict planner allowlist per specialist handoff (W5).
 
     Używa TOOL_SCOPE_MAP zamiast hardcoded frozenset — Generic Hands compliant.
+    Każdy zawężony scope zachowuje narzędzia terminalne z `_ALWAYS_AVAILABLE_TOOLS`,
+    żeby tura zawsze mogła się zbiec (eskalacja/stop) zamiast wypalić budżet.
     """
     pool = frozenset(allowlist)
+    always = pool & _ALWAYS_AVAILABLE_TOOLS
     if kind == "document":
-        return sorted(pool & frozenset(
+        return sorted((pool & frozenset(
             name for name, scope in TOOL_SCOPE_MAP.items() if scope == "document"
-        ))
+        )) | always)
     if kind == "policy":
         policy_tools = frozenset(
             name for name, scope in TOOL_SCOPE_MAP.items() if scope == "policy"
         )
-        return sorted(pool & (policy_tools | _POLICY_EXTRA_TOOLS))
+        return sorted((pool & (policy_tools | _POLICY_EXTRA_TOOLS)) | always)
     if kind == "draft":
         draft_tools = frozenset(
             name for name, scope in TOOL_SCOPE_MAP.items() if scope == "draft"
         )
-        return sorted(pool & (draft_tools | _DRAFT_EXTRA_TOOLS))
+        return sorted((pool & (draft_tools | _DRAFT_EXTRA_TOOLS)) | always)
     return sorted(pool)
 
 
@@ -85,6 +111,8 @@ def sub_agent_scopes() -> dict[str, SubAgentKind]:
 
 __all__ = [
     "SubAgentKind",
+    "PreplanSubAgentKind",
+    "select_preplan_sub_agent",
     "select_sub_agent",
     "sub_agent_handoff_note",
     "tools_for_sub_agent",

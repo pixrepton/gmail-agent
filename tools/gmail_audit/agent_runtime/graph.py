@@ -21,7 +21,12 @@ from agent_runtime.policy_action_spine import (
 )
 from agent_runtime.snapshot_delta import apply_snapshot_delta, decrement_steps
 from agent_runtime.tool_context import ToolExecutionContext
-from agent_runtime.sub_agents import select_sub_agent, sub_agent_handoff_note, tools_for_sub_agent
+from agent_runtime.sub_agents import (
+    select_preplan_sub_agent,
+    select_sub_agent,
+    sub_agent_handoff_note,
+    tools_for_sub_agent,
+)
 from agent_runtime.tool_result import ToolCallPlan, ToolResult
 from agent_runtime.tools_registry import AgentToolRegistry, MockToolRegistry, ToolRegistry
 from agent_runtime.turn_journal import AgentTurnJournal
@@ -164,7 +169,7 @@ class AgentGraphEngine:
                 )
                 break
             ctx.snapshot = current
-            sub_agent = select_sub_agent(tool_name="", snapshot=current)
+            sub_agent = select_preplan_sub_agent(snapshot=current)
             scoped_tools = tools_for_sub_agent(sub_agent, self._constitution.tool_allowlist)
             available_tools = _filter_completed_read_once_tools(
                 scoped_tools or list(self._constitution.tool_allowlist),
