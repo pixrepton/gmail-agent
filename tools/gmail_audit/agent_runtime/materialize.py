@@ -24,6 +24,31 @@ log = get_logger(__name__)
 # ── Constants ──────────────────────────────────────────────────────────
 ERROR_TRUNCATION_LENGTH = 200
 
+# RP-28 / DQ-03: only composite_plan has confirmed creators (propose_plan,
+# propose_mutation). Other proposal_type literals remain for historical
+# snapshot deserialization but must fail-closed on append/execute.
+RETAINED_MATERIALIZE_PROPOSAL_TYPES = frozenset({"composite_plan"})
+UNRETAINED_MATERIALIZE_PROPOSAL_TYPES = frozenset({
+    "link_existing",
+    "create_case",
+    "create_artifact",
+    "defer_operator",
+})
+
+
+def is_retained_materialize_proposal_type(proposal_type: str) -> bool:
+    return str(proposal_type or "").strip() in RETAINED_MATERIALIZE_PROPOSAL_TYPES
+
+
+def reject_unretained_materialize_proposal_type(proposal_type: str) -> None:
+    ptype = str(proposal_type or "").strip()
+    if is_retained_materialize_proposal_type(ptype):
+        return
+    raise ValueError(
+        f"materialize proposal_type {ptype!r} is not retained "
+        f"(DQ-03/RP-28); only {sorted(RETAINED_MATERIALIZE_PROPOSAL_TYPES)} may append/execute"
+    )
+
 
 # ── Poziom 1 identity helpers (graceful, never block materialize) ──
 
@@ -137,6 +162,7 @@ def append_materialize_proposal(
     proposal_type: str,
     payload: dict[str, Any],
 ) -> EngagementSnapshotV2:
+    reject_unretained_materialize_proposal_type(proposal_type)
     proposal = MaterializeProposalItem(
         proposal_id=new_proposal_id(),
         proposal_type=proposal_type,  # type: ignore[arg-type]
@@ -211,20 +237,22 @@ def _execute_composite_step(
 
     results: list[dict[str, Any]] = []
     eid = str(engagement_snapshot.engagement_id) if engagement_snapshot else ""
-    resolved_db_url = str(db_url or "").strip()
+    # None = caller did not decide; empty string = explicitly no DB (do not probe settings).
+    if db_url is None:
+        resolved_db_url = ""
+        if engagement_snapshot:
+            try:
+                from agent_runtime.settings import load_agent_runtime_settings
 
-    # Próbuj odczytać database_url z settings gdy caller nie podał
-    if not resolved_db_url and engagement_snapshot:
-        try:
-            from agent_runtime.settings import load_agent_runtime_settings
-
-            settings = load_agent_runtime_settings()
-            resolved_db_url = str(
-                getattr(settings, "mailbox_memory_database_url", "")
-                or ""
-            ).strip()
-        except Exception as exc:
-            log.warning("materialize: failed to load settings for db_url exc=%s", exc)
+                settings = load_agent_runtime_settings()
+                resolved_db_url = str(
+                    getattr(settings, "mailbox_memory_database_url", "")
+                    or ""
+                ).strip()
+            except Exception as exc:
+                log.warning("materialize: failed to load settings for db_url exc=%s", exc)
+    else:
+        resolved_db_url = str(db_url or "").strip()
 
     # PR-5B / RP-26: per-step keys (never reuse one key across steps)
     global_idempotency_key = str(payload.get("idempotency_key") or "").strip() or None
@@ -347,11 +375,21 @@ def execute_materialize_proposal(
 ) -> dict[str, Any]:
     """Python-only executor after operator approve — never called from LLM."""
     ptype = str(proposal.proposal_type or "").strip()
+    try:
+        reject_unretained_materialize_proposal_type(ptype)
+    except ValueError as exc:
+        return {
+            "action": "unretained_proposal_type",
+            "status": "error",
+            "error": str(exc),
+            "summary": str(exc),
+        }
     payload = dict(proposal.payload_json or {})
     # Strip internal lifecycle metadata from effect payload
     payload.pop("_dq02_lifecycle", None)
     key = str(idempotency_key or payload.get("idempotency_key") or "").strip() or None
-    url = str(db_url or "").strip() or None
+    # Preserve explicit empty db_url from caller (do not re-probe settings).
+    url = None if db_url is None else str(db_url).strip()
     if key:
         payload["idempotency_key"] = key
         if not url:
@@ -381,88 +419,10 @@ def execute_materialize_proposal(
             engagement_snapshot=engagement_snapshot,
             correlation_store=correlation_store,
             drive_client=drive_client,
-            db_url=url,
+            db_url="" if db_url is not None and not str(db_url).strip() else db_url,
         )
         return _record(result)
-    if ptype == "link_existing":
-        case_id = str(payload.get("case_id") or "").strip()
-        if not case_id:
-            raise ValueError("link_existing requires case_id")
-        if correlation_store is not None and case_id:
-            _register_engagement_link(
-                correlation_store,
-                engagement_id=engagement_snapshot.engagement_id,
-                case_id=case_id,
-            )
-        return _record({
-            "case_id": case_id,
-            "action": "linked",
-            "staging_engagement_id": engagement_snapshot.engagement_id,
-            "engagement_id": engagement_snapshot.engagement_id,
-        })
-    if ptype == "create_case":
-        case_id = str(payload.get("case_id") or f"case_{uuid.uuid4().hex[:12]}").strip()
-        customer_email = str(payload.get("customer_email") or "").strip().lower()
-
-        # Poziom 1: sprawdź czy ten email ma już istniejący case_id
-        if customer_email and correlation_store is not None:
-            existing = _lookup_case_by_email(correlation_store, customer_email)
-            if existing:
-                _register_engagement_link(
-                    correlation_store,
-                    engagement_id=engagement_snapshot.engagement_id,
-                    case_id=existing,
-                )
-                return _record({
-                    "case_id": existing,
-                    "action": "linked_existing",
-                    "engagement_id": engagement_snapshot.engagement_id,
-                    "dedup_reason": f"email_level1:{customer_email}",
-                })
-
-        from case_routing import apply_routing_to_case_row, classify_mailbox_row
-
-        case_row = {
-            "case_id": case_id,
-            "case_key": str(payload.get("case_key") or case_id),
-            "case_family": str(payload.get("case_family") or "lead_opportunity"),
-            "mailbox": str(payload.get("mailbox") or "drive"),
-            "subject": str(payload.get("subject") or "Nowa sprawa"),
-            "status": "open",
-            "lifecycle_state": "new_lead",
-            "customer_name": str(payload.get("customer_name") or ""),
-            "customer_email": customer_email,
-            "metadata": {"source": "materialize_executor", "staging_engagement_id": engagement_snapshot.engagement_id},
-        }
-        routing = classify_mailbox_row(
-            case_row["case_family"],
-            "materialize",
-            str(payload.get("export_case_type") or "lead_oferta"),
-        )
-        case_row = apply_routing_to_case_row(case_row, routing)
-        upsert = getattr(mailbox_store, "upsert_case", None)
-        if callable(upsert):
-            upsert(case_row)
-
-        # Poziom 1: zarejestruj w correlation_registry
-        if correlation_store is not None and customer_email:
-            _register_engagement_link(
-                correlation_store,
-                engagement_id=engagement_snapshot.engagement_id,
-                case_id=case_id,
-            )
-            _register_email_identity(
-                correlation_store,
-                email=customer_email,
-                case_id=case_id,
-                customer_name=str(payload.get("customer_name") or ""),
-            )
-
-        return _record({"case_id": case_id, "action": "created", "engagement_id": engagement_snapshot.engagement_id})
-    if ptype == "create_artifact":
-        return {"action": "artifact_deferred", "payload": payload}
-    if ptype == "defer_operator":
-        return {"action": "deferred", "payload": payload}
+    # RP-28: unretained types are rejected above; keep defensive raise.
     raise ValueError(f"unknown proposal_type: {ptype!r}")
 
 
@@ -470,4 +430,8 @@ __all__ = [
     "append_materialize_proposal",
     "execute_materialize_proposal",
     "new_proposal_id",
+    "RETAINED_MATERIALIZE_PROPOSAL_TYPES",
+    "UNRETAINED_MATERIALIZE_PROPOSAL_TYPES",
+    "is_retained_materialize_proposal_type",
+    "reject_unretained_materialize_proposal_type",
 ]

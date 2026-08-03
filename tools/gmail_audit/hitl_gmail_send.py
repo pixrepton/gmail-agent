@@ -100,6 +100,7 @@ def execute_hitl_gmail_send(
     case_id: str = "",
     operator_id: str = "",
     on_effect_start: Callable[[], None] | None = None,
+    operator_draft_pl: str | None = None,
 ) -> dict[str, Any]:
     """Fail-closed tombstone for legacy Gmail send entrypoints.
 
@@ -117,7 +118,8 @@ def execute_hitl_gmail_send(
             "decision_status": "failed_before_execution",
         }
 
-    body = str(action.payload_pl or "").strip()
+    # Operator edit from bridge/approve must win over stale snapshot draft.
+    body = str(operator_draft_pl or "").strip() or str(action.payload_pl or "").strip()
     if not body:
         return {"executed": False, "reason": "draft_body_empty", "effect_started": False, "decision_status": "failed_before_execution"}
 
@@ -132,6 +134,7 @@ def execute_hitl_gmail_send(
         "draft_sha256": digest,
         "operator_id": operator_id,
         "case_id": resolved_case,
+        "operator_draft_applied": bool(str(operator_draft_pl or "").strip()),
     }
 
 

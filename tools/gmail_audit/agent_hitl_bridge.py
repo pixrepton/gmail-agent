@@ -212,6 +212,9 @@ def agent_hitl_payload_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "action_id": str(row.get("action_id") or "draft_reply").strip(),
         "operator_id": str(row.get("operator_id") or "").strip(),
         "decision_key": _hitl_send_decision_key(row),
+        "operator_draft_pl": str(
+            row.get("operator_draft_pl") or row.get("draft_pl") or ""
+        ).strip(),
     }
 
 
@@ -325,6 +328,8 @@ def approve_hitl_engagement(
     action_id: str,
     operator_id: str = "",
     settings: Settings | None = None,
+    operator_draft_pl: str | None = None,
+    operator_answer_pl: str | None = None,
 ) -> dict[str, Any]:
     settings = settings or load_settings(require_groq=False, require_google=False)
     aid = str(action_id or "").strip()
@@ -390,6 +395,8 @@ def approve_hitl_engagement(
         engagement_id=str(engagement_id or "").strip(),
         action_id=str(action_id or "draft_reply").strip(),
         operator_id=str(operator_id or "").strip(),
+        operator_draft_pl=operator_draft_pl,
+        operator_answer_pl=operator_answer_pl,
     )
     if not result.get("ok"):
         return result
@@ -545,6 +552,10 @@ def execute_hitl_send_from_bridge_row(
                 case_id=case_id,
                 operator_id=operator_id,
                 on_effect_start=_claim_effect_start,
+                operator_draft_pl=str(
+                    row.get("operator_draft_pl") or row.get("draft_pl") or ""
+                ).strip()
+                or None,
             )
         except _HitlSendAlreadyStarted:
             current = _read_hitl_state(mailbox_store, case_id=case_id, decision_key=decision_key)

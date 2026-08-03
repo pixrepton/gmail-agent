@@ -272,7 +272,7 @@ def _project_approved(
     signal_id = str(saved.signal_id or saved.trace_id or "").strip()
     reconcile_result: dict[str, Any] = {}
     ptype = str(proposal.proposal_type or "")
-    if case_id and signal_id and ptype in {"create_case", "link_existing", "composite_plan"}:
+    if case_id and signal_id and ptype in {"composite_plan"}:
         reconcile_result = reconcile_linked_after_materialize(
             settings,
             signal_id=signal_id,
@@ -435,7 +435,7 @@ def approve_materialize_proposal(
         engagement_snapshot=snapshot,
         correlation_store=correlation_store,
         idempotency_key=key,
-        db_url=db_url or None,
+        db_url=db_url if db_url is not None else "",
     )
     if str(exec_result.get("action") or "") == "composite_failed" or str(exec_result.get("status") or "") == "error":
         fail_lifecycle = _lifecycle_of(proposal)

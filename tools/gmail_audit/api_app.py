@@ -1124,6 +1124,14 @@ def create_app(
             action_id=action_id,
             operator_id=operator_id,
             settings=settings,
+            operator_draft_pl=str(payload.get("operator_draft_pl") or payload.get("draft_pl") or "").strip()
+            or None,
+            operator_answer_pl=str(
+                payload.get("operator_answer_pl")
+                or payload.get("clarification_answer_pl")
+                or ""
+            ).strip()
+            or None,
         )
         if not result.get("ok"):
             message = str(result.get("error") or "HITL approve failed.")

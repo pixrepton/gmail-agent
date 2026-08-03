@@ -31,7 +31,7 @@ def _seed(
     *,
     proposal_id: str,
     engagement_id: str,
-    proposal_type: str = "create_case",
+    proposal_type: str = "composite_plan",
     payload: dict[str, Any] | None = None,
 ) -> None:
     snapshot = EngagementSnapshotV2(
@@ -46,9 +46,17 @@ def _seed(
                     proposal_type=proposal_type,  # type: ignore[arg-type]
                     status="pending",
                     payload_json=dict(payload or {
-                        "customer_email": "rp26@example.com",
-                        "customer_name": "RP26",
-                        "subject": "RP26 lifecycle",
+                        "steps": [
+                            {
+                                "operation": "create_case",
+                                "target": "",
+                                "args": {
+                                    "customer_email": "rp26@example.com",
+                                    "customer_name": "RP26",
+                                    "subject": "RP26 lifecycle",
+                                },
+                            }
+                        ]
                     }),
                 )
             ]

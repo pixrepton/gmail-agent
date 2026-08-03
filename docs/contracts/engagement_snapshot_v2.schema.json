@@ -93,6 +93,13 @@
           },
           "title": "Materialize Proposals",
           "type": "array"
+        },
+        "clarification_answers": {
+          "items": {
+            "$ref": "#/$defs/ClarificationAnswerItem"
+          },
+          "title": "Clarification Answers",
+          "type": "array"
         }
       },
       "title": "AgentMemory",
@@ -223,6 +230,33 @@
         }
       },
       "title": "CaseUnderstandingProvenance",
+      "type": "object"
+    },
+    "ClarificationAnswerItem": {
+      "additionalProperties": false,
+      "properties": {
+        "ask_pl": {
+          "default": "",
+          "title": "Ask Pl",
+          "type": "string"
+        },
+        "answer_pl": {
+          "default": "",
+          "title": "Answer Pl",
+          "type": "string"
+        },
+        "operator_id": {
+          "default": "",
+          "title": "Operator Id",
+          "type": "string"
+        },
+        "answered_at": {
+          "default": "",
+          "title": "Answered At",
+          "type": "string"
+        }
+      },
+      "title": "ClarificationAnswerItem",
       "type": "object"
     },
     "DecisionDivergenceObservationV1": {

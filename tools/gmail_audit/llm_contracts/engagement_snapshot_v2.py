@@ -208,6 +208,8 @@ class ToolCallItem(StrictModel):
 
 class MaterializeProposalItem(StrictModel):
     proposal_id: str
+    # Historical literals retained for snapshot deserialization; RP-28 retains
+    # only composite_plan for new append/execute (see materialize.RETAINED_*).
     proposal_type: Literal[
         "link_existing",
         "create_case",
@@ -219,11 +221,19 @@ class MaterializeProposalItem(StrictModel):
     status: Literal["pending", "approved", "rejected"] = "pending"
 
 
+class ClarificationAnswerItem(StrictModel):
+    ask_pl: str = ""
+    answer_pl: str = ""
+    operator_id: str = ""
+    answered_at: str = ""
+
+
 class AgentMemory(StrictModel):
     reasoning_trace: list[ReasoningTraceItem] = Field(default_factory=list)
     tool_calls: list[ToolCallItem] = Field(default_factory=list)
     constitution_sections_used: list[str] = Field(default_factory=list)
     materialize_proposals: list[MaterializeProposalItem] = Field(default_factory=list)
+    clarification_answers: list[ClarificationAnswerItem] = Field(default_factory=list)
 
 
 CaseKindLiteral = Literal[

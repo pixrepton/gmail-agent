@@ -174,6 +174,8 @@ class AgentMcpService:
         engagement_id: str,
         action_id: str,
         operator_id: str = "",
+        operator_draft_pl: str | None = None,
+        operator_answer_pl: str | None = None,
     ) -> dict[str, Any]:
         eid = str(engagement_id or "").strip()
         aid = str(action_id or "").strip()
@@ -206,14 +208,72 @@ class AgentMcpService:
                 f"action_id {aid!r} must have enabled=True before HITL approve",
                 engagement_id=eid,
             )
+
+        from datetime import datetime, timezone
+
+        from llm_contracts.engagement_snapshot_v2 import ActionItem, ClarificationAnswerItem
+
+        draft_text = str(operator_draft_pl or "").strip()
+        answer_text = str(operator_answer_pl or "").strip()
+        gate_reason = str(snapshot.hitl_gate.reason or "").strip()
+        is_clarification = gate_reason == "operator_clarification" or aid == "operator_clarification"
+        if is_clarification and not answer_text:
+            # Daszek reuses draft_pl for clarification answers; accept either channel.
+            answer_text = draft_text
+        if is_clarification and not answer_text:
+            return _error(
+                "operator_answer_pl (or operator_draft_pl) is required for clarification approval",
+                engagement_id=eid,
+            )
+
+        actions_payload = [a.model_dump(mode="python") for a in snapshot.actions]
+        if draft_text and not is_clarification:
+            updated = False
+            for idx, item in enumerate(actions_payload):
+                if str(item.get("id") or "") == aid:
+                    item = dict(item)
+                    item["payload_pl"] = draft_text
+                    item["enabled"] = True
+                    actions_payload[idx] = item
+                    updated = True
+                    break
+            if not updated:
+                actions_payload.append(
+                    ActionItem(id=aid or "draft_reply", enabled=True, payload_pl=draft_text).model_dump(
+                        mode="python"
+                    )
+                )
+
+        clarification_answers = [
+            a.model_dump(mode="python") for a in snapshot.agent_memory.clarification_answers
+        ]
+        if is_clarification and answer_text:
+            ask = ""
+            for gap in snapshot.gaps:
+                if str(gap.field or "") == "operator_decision":
+                    ask = str(gap.ask_pl or "")
+                    break
+            clarification_answers.append(
+                ClarificationAnswerItem(
+                    ask_pl=ask,
+                    answer_pl=answer_text,
+                    operator_id=str(operator_id or "").strip(),
+                    answered_at=datetime.now(timezone.utc).isoformat(),
+                ).model_dump(mode="python")
+            )
+
+        memory_dump = snapshot.agent_memory.model_dump(mode="python")
+        memory_dump["clarification_answers"] = clarification_answers
+
         delta: dict[str, Any] = {
             "hitl_gate": {"required": False, "reason": ""},
-            "actions": [a.model_dump(mode="python") for a in snapshot.actions],
+            "actions": actions_payload,
             "gaps": [g.model_dump(mode="python") for g in snapshot.gaps if g.field != "operator_decision"],
             "operational_status": {
                 "code": "ready_for_quote",
                 "blocking": False,
             },
+            "agent_memory": memory_dump,
         }
         patched = apply_snapshot_delta(snapshot, delta)
         try:
@@ -233,7 +293,7 @@ class AgentMcpService:
             ),
             "source_signal_id": str(action.source_signal_id if action is not None else ""),
         }
-        return {
+        result: dict[str, Any] = {
             "ok": True,
             "engagement_id": eid,
             "action_id": aid,
@@ -259,6 +319,13 @@ class AgentMcpService:
             },
             "snapshot": _snapshot_summary(final),
         }
+        if draft_text and not is_clarification:
+            result["operator_draft_pl"] = draft_text
+            result["operator_draft_applied"] = True
+        if is_clarification:
+            result["operator_answer_pl"] = answer_text
+            result["clarification_answer_applied"] = True
+        return result
 
 
 def mcp_tool_catalog() -> list[dict[str, str]]:
@@ -278,7 +345,7 @@ def mcp_tool_catalog() -> list[dict[str, str]]:
         },
         {
             "name": "approve_hitl_action",
-            "purpose": "Operator HITL approve — CAS snapshot, clears hitl_gate, enables action.",
+            "purpose": "Operator HITL approve — CAS snapshot, clears hitl_gate, applies operator_draft_pl / operator_answer_pl, enables action.",
         },
         {
             "name": "get_agent_turns",
@@ -522,10 +589,18 @@ def dispatch_mcp_tool(service: AgentMcpService, name: str, arguments: Mapping[st
             force=bool(args.get("force")),
         )
     if name == "approve_hitl_action":
+        draft_raw = args.get("operator_draft_pl")
+        if draft_raw is None:
+            draft_raw = args.get("draft_pl")
+        answer_raw = args.get("operator_answer_pl")
+        if answer_raw is None:
+            answer_raw = args.get("clarification_answer_pl")
         return service.approve_hitl_action(
             engagement_id=str(args.get("engagement_id") or ""),
             action_id=str(args.get("action_id") or ""),
             operator_id=str(args.get("operator_id") or ""),
+            operator_draft_pl=str(draft_raw).strip() if draft_raw is not None else None,
+            operator_answer_pl=str(answer_raw).strip() if answer_raw is not None else None,
         )
     if name == "get_agent_turns":
         return service.get_agent_turns(
