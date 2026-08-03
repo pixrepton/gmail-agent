@@ -1927,8 +1927,21 @@ def infer_completeness_gaps(drive_documents: list[dict[str, Any]], drive_facts: 
 
 
 def split_conflicting_facts(facts: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Rank facts per (entity_scope, fact_key) into one active value plus any
+    genuine conflicts.
+
+    `append_facts_with_supersession` (RP-29) already resolves a
+    (entity_scope, fact_key) update by writing the prior row's `status` as
+    `"superseded"` instead of leaving two competing `"active"` rows. A
+    superseded row is a settled fact, not a live disagreement -- it must not
+    re-enter ranking here, or a stale row with incidentally higher confidence
+    or a newer `observed_at` could silently outrank the row the write path
+    already declared current. Rows with no `status` at all (older producers,
+    most existing tests) are treated as active, matching the schema default.
+    """
+    live_facts = [fact for fact in facts if str(fact.get("status") or "active") != "superseded"]
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for fact in facts:
+    for fact in live_facts:
         grouped.setdefault((str(fact.get("entity_scope") or "case"), str(fact.get("fact_key") or "")), []).append(fact)
     active: list[dict[str, Any]] = []
     conflicts: list[dict[str, Any]] = []

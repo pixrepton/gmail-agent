@@ -10,6 +10,7 @@ if str(TOOL_DIR) not in sys.path:
     sys.path.insert(0, str(TOOL_DIR))
 
 from mailbox_memory.inmemory import InMemoryMailboxMemoryStore
+from mailbox_memory_runtime import build_case_context_pack
 
 
 def test_supersession_replaces_active_value() -> None:
@@ -93,3 +94,51 @@ def test_supersession_idempotent_on_same_value() -> None:
     assert stats1["inserted"] == 1
     assert stats2["unchanged"] == 1
     assert stats2["inserted"] == 0
+
+
+def test_supersession_survives_into_the_assembled_case_context_pack() -> None:
+    """Journey E (document -> fact -> CaseContextPack -> planner/operator), real store.
+
+    A first document is extracted (120 m2, high confidence 0.95). A second, later document
+    corrects it (140 m2, lower confidence 0.6) -- RP-29's write path marks the first row
+    superseded. Before this fix, `build_case_context_pack` -> `split_conflicting_facts`
+    ignored `status` and ranked purely by confidence, so the superseded 120 m2 would still
+    win and reach the planner/operator context pack as the "active" fact. This exercises the
+    real write path (`append_facts_with_supersession`) and the real read path
+    (`build_case_context_pack`) together, end to end, with no mocking.
+    """
+    store = InMemoryMailboxMemoryStore()
+    store.cases = {"case_rp29c": {"case_id": "case_rp29c"}}
+    base = {
+        "case_id": "case_rp29c",
+        "message_id": "msg1",
+        "document_id": "doc1",
+        "entity_scope": "building",
+        "fact_key": "heated_area_m2",
+        "raw_value": "120",
+        "confidence": 0.95,
+        "observed_at": "2026-08-03T08:00:00Z",
+        "source_type": "document_extraction",
+        "source_ref": "doc:doc1",
+        "status": "active",
+        "metadata": {},
+    }
+    row_v1 = {**base, "fact_id": "fact_v1", "normalized_value": "120"}
+    row_v2 = {
+        **base,
+        "fact_id": "fact_v2",
+        "document_id": "doc2",
+        "source_ref": "doc:doc2",
+        "normalized_value": "140",
+        "confidence": 0.6,
+        "observed_at": "2026-08-03T09:00:00Z",
+    }
+    assert store.append_facts_with_supersession([row_v1])["inserted"] == 1
+    assert store.append_facts_with_supersession([row_v2])["superseded"] == 1
+
+    pack = build_case_context_pack(store=store, case_id="case_rp29c")
+
+    assert len(pack.active_facts) == 1
+    assert pack.active_facts[0]["normalized_value"] == "140"
+    assert pack.active_facts[0]["status"] == "active"
+    assert pack.conflicting_facts == []

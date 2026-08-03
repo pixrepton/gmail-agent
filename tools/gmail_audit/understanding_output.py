@@ -365,13 +365,12 @@ def _missing_fields(missing: dict[str, Any], business: dict[str, Any]) -> list[s
 def _facts_invalidated(pack: dict[str, Any]) -> list[dict[str, Any]]:
     """SLICE-1 (B5): supersessions that already exist in the real fact contract.
 
-    `mailbox_memory_facts.status` exists in the schema (default `'active'`) but no writer ever
-    sets it to anything else and no reader ever filters on it -- it carries no `stale`/`rejected`
-    signal in practice. The contract's actual invalidation semantics live in
-    `mailbox_memory_runtime.split_conflicting_facts`: for one `(entity_scope, fact_key)` it keeps
-    `ranked[0]` (highest confidence, then `observed_at`) as the active fact and reports the whole
-    value set as a conflict. Any conflicted value that is not the active one is therefore
-    superseded *by that contract*, not by a guess.
+    `mailbox_memory_facts.status` exists in the schema (default `'active'`). `append_facts_with_supersession`
+    (RP-29) writes `status="superseded"` when a fact value changes, and `mailbox_memory_runtime.split_conflicting_facts`
+    now excludes superseded rows before ranking, so the two mechanisms agree instead of racing. For one
+    `(entity_scope, fact_key)` it keeps `ranked[0]` (highest confidence, then `observed_at`) among the
+    remaining live rows as the active fact and reports the live value set as a conflict. Any conflicted
+    value that is not the active one is therefore superseded *by that contract*, not by a guess.
 
     Nothing is invented: a conflict row carrying a single value is not a supersession, and no
     conflicts means an empty list.
