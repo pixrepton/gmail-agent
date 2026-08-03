@@ -85,8 +85,9 @@ runs/
 *.log
 
 # Serena MCP (oraios) — local only; do not commit
-.serena/
-
+.serena/cache/
+.serena/logs/
+.serena/**/*.pkl
 # graphify local artifacts (cache + generated HTML/report); regenerate with `graphify update .`
 graphify-out/
 
