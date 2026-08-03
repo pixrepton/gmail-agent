@@ -429,6 +429,11 @@ def annotate_action_parent_refs(
                 "parent_action_proposal_v2_id": envelope.action_proposal_id,
                 "parent_decision_candidate_id": envelope.decision_candidate_id,
                 "source_signal_id": envelope.source_signal_id,
+                # AI-OS-CANONICAL-DRAFT-IDENTITY-01: only ever set to "complete" here,
+                # where real correlation to a fresh, id-matching envelope was just
+                # proven above -- everywhere else this stays the honest default
+                # ("identity_incomplete") rather than being guessed.
+                "identity_state": "complete",
             }
         )
     return {**snapshot_delta, "actions": annotated}

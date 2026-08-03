@@ -8,6 +8,12 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from agent_runtime.agent_reconcile import build_operator_engagement_store
+from agent_runtime.draft_identity import (
+    apply_operator_draft_edit,
+    compute_body_hash,
+    compute_draft_id,
+    mint_gap_only_draft_action,
+)
 from agent_runtime.store import PostgresOperatorEngagementStore
 from agent_runtime.run import build_turn_journal, execute_agent_run
 from agent_runtime.settings import AgentRuntimeSettings, load_agent_runtime_settings
@@ -176,6 +182,7 @@ class AgentMcpService:
         operator_id: str = "",
         operator_draft_pl: str | None = None,
         operator_answer_pl: str | None = None,
+        expected_body_hash: str | None = None,
     ) -> dict[str, Any]:
         eid = str(engagement_id or "").strip()
         aid = str(action_id or "").strip()
@@ -208,11 +215,27 @@ class AgentMcpService:
                 f"action_id {aid!r} must have enabled=True before HITL approve",
                 engagement_id=eid,
             )
+        expected_hash = str(expected_body_hash or "").strip()
+        if (
+            expected_hash
+            and action is not None
+            and str(action.body_hash or "")
+            and expected_hash != str(action.body_hash or "")
+        ):
+            # Fail-closed: the caller (preview/HITL packet) was built against a body
+            # that is no longer the current revision of this draft. Approving anyway
+            # would let an operator confirm a version they never actually saw.
+            return _error(
+                f"body_hash mismatch for action_id {aid!r}: expected {expected_hash!r}, "
+                f"current is {action.body_hash!r} (revision {action.revision}) — stale draft, refetch before approving",
+                engagement_id=eid,
+            )
 
         from datetime import datetime, timezone
 
-        from llm_contracts.engagement_snapshot_v2 import ActionItem, ClarificationAnswerItem
+        from llm_contracts.engagement_snapshot_v2 import ClarificationAnswerItem
 
+        draft_provided = operator_draft_pl is not None
         draft_text = str(operator_draft_pl or "").strip()
         answer_text = str(operator_answer_pl or "").strip()
         gate_reason = str(snapshot.hitl_gate.reason or "").strip()
@@ -227,22 +250,48 @@ class AgentMcpService:
             )
 
         actions_payload = [a.model_dump(mode="python") for a in snapshot.actions]
-        if draft_text and not is_clarification:
+        if draft_provided and not is_clarification:
+            # Fail-closed: explicit empty/whitespace operator body is not approvable.
+            if not compute_body_hash(draft_text):
+                return _error(
+                    "operator_draft_pl is empty — refusing to approve an empty draft body",
+                    engagement_id=eid,
+                )
             updated = False
             for idx, item in enumerate(actions_payload):
                 if str(item.get("id") or "") == aid:
-                    item = dict(item)
-                    item["payload_pl"] = draft_text
-                    item["enabled"] = True
-                    actions_payload[idx] = item
+                    actions_payload[idx] = apply_operator_draft_edit(
+                        item,
+                        draft_text=draft_text,
+                        case_id=str(snapshot.case_id or ""),
+                        source_signal_id=str(snapshot.signal_id or ""),
+                        action_id=aid,
+                    )
                     updated = True
                     break
             if not updated:
                 actions_payload.append(
-                    ActionItem(id=aid or "draft_reply", enabled=True, payload_pl=draft_text).model_dump(
-                        mode="python"
+                    mint_gap_only_draft_action(
+                        action_id=aid or "draft_reply",
+                        draft_text=draft_text,
+                        case_id=str(snapshot.case_id or ""),
+                        source_signal_id=str(snapshot.signal_id or ""),
                     )
                 )
+        elif not is_clarification and action is not None and not str(action.draft_id or ""):
+            # Legacy action without identity: mint once at approve-as-is so the
+            # approval record still points at a durable artifact revision.
+            for idx, item in enumerate(actions_payload):
+                if str(item.get("id") or "") == aid:
+                    body = str(item.get("payload_pl") or "")
+                    actions_payload[idx] = apply_operator_draft_edit(
+                        item,
+                        draft_text=body,
+                        case_id=str(snapshot.case_id or ""),
+                        source_signal_id=str(snapshot.signal_id or ""),
+                        action_id=aid,
+                    )
+                    break
 
         clarification_answers = [
             a.model_dump(mode="python") for a in snapshot.agent_memory.clarification_answers
@@ -281,17 +330,39 @@ class AgentMcpService:
         except AgentConcurrencyError as exc:
             return _error(str(exc), engagement_id=eid)
         final = patched.model_copy(update={"version": new_version})
+        approved_action = _find_action(final, aid)
         parent_refs = {
             "parent_policy_decision_id": str(
-                action.parent_policy_decision_id if action is not None else ""
+                approved_action.parent_policy_decision_id
+                if approved_action is not None
+                else (action.parent_policy_decision_id if action is not None else "")
             ),
             "parent_action_proposal_v2_id": str(
-                action.parent_action_proposal_v2_id if action is not None else ""
+                approved_action.parent_action_proposal_v2_id
+                if approved_action is not None
+                else (action.parent_action_proposal_v2_id if action is not None else "")
             ),
             "parent_decision_candidate_id": str(
-                action.parent_decision_candidate_id if action is not None else ""
+                approved_action.parent_decision_candidate_id
+                if approved_action is not None
+                else (action.parent_decision_candidate_id if action is not None else "")
             ),
-            "source_signal_id": str(action.source_signal_id if action is not None else ""),
+            "source_signal_id": str(
+                approved_action.source_signal_id
+                if approved_action is not None
+                else (action.source_signal_id if action is not None else "")
+            ),
+        }
+        draft_identity = {
+            "draft_id": str(approved_action.draft_id if approved_action is not None else ""),
+            "revision": int(approved_action.revision if approved_action is not None else 1),
+            "body_hash": str(approved_action.body_hash if approved_action is not None else ""),
+            "identity_state": str(
+                approved_action.identity_state if approved_action is not None else "identity_incomplete"
+            ),
+            "approved_payload_pl": str(
+                (approved_action.payload_pl if approved_action is not None else "") or ""
+            ),
         }
         result: dict[str, Any] = {
             "ok": True,
@@ -316,10 +387,12 @@ class AgentMcpService:
                 "execution_status": "not_applicable",
                 "delivery_mode": "manual_operator",
                 **parent_refs,
+                **draft_identity,
             },
             "snapshot": _snapshot_summary(final),
+            **draft_identity,
         }
-        if draft_text and not is_clarification:
+        if draft_provided and draft_text and not is_clarification:
             result["operator_draft_pl"] = draft_text
             result["operator_draft_applied"] = True
         if is_clarification:
@@ -595,12 +668,14 @@ def dispatch_mcp_tool(service: AgentMcpService, name: str, arguments: Mapping[st
         answer_raw = args.get("operator_answer_pl")
         if answer_raw is None:
             answer_raw = args.get("clarification_answer_pl")
+        expected_raw = args.get("expected_body_hash")
         return service.approve_hitl_action(
             engagement_id=str(args.get("engagement_id") or ""),
             action_id=str(args.get("action_id") or ""),
             operator_id=str(args.get("operator_id") or ""),
             operator_draft_pl=str(draft_raw).strip() if draft_raw is not None else None,
             operator_answer_pl=str(answer_raw).strip() if answer_raw is not None else None,
+            expected_body_hash=str(expected_raw).strip() if expected_raw is not None else None,
         )
     if name == "get_agent_turns":
         return service.get_agent_turns(
@@ -630,6 +705,11 @@ def _snapshot_summary(snapshot: EngagementSnapshotV2) -> dict[str, Any]:
                 "parent_action_proposal_v2_id": a.parent_action_proposal_v2_id,
                 "parent_decision_candidate_id": a.parent_decision_candidate_id,
                 "source_signal_id": a.source_signal_id,
+                "draft_id": a.draft_id,
+                "revision": a.revision,
+                "body_hash": a.body_hash,
+                "case_id": a.case_id,
+                "identity_state": a.identity_state,
             }
             for a in snapshot.actions
         ],

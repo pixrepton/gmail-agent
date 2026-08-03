@@ -1132,6 +1132,7 @@ def create_app(
                 or ""
             ).strip()
             or None,
+            expected_body_hash=str(payload.get("expected_body_hash") or "").strip() or None,
         )
         if not result.get("ok"):
             message = str(result.get("error") or "HITL approve failed.")

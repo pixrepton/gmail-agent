@@ -204,7 +204,7 @@ def _persist_hitl_send_result(
 
 
 def agent_hitl_payload_from_row(row: dict[str, Any]) -> dict[str, Any]:
-    return {
+    payload = {
         "domain": "agent_hitl",
         "adjudication_kind": str(row.get("adjudication_kind") or "hitl_action_execute"),
         "engagement_id": str(row.get("engagement_id") or "").strip(),
@@ -216,6 +216,10 @@ def agent_hitl_payload_from_row(row: dict[str, Any]) -> dict[str, Any]:
             row.get("operator_draft_pl") or row.get("draft_pl") or ""
         ).strip(),
     }
+    expected_hash = str(row.get("expected_body_hash") or row.get("body_hash") or "").strip()
+    if expected_hash:
+        payload["expected_body_hash"] = expected_hash
+    return payload
 
 
 def best_effort_push_engagement_feed_after_hitl(
@@ -330,6 +334,7 @@ def approve_hitl_engagement(
     settings: Settings | None = None,
     operator_draft_pl: str | None = None,
     operator_answer_pl: str | None = None,
+    expected_body_hash: str | None = None,
 ) -> dict[str, Any]:
     settings = settings or load_settings(require_groq=False, require_google=False)
     aid = str(action_id or "").strip()
@@ -397,6 +402,7 @@ def approve_hitl_engagement(
         operator_id=str(operator_id or "").strip(),
         operator_draft_pl=operator_draft_pl,
         operator_answer_pl=operator_answer_pl,
+        expected_body_hash=expected_body_hash,
     )
     if not result.get("ok"):
         return result

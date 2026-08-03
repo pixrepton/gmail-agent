@@ -187,6 +187,25 @@ def _draft_pl(engagement: EngagementSnapshotV2) -> str:
     return str(draft.payload_pl) if draft else ""
 
 
+def _draft_identity_fields(engagement: EngagementSnapshotV2) -> dict[str, Any]:
+    draft = next(
+        (a for a in engagement.actions if a.id == "draft_reply" and a.enabled and a.payload_pl),
+        None,
+    )
+    if draft is None:
+        return {}
+    return {
+        "draft_id": str(draft.draft_id or ""),
+        "revision": int(draft.revision or 1),
+        "body_hash": str(draft.body_hash or ""),
+        "identity_state": str(draft.identity_state or "identity_incomplete"),
+        "source_signal_id": str(draft.source_signal_id or ""),
+        "parent_policy_decision_id": str(draft.parent_policy_decision_id or ""),
+        "parent_action_proposal_v2_id": str(draft.parent_action_proposal_v2_id or ""),
+        "parent_decision_candidate_id": str(draft.parent_decision_candidate_id or ""),
+    }
+
+
 def _agent_ci_stub(engagement: EngagementSnapshotV2) -> dict[str, Any]:
     """Minimalny case_intelligence_result ze snapshotu agenta — żeby kompozytor miał esencję."""
     trace = engagement.agent_memory.reasoning_trace
@@ -212,12 +231,15 @@ def enrich_envelope_from_engagement(
 
     out = dict(operator_snapshot)
     env = out.get("projection_envelope")
+    identity = _draft_identity_fields(engagement)
     if isinstance(env, dict):
         env = dict(env)
         env["case_kind"] = engagement.case_kind
         env["draft_reply_pl"] = draft_pl
         env["operator_questions_pl"] = questions
         env["hitl_action_id"] = "draft_reply"
+        if identity:
+            env.update(identity)
         cards = env.get("desk_cards")
         if isinstance(cards, list) and cards:
             first = dict(cards[0])
@@ -231,6 +253,8 @@ def enrich_envelope_from_engagement(
     out["case_kind"] = engagement.case_kind
     out["draft_reply_pl"] = draft_pl
     out["operator_questions_pl"] = questions
+    if identity:
+        out.update(identity)
     return out
 
 

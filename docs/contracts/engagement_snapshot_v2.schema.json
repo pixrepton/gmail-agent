@@ -54,6 +54,35 @@
           "default": "",
           "title": "Source Signal Id",
           "type": "string"
+        },
+        "draft_id": {
+          "default": "",
+          "title": "Draft Id",
+          "type": "string"
+        },
+        "revision": {
+          "default": 1,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "body_hash": {
+          "default": "",
+          "title": "Body Hash",
+          "type": "string"
+        },
+        "case_id": {
+          "default": "",
+          "title": "Case Id",
+          "type": "string"
+        },
+        "identity_state": {
+          "default": "identity_incomplete",
+          "enum": [
+            "complete",
+            "identity_incomplete"
+          ],
+          "title": "Identity State",
+          "type": "string"
         }
       },
       "required": [

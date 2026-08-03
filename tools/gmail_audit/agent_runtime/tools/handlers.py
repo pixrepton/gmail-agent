@@ -12,6 +12,7 @@ from log_config import get_logger
 logger = get_logger("handlers")
 
 from agent_runtime.cp2025 import check_cp2025_eligibility
+from agent_runtime.draft_identity import compute_body_hash, compute_draft_id
 from agent_runtime.kalk_top_client import (
     KalkTopClientError,
     KalkTopUnreachableError,
@@ -116,16 +117,38 @@ def generate_draft_reply(plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolR
             f"dla budynku ok. {area} m2 w {city}. Przygotowaliśmy wstępną kalkulację — "
             f"prosimy o chwilę na weryfikację przez operatora.\n\nZespół TOP-INSTAL"
         )
+    body_hash = compute_body_hash(body)
+    if not body_hash:
+        # Fail-closed: an empty/whitespace-only body is not a valid operator-facing
+        # draft. Never let it into final_actions as if it were a real artifact.
+        return ToolResult(status="error", turn_summary_pl="generate_draft_reply produced an empty body.")
+    action_id = "draft_reply"
+    case_id = str(ctx.snapshot.case_id or "")
+    source_signal_id = str(ctx.snapshot.signal_id or "")
     return ToolResult(
         status="ok",
         turn_summary_pl="Draft odpowiedzi przygotowany (bez wysyłki).",
         snapshot_delta={
             "actions": [
                 {
-                    "id": "draft_reply",
+                    "id": action_id,
                     "enabled": True,
                     "payload_pl": body,
                     "disabled_reason_pl": None,
+                    # Identity always minted at creation. Parent lineage refs stay
+                    # empty here; annotate_action_parent_refs fills them only when a
+                    # fresh, id-matching policy_action_envelope is correlated.
+                    "draft_id": compute_draft_id(
+                        case_id=case_id, source_signal_id=source_signal_id, action_id=action_id
+                    ),
+                    "revision": 1,
+                    "body_hash": body_hash,
+                    "case_id": case_id,
+                    "source_signal_id": source_signal_id,
+                    "identity_state": "identity_incomplete",
+                    "parent_policy_decision_id": "",
+                    "parent_action_proposal_v2_id": "",
+                    "parent_decision_candidate_id": "",
                 }
             ],
             "hitl_gate": {"required": True, "reason": "draft_ready_for_approval"},

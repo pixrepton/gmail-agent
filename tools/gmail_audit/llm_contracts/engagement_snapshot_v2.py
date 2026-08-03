@@ -52,6 +52,17 @@ class ActionItem(StrictModel):
     parent_action_proposal_v2_id: str = ""
     parent_decision_candidate_id: str = ""
     source_signal_id: str = ""
+    # AI-OS-CANONICAL-DRAFT-IDENTITY-01: the artifact identity of this action, distinct
+    # from the four parent/lineage refs above. `draft_id` names the opportunity/slot
+    # (stable across re-runs and operator edits of the same case+signal+action);
+    # `revision`/`body_hash` version its content (bumped on every real content change,
+    # never silently overwritten). `identity_state` is honest about whether lineage
+    # correlation actually succeeded this turn -- never fabricated when it didn't.
+    draft_id: str = ""
+    revision: int = 1
+    body_hash: str = ""
+    case_id: str = ""
+    identity_state: Literal["complete", "identity_incomplete"] = "identity_incomplete"
 
 
 class HitlGate(StrictModel):
