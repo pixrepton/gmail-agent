@@ -195,6 +195,7 @@ def _execute_composite_step(
     engagement_snapshot: EngagementSnapshotV2 | None = None,
     correlation_store: CorrelationStore | None = None,
     drive_client: Any | None = None,
+    db_url: str | None = None,
 ) -> dict[str, Any]:
     """Execute steps of a composite_plan after operator approval.
 
@@ -210,22 +211,22 @@ def _execute_composite_step(
 
     results: list[dict[str, Any]] = []
     eid = str(engagement_snapshot.engagement_id) if engagement_snapshot else ""
-    db_url = ""
+    resolved_db_url = str(db_url or "").strip()
 
-    # Próbuj odczytać database_url z settings
-    if engagement_snapshot:
+    # Próbuj odczytać database_url z settings gdy caller nie podał
+    if not resolved_db_url and engagement_snapshot:
         try:
             from agent_runtime.settings import load_agent_runtime_settings
 
             settings = load_agent_runtime_settings()
-            db_url = str(
+            resolved_db_url = str(
                 getattr(settings, "mailbox_memory_database_url", "")
                 or ""
             ).strip()
         except Exception as exc:
             log.warning("materialize: failed to load settings for db_url exc=%s", exc)
 
-    # PR-5B: idempotency_key z payloadu (przekazany przez api_app.py)
+    # PR-5B / RP-26: per-step keys (never reuse one key across steps)
     global_idempotency_key = str(payload.get("idempotency_key") or "").strip() or None
     created_case_id: str | None = None  # P0.1: wyciągnij case_id z create_case executor
 
@@ -241,6 +242,11 @@ def _execute_composite_step(
             if operation != "create_case":
                 args.setdefault("target", created_case_id)
         tool = str(step.get("tool") or "").strip()
+        step_key = (
+            f"{global_idempotency_key}:step:{idx}:{operation or tool or 'op'}"
+            if global_idempotency_key
+            else None
+        )
 
         if operation in WRITE_EXECUTORS:
             # REAL EXECUTION — po HITL, wykonujemy naprawdę
@@ -251,8 +257,8 @@ def _execute_composite_step(
                     mailbox_store=mailbox_store,
                     correlation_store=correlation_store,
                     drive_client=drive_client,
-                    db_url=db_url,
-                    idempotency_key=global_idempotency_key,
+                    db_url=resolved_db_url or None,
+                    idempotency_key=step_key,
                     engagement_id=eid,
                 )
                 status = result.get("status", "ok")
@@ -278,7 +284,7 @@ def _execute_composite_step(
                         "args": args,
                         "result": result,
                     },
-                    database_url=db_url,
+                    database_url=resolved_db_url,
                 )
                 if status == "error":
                     return {"action": "composite_failed", "results": results, "error": summary[:ERROR_TRUNCATION_LENGTH]}
@@ -337,20 +343,47 @@ def execute_materialize_proposal(
     correlation_store: CorrelationStore | None = None,
     drive_client: Any | None = None,
     idempotency_key: str | None = None,
+    db_url: str | None = None,
 ) -> dict[str, Any]:
     """Python-only executor after operator approve — never called from LLM."""
     ptype = str(proposal.proposal_type or "").strip()
     payload = dict(proposal.payload_json or {})
-    if idempotency_key:
-        payload["idempotency_key"] = idempotency_key
+    # Strip internal lifecycle metadata from effect payload
+    payload.pop("_dq02_lifecycle", None)
+    key = str(idempotency_key or payload.get("idempotency_key") or "").strip() or None
+    url = str(db_url or "").strip() or None
+    if key:
+        payload["idempotency_key"] = key
+        if not url:
+            return {
+                "action": "idempotency_unavailable",
+                "status": "error",
+                "error": "idempotency_key requires db_url; refusing silent noop",
+                "summary": "idempotency_key requires db_url; refusing silent noop",
+            }
+        from agent_runtime.idempotency import check_idempotency
+
+        cached = check_idempotency(url, f"{key}:materialize:{ptype}")
+        if cached is not None and isinstance(cached.get("result"), dict):
+            return dict(cached["result"])
+
+    def _record(result: dict[str, Any]) -> dict[str, Any]:
+        if key and url:
+            from agent_runtime.idempotency import record_idempotency
+
+            record_idempotency(url, f"{key}:materialize:{ptype}", ptype, result)
+        return result
+
     if ptype == "composite_plan":
-        return _execute_composite_step(
+        result = _execute_composite_step(
             payload,
             mailbox_store=mailbox_store,
             engagement_snapshot=engagement_snapshot,
             correlation_store=correlation_store,
             drive_client=drive_client,
+            db_url=url,
         )
+        return _record(result)
     if ptype == "link_existing":
         case_id = str(payload.get("case_id") or "").strip()
         if not case_id:
@@ -361,7 +394,12 @@ def execute_materialize_proposal(
                 engagement_id=engagement_snapshot.engagement_id,
                 case_id=case_id,
             )
-        return {"case_id": case_id, "action": "linked", "staging_engagement_id": engagement_snapshot.engagement_id, "engagement_id": engagement_snapshot.engagement_id}
+        return _record({
+            "case_id": case_id,
+            "action": "linked",
+            "staging_engagement_id": engagement_snapshot.engagement_id,
+            "engagement_id": engagement_snapshot.engagement_id,
+        })
     if ptype == "create_case":
         case_id = str(payload.get("case_id") or f"case_{uuid.uuid4().hex[:12]}").strip()
         customer_email = str(payload.get("customer_email") or "").strip().lower()
@@ -375,12 +413,12 @@ def execute_materialize_proposal(
                     engagement_id=engagement_snapshot.engagement_id,
                     case_id=existing,
                 )
-                return {
+                return _record({
                     "case_id": existing,
                     "action": "linked_existing",
                     "engagement_id": engagement_snapshot.engagement_id,
                     "dedup_reason": f"email_level1:{customer_email}",
-                }
+                })
 
         from case_routing import apply_routing_to_case_row, classify_mailbox_row
 
@@ -420,7 +458,7 @@ def execute_materialize_proposal(
                 customer_name=str(payload.get("customer_name") or ""),
             )
 
-        return {"case_id": case_id, "action": "created", "engagement_id": engagement_snapshot.engagement_id}
+        return _record({"case_id": case_id, "action": "created", "engagement_id": engagement_snapshot.engagement_id})
     if ptype == "create_artifact":
         return {"action": "artifact_deferred", "payload": payload}
     if ptype == "defer_operator":

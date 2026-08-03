@@ -842,14 +842,21 @@ def _with_idempotency(
         idempotency_key: str | None = None,
         **kwargs: Any,
     ) -> dict:
-        # Idempotency check before execution
-        if idempotency_key and db_url:
+        key = str(idempotency_key or "").strip() or None
+        url = str(db_url or "").strip() or None
+        # Fail-closed: a key without a receipt store must not silently degrade.
+        if key and not url:
+            return {
+                "status": "error",
+                "summary": "idempotency_key requires db_url; refusing silent noop",
+                "error": "idempotency_unavailable",
+            }
+        if key and url:
             from agent_runtime.idempotency import check_idempotency
 
-            cached = check_idempotency(db_url, idempotency_key)
+            cached = check_idempotency(url, key)
             if cached is not None:
                 return dict(cached["result"])
-        # Execute
         result = executor_fn(
             args,
             mailbox_store=mailbox_store,
@@ -857,11 +864,11 @@ def _with_idempotency(
             drive_client=drive_client,
             **kwargs,
         )
-        # Record after execution
-        if idempotency_key and db_url and result.get("status") == "ok":
+        # Record terminal outcomes (ok and non-ok) so restart can recognize them.
+        if key and url and isinstance(result, dict):
             from agent_runtime.idempotency import record_idempotency
 
-            record_idempotency(db_url, idempotency_key, op_name, result)
+            record_idempotency(url, key, op_name, result)
         return result
 
     wrapper.__name__ = executor_fn.__name__
