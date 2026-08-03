@@ -153,6 +153,51 @@ class InMemoryMailboxMemoryStore:
                 seen_fact_ids.add(fact_id)
         self.facts[bucket_key] = current
 
+    def append_facts_with_supersession(self, rows: list[dict[str, Any]]) -> dict[str, int]:
+        stats = {"inserted": 0, "superseded": 0, "unchanged": 0}
+        if not rows:
+            return stats
+        for row in rows:
+            payload = dict(row)
+            case_id = str(payload.get("case_id") or "").strip()
+            entity_scope = str(payload.get("entity_scope") or "case").strip() or "case"
+            fact_key = str(payload.get("fact_key") or "").strip()
+            new_value = str(payload.get("normalized_value") or "").strip()
+            if not case_id or not fact_key:
+                continue
+            skip_insert = False
+            for bucket_key, items in list(self.facts.items()):
+                updated_items: list[dict[str, Any]] = []
+                for item in items:
+                    if (
+                        str(item.get("case_id") or "") == case_id
+                        and str(item.get("entity_scope") or "case") == entity_scope
+                        and str(item.get("fact_key") or "") == fact_key
+                        and str(item.get("status") or "active") == "active"
+                    ):
+                        old_value = str(item.get("normalized_value") or "").strip()
+                        if old_value == new_value:
+                            stats["unchanged"] += 1
+                            skip_insert = True
+                            updated_items.append(item)
+                            continue
+                        meta = dict(item.get("metadata") or {})
+                        meta["superseded_at"] = payload.get("observed_at")
+                        meta["superseded_by_fact_id"] = str(payload.get("fact_id") or "")
+                        updated_items.append({**item, "status": "superseded", "metadata": meta})
+                        stats["superseded"] += 1
+                    else:
+                        updated_items.append(item)
+                self.facts[bucket_key] = updated_items
+            if skip_insert:
+                continue
+            bucket_key = f"append::{case_id}:{str(payload.get('source_ref') or '')}"
+            current = list(self.facts.get(bucket_key) or [])
+            current.append(payload)
+            self.facts[bucket_key] = current
+            stats["inserted"] += 1
+        return stats
+
     def upsert_snapshot(self, case_id: str, row: dict[str, Any]) -> None:
         self.snapshots[case_id] = dict(row)
 

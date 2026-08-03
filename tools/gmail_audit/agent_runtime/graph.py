@@ -221,7 +221,11 @@ class AgentGraphEngine:
                 )
                 sub_agent = "general"
             else:
-                if plan.tool_name not in available_tools:
+                policy_block = _policy_enforcement_block(current, plan)
+                if policy_block is not None:
+                    result = policy_block
+                    sub_agent = "general"
+                elif plan.tool_name not in available_tools:
                     result = ToolResult(
                         status="error",
                         turn_summary_pl=f"NarzÄ™dzie {plan.tool_name} nie byĹ‚o dostÄ™pne w tej turze.",
@@ -546,6 +550,32 @@ def _observe_policy_plan(
             "semantic_policy_plan_consistency": telemetry,
             "decision_divergence_observation": divergence,
         }
+    )
+
+
+def _policy_enforcement_block(
+    snapshot: EngagementSnapshotV2,
+    plan: ToolCallPlan,
+) -> ToolResult | None:
+    """RP-30: enforce policy/plan conflicts that were previously telemetry-only."""
+    consistency = snapshot.semantic_policy_plan_consistency
+    if consistency is None:
+        return None
+    if str(consistency.status or "") != "conflicting":
+        return None
+    reasons = {str(item) for item in (consistency.reason_codes or [])}
+    if "policy_blocks_actionable_tool" not in reasons:
+        return None
+    return ToolResult(
+        status="error",
+        turn_summary_pl="Polityka blokuje wybrane narzedzie — wymaga decyzji operatora.",
+        snapshot_delta={
+            "operational_status": {"code": "pending_operator", "blocking": True},
+            "hitl_gate": {
+                "required": True,
+                "reason": f"policy_blocks_actionable_tool:{plan.tool_name}",
+            },
+        },
     )
 
 

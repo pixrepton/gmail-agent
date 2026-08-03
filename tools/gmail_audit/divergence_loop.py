@@ -441,12 +441,12 @@ def maybe_create_learning_candidate(
             "threshold": threshold,
         }})
 
-        # Faza 1: Auto-approve dla bardzo silnych wzorców
-        should_auto_approve = False
-        if confidence is not None and confidence >= CONFIDENCE_AUTO_APPROVE_THRESHOLD and (total + 1) >= threshold:
-            should_auto_approve = True
-        if parent_observation_count is not None and parent_observation_count > threshold * 2:
-            should_auto_approve = True
+        # Faza 1: Auto-approve only when confidence AND observation threshold are both met.
+        should_auto_approve = (
+            confidence is not None
+            and confidence >= CONFIDENCE_AUTO_APPROVE_THRESHOLD
+            and (total + 1) >= threshold
+        )
         if should_auto_approve:
             _auto_approve_candidate(conn, cid)
 

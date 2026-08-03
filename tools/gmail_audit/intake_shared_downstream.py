@@ -177,11 +177,11 @@ def run_shared_downstream_stages(
         context_bundle = _resolve_effective_context_bundle(snapshot, context_bundle, stage_config)
 
     # Krok 3: LLM-intensive stages przez ThreadPoolExecutor.
-    # Uwaga: case_intelligence zalezy od business_result, reply_result i action_plan_result,
-    # wiec pelna rownoleglosc nie jest mozliwa bez refaktora architektury.
-    # Uzywamy executors dla przejrzystosci kodu i gotowosci na przyszle zmiany.
+    # RP-30: case_intelligence runs before action_plan so planning follows understanding.
     from concurrent.futures import ThreadPoolExecutor
     import os
+
+    _EMPTY_ACTION_PLAN: dict[str, Any] = {}
 
     max_workers = int(os.getenv("INTAKE_SHARED_DOWNSTREAM_MAX_WORKERS", "2"))
     with ThreadPoolExecutor(max_workers=max_workers) as _pool:
@@ -200,16 +200,20 @@ def run_shared_downstream_stages(
             reply_result = reply_future.result()
             stage_timings["draft_reply"] = _timer_ms(_t)
 
-        # Stage 3: action_plan (deterministyczne, szybkie)
-        _t = time.monotonic()
-        action_plan_result = plan_actions(intake_result, case_link_result, business_result, reply_result, stage_config)
-        stage_timings["action_plan"] = _timer_ms(_t)
-
-        # Stage 4: case_intelligence (LLM) — zalezy od business_result, reply_result, action_plan_result
+        # Stage 3: case_intelligence (LLM) — before action_plan (RP-30)
         _t = time.monotonic()
         if opts.case_intelligence_guard_exceptions:
             try:
-                ci_future = _pool.submit(build_case_intelligence_layer, snapshot, intake_result, case_link_result, business_result, reply_result, action_plan_result, stage_config)
+                ci_future = _pool.submit(
+                    build_case_intelligence_layer,
+                    snapshot,
+                    intake_result,
+                    case_link_result,
+                    business_result,
+                    reply_result,
+                    _EMPTY_ACTION_PLAN,
+                    stage_config,
+                )
                 case_intelligence_result = ci_future.result()
             except Exception as exc:  # noqa: BLE001 - enrichment must not block operator visibility
                 warnings.append("case_intelligence_exception")
@@ -218,13 +222,34 @@ def run_shared_downstream_stages(
                     intake_result=intake_result,
                     case_link_result=case_link_result,
                     business_result=business_result,
-                    action_plan_result=action_plan_result,
+                    action_plan_result=_EMPTY_ACTION_PLAN,
                     error=exc,
                 )
         else:
-            ci_future = _pool.submit(build_case_intelligence_layer, snapshot, intake_result, case_link_result, business_result, reply_result, action_plan_result, stage_config)
+            ci_future = _pool.submit(
+                build_case_intelligence_layer,
+                snapshot,
+                intake_result,
+                case_link_result,
+                business_result,
+                reply_result,
+                _EMPTY_ACTION_PLAN,
+                stage_config,
+            )
             case_intelligence_result = ci_future.result()
         stage_timings["case_intelligence"] = _timer_ms(_t)
+        stage_config["case_intelligence_result"] = case_intelligence_result
+
+        # Stage 4: action_plan — deterministic, after understanding is available
+        _t = time.monotonic()
+        action_plan_result = plan_actions(
+            intake_result,
+            case_link_result,
+            business_result,
+            reply_result,
+            stage_config,
+        )
+        stage_timings["action_plan"] = _timer_ms(_t)
     stage_config["case_intelligence_result"] = case_intelligence_result
 
     _t = time.monotonic()

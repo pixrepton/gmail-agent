@@ -166,7 +166,7 @@ class TestAutoApproveHighConfidence:
         )
 
     def test_auto_approve_strong_pattern_via_parent_obs(self):
-        """parent_observation_count > threshold * 2 → auto-approve nawet bez confidence."""
+        """parent_observation_count alone must not bypass confidence gating (RP-31)."""
         conn = _mock_conn()
         cur = conn.cursor.return_value.__enter__.return_value
         cur.rowcount = 1
@@ -180,7 +180,7 @@ class TestAutoApproveHighConfidence:
             case_family="test_family",
             proposal_type="prepare_reply_draft",
             response_type=RESPONSE_DIVERGENT_ACTION,
-            parent_observation_count=10,  # threshold=3, 10 > 6 → auto-approve
+            parent_observation_count=10,  # previously bypassed confidence — now blocked
         )
 
         assert cid is not None
@@ -188,8 +188,8 @@ class TestAutoApproveHighConfidence:
             call for call in cur.execute.call_args_list
             if "UPDATE" in str(call[0][0]) and "approved" in str(call[0][0])
         ]
-        assert len(approved_updates) > 0, (
-            "Expected auto-approve for strong pattern (parent_obs > threshold*2)"
+        assert len(approved_updates) == 0, (
+            "parent_observation_count must not auto-approve without confidence threshold"
         )
 
     def test_constant_defined(self):

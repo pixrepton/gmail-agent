@@ -353,7 +353,7 @@ def test_graph_captures_structured_input_ids_and_telemetry_without_changing_tool
     }
 
 
-def test_policy_conflict_is_detected_but_does_not_block_tool_execution() -> None:
+def test_policy_conflict_blocks_actionable_tool_execution() -> None:
     class _DraftPlanner:
         def plan_next_tool(self, *, snapshot, available_tools, constitution):
             return ToolCallPlan(
@@ -412,9 +412,10 @@ def test_policy_conflict_is_detected_but_does_not_block_tool_execution() -> None
         ),
     )
 
-    assert registry.calls == 1, "detection-only must not become enforcement"
+    assert registry.calls == 0, "RP-30 enforces policy_blocks_actionable_tool"
     assert result.turns[0].tool_name == "generate_draft_reply"
-    assert result.snapshot.actions[0].payload_pl == "Draft fixture"
+    assert result.turns[0].tool_status == "error"
+    assert result.snapshot.hitl_gate.required is True
     assert result.snapshot.semantic_policy_plan_consistency.status == "conflicting"
     assert "policy_blocks_actionable_tool" in (
         result.snapshot.semantic_policy_plan_consistency.reason_codes

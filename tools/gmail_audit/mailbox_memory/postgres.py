@@ -416,26 +416,92 @@ class PostgresMailboxMemoryStore:
             conn.commit()
 
     def append_fact_rows(self, rows: list[dict[str, Any]]) -> None:
+        self.append_facts_with_supersession(rows)
+
+    def append_facts_with_supersession(self, rows: list[dict[str, Any]]) -> dict[str, int]:
+        """DQ-10: supersede prior active facts when value changes; idempotent on same value."""
+        stats = {"inserted": 0, "superseded": 0, "unchanged": 0}
         if not rows:
-            return
+            return stats
         with self._connect() as conn:
             with conn.cursor() as cur:
-                prepared = [self._prep(item, json_fields={"metadata"}, time_fields={"observed_at"}) for item in rows]
-                cur.executemany(
-                    """
-                    INSERT INTO mailbox_memory_facts (
-                        fact_id, case_id, message_id, document_id, entity_scope, fact_key, normalized_value, raw_value,
-                        confidence, observed_at, source_type, source_ref, status, metadata
-                    ) VALUES (
-                        %(fact_id)s, %(case_id)s, %(message_id)s, %(document_id)s, %(entity_scope)s, %(fact_key)s, %(normalized_value)s, %(raw_value)s,
-                        %(confidence)s, %(observed_at)s, %(source_type)s, %(source_ref)s, %(status)s, %(metadata)s::jsonb
+                for raw in rows:
+                    row = self._prep(raw, json_fields={"metadata"}, time_fields={"observed_at"})
+                    case_id = str(row.get("case_id") or "").strip()
+                    entity_scope = str(row.get("entity_scope") or "case").strip() or "case"
+                    fact_key = str(row.get("fact_key") or "").strip()
+                    new_value = str(row.get("normalized_value") or "").strip()
+                    if not case_id or not fact_key:
+                        continue
+                    cur.execute(
+                        """
+                        SELECT fact_id, normalized_value, metadata
+                        FROM mailbox_memory_facts
+                        WHERE case_id = %(case_id)s
+                          AND entity_scope = %(entity_scope)s
+                          AND fact_key = %(fact_key)s
+                          AND status = 'active'
+                        """,
+                        {
+                            "case_id": case_id,
+                            "entity_scope": entity_scope,
+                            "fact_key": fact_key,
+                        },
                     )
-                    ON CONFLICT (fact_id) DO NOTHING
-                    """,
-                    prepared,
-                )
+                    active_rows = cur.fetchall() or []
+                    skip_insert = False
+                    for active in active_rows:
+                        if isinstance(active, dict):
+                            old_value = str(active.get("normalized_value") or "").strip()
+                            fact_id = str(active.get("fact_id") or "")
+                            old_meta = active.get("metadata") if isinstance(active.get("metadata"), dict) else {}
+                        else:
+                            fact_id = str(active[0] or "")
+                            old_value = str(active[1] or "").strip()
+                            old_meta = active[2] if len(active) > 2 and isinstance(active[2], dict) else {}
+                        if old_value == new_value:
+                            stats["unchanged"] += 1
+                            skip_insert = True
+                            break
+                        supersede_meta = dict(old_meta)
+                        supersede_meta["superseded_at"] = row.get("observed_at")
+                        supersede_meta["superseded_by_fact_id"] = str(row.get("fact_id") or "")
+                        cur.execute(
+                            """
+                            UPDATE mailbox_memory_facts
+                            SET status = 'superseded', metadata = %(metadata)s::jsonb
+                            WHERE fact_id = %(fact_id)s
+                            """,
+                            {"fact_id": fact_id, "metadata": supersede_meta},
+                        )
+                        stats["superseded"] += 1
+                    if skip_insert:
+                        continue
+                    cur.execute(
+                        """
+                        INSERT INTO mailbox_memory_facts (
+                            fact_id, case_id, message_id, document_id, entity_scope, fact_key, normalized_value, raw_value,
+                            confidence, observed_at, source_type, source_ref, status, metadata
+                        ) VALUES (
+                            %(fact_id)s, %(case_id)s, %(message_id)s, %(document_id)s, %(entity_scope)s, %(fact_key)s, %(normalized_value)s, %(raw_value)s,
+                            %(confidence)s, %(observed_at)s, %(source_type)s, %(source_ref)s, %(status)s, %(metadata)s::jsonb
+                        )
+                        ON CONFLICT (fact_id) DO NOTHING
+                        """,
+                        row,
+                    )
+                    if int(cur.rowcount or 0) > 0:
+                        stats["inserted"] += 1
             conn.commit()
-        log.debug("append_fact_rows rows=%s case_id=%s", len(rows), rows[0].get("case_id", "unknown") if rows else "none")
+        log.debug(
+            "append_facts_with_supersession rows=%s inserted=%s superseded=%s unchanged=%s case_id=%s",
+            len(rows),
+            stats["inserted"],
+            stats["superseded"],
+            stats["unchanged"],
+            rows[0].get("case_id", "unknown") if rows else "none",
+        )
+        return stats
 
     def upsert_snapshot(self, case_id: str, row: dict[str, Any]) -> None:
         log.warning("LEGACY mailbox_memory_snapshots write for case_id=%s — E4 gate should prevent this when v2 feed active", case_id)

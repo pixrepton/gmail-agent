@@ -1041,7 +1041,7 @@ def _agent_fact_row(
 ) -> dict[str, Any]:
     from mailbox_memory.facts import stable_id
 
-    fact_id = stable_id("fact", case_id, fact_key)
+    fact_id = stable_id("fact", case_id, fact_key, message_id, normalized_value)
     return {
         "fact_id": fact_id,
         "case_id": case_id,
@@ -1064,7 +1064,9 @@ def _persist_facts(ctx: ToolExecutionContext, *, heated: int | None, city: str |
     store = ctx.mailbox_store
     if store is None:
         return
-    append = getattr(store, "append_fact_rows", None)
+    append = getattr(store, "append_facts_with_supersession", None)
+    if not callable(append):
+        append = getattr(store, "append_fact_rows", None)
     if not callable(append):
         return
     case_id = ctx.snapshot.case_id
@@ -1098,7 +1100,12 @@ def _persist_facts(ctx: ToolExecutionContext, *, heated: int | None, city: str |
             logger.info("FACTS_IDEMPOTENT_SKIP", extra={"x": {"case_id": case_id, "idem_key": idem_key}})
             return
         try:
-            append(rows)
+            result = append(rows)
+            if isinstance(result, dict) and result.get("unchanged") and not result.get("inserted"):
+                logger.info(
+                    "FACTS_IDEMPOTENT_SKIP",
+                    extra={"x": {"case_id": case_id, "idem_key": idem_key, "supersession": result}},
+                )
             if not hasattr(_persist_facts, "_seen_keys"):
                 _persist_facts._seen_keys = set()
             _persist_facts._seen_keys.add(idem_key)

@@ -171,7 +171,7 @@ class TestBusinessPulseHonestPlaceholders(unittest.TestCase):
 
     def test_win_rate_trend_is_not_a_fabricated_stable(self):
         from agent_runtime.business_pulse import get_win_rate
-        store = _QueueStore([({}, [("won", 2), ("lost", 1)])])
+        store = _QueueStore([({}, [("completed", "won"), ("lost", "")])])
         result = get_win_rate(store, self.settings)
         self.assertTrue(result["ok"])
         self.assertIsNone(result["win_rate"]["trend"])
@@ -191,7 +191,7 @@ class TestBusinessPulseHonestPlaceholders(unittest.TestCase):
         from agent_runtime.business_pulse import get_revenue_forecast
         store = _QueueStore(
             [
-                ({}, [("won", 2), ("lost", 1)]),  # get_win_rate
+                ({}, [("completed", "won"), ("lost", "")]),  # get_win_rate
                 ((5,), [(5,)]),  # pipeline: total count
                 ({}, [("active", 3)]),  # pipeline: by_status
                 ({}, []),  # pipeline: top rows

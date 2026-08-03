@@ -339,7 +339,9 @@ def get_daily_delta(store: Any, settings: Any) -> dict[str, Any]:
 # ── Win Rate ────────────────────────────────────────────────────────────────
 
 def get_win_rate(store: Any, settings: Any) -> dict[str, Any]:
-    """Procent wygranych ofert."""
+    """Procent wygranych ofert (lifecycle completed vs lost, not fictional won status)."""
+    from business_outcome import classify_case_outcome
+
     _t = time.monotonic()
     result: dict[str, Any] = {"ok": True, "win_rate": {}}
     try:
@@ -352,24 +354,39 @@ def get_win_rate(store: Any, settings: Any) -> dict[str, Any]:
             return {"ok": False, "error": "No store access"}
 
         cursor.execute(
-            f"SELECT status, COUNT(*) FROM mailbox_memory_cases WHERE {_ACTIVE_CASES_WHERE} GROUP BY status"
+            f"""SELECT lower(COALESCE(status, '')) AS status,
+                       lower(COALESCE(metadata->>'resolution_outcome', '')) AS resolution_outcome
+               FROM mailbox_memory_cases
+               WHERE {_ACTIVE_CASES_WHERE}"""
         )
-        by_status = dict(cursor.fetchall() or [])
+        rows = cursor.fetchall() or []
 
-        won = int(by_status.get("won", 0))
-        lost = int(by_status.get("lost", 0))
+        won = lost = in_progress = 0
+        for row in rows:
+            if isinstance(row, dict):
+                status = str(row.get("status") or "")
+                resolution_outcome = str(row.get("resolution_outcome") or "")
+            else:
+                status = str(row[0] or "")
+                resolution_outcome = str(row[1] or "") if len(row) > 1 else ""
+            bucket = classify_case_outcome(status=status, resolution_outcome=resolution_outcome)
+            if bucket == "won":
+                won += 1
+            elif bucket == "lost":
+                lost += 1
+            else:
+                in_progress += 1
+
         total = won + lost
-
-        rate = round((won / total * 100), 1) if total > 0 else 0
+        rate = round((won / total * 100), 1) if total > 0 else 0.0
         result["win_rate"] = {
             "period_days": 999,
             "total": total,
             "won": won,
             "lost": lost,
-            "in_progress": int(by_status.get("active", 0)),
+            "in_progress": in_progress,
             "rate_pct": rate,
-            # No prior-period snapshot is compared against, so no trend can be
-            # computed honestly yet -- untracked, not a claimed "stable".
+            "status_basis": "lifecycle_completed_vs_lost",
             "trend": None,
         }
     except Exception as exc:
@@ -443,7 +460,9 @@ def get_revenue_forecast(store: Any, settings: Any) -> dict[str, Any]:
     """Prognoza przychodu: pipeline x win_rate."""
     _t = time.monotonic()
     win = get_win_rate(store, settings)
-    rate = win.get("win_rate", {}).get("rate_pct", 50) if win.get("ok") else 50
+    win_payload = win.get("win_rate", {}) if win.get("ok") else {}
+    total_decided = int(win_payload.get("total") or 0)
+    rate = float(win_payload.get("rate_pct") or 0.0) if total_decided > 0 else None
 
     pipeline_val = None
     try:
@@ -453,19 +472,22 @@ def get_revenue_forecast(store: Any, settings: Any) -> dict[str, Any]:
     except Exception:
         pipeline_val = None
 
-    if pipeline_val is None:
-        # No real pipeline value exists to forecast from -- untracked, not a
-        # fabricated number derived from a hardcoded fallback.
+    if pipeline_val is None or rate is None:
         return {
             "ok": True,
             "forecast": {
-                "pipe_pln": None,
+                "pipe_pln": pipeline_val,
                 "confident_pln": None,
                 "probable_pln": None,
                 "potential_pln": None,
                 "total_forecast_pln": None,
-                "method": f"pipeline x {rate}% win_rate",
+                "method": (
+                    "pipeline x win_rate"
+                    if rate is not None
+                    else "win_rate_unavailable_without_decided_cases"
+                ),
                 "value_tracking": "not_implemented",
+                "win_rate_basis": win_payload.get("status_basis"),
             },
         }
 
@@ -480,7 +502,8 @@ def get_revenue_forecast(store: Any, settings: Any) -> dict[str, Any]:
             "potential_pln": round(forecast * 0.3),
             "total_forecast_pln": round(forecast),
             "method": f"pipeline x {rate}% win_rate",
-        }
+            "win_rate_basis": win_payload.get("status_basis"),
+        },
     }
 
 
