@@ -60,6 +60,35 @@ def _task_candidates(rows: list[dict[str, Any]], decision_view: dict[str, Any]) 
     return candidates[:12]
 
 
+def _readiness_facets(trays: dict[str, Any], decision_view: dict[str, Any]) -> dict[str, Any]:
+    """Derived projection facets — not a new SoT. Prefer CaseContextPack action_readiness."""
+    cq = trays.get("context_quality") if isinstance(trays.get("context_quality"), dict) else {}
+    action_readiness = str(
+        cq.get("action_readiness") or cq.get("readiness_status") or "review_only"
+    ).strip() or "review_only"
+    gaps = _list_of_dicts(trays.get("gaps_tray"))
+    conflicts = _list_of_dicts(trays.get("conflicts_tray"))
+    has_blocking = any(str(g.get("severity") or "").lower() == "blocking" for g in gaps) or bool(
+        cq.get("has_blocking_gaps") or cq.get("has_blocking_conflicts")
+    )
+    policy_status = str(
+        (decision_view.get("policy_decision") or {}).get("status")
+        if isinstance(decision_view.get("policy_decision"), dict)
+        else decision_view.get("policy_status")
+        or ""
+    ).strip()
+    return {
+        "context_readiness": action_readiness,
+        "ready_for_decision": bool(cq.get("ready_for_decision")) or action_readiness == "decision_ready",
+        "ready_for_operator_review": bool(cq.get("ready_for_operator_review"))
+        or action_readiness == "review_only",
+        "blocked_by_data": has_blocking or action_readiness == "not_ready",
+        "policy_status": policy_status,
+        "gap_count": len(gaps),
+        "conflict_count": len(conflicts),
+    }
+
+
 def build_projection_envelope(
     context_tray_set: dict[str, Any],
     *,
@@ -89,6 +118,8 @@ def build_projection_envelope(
         "read_only": True,
         "action_allowed": False,
         "source_context_schema": str(trays.get("schema_version") or ""),
+        "context_quality": _strip_forbidden(trays.get("context_quality") or {}),
+        "readiness_facets": _readiness_facets(trays, dv),
         "desk_cards": [{"card_type": "case_essence", "title": "Case", "summary": summary[:500], "case_id": case_id}],
         "case_detail_blocks": [
             {"block_type": "essence", "content": summary[:900], "source": "context_tray_set.essence_tray"},

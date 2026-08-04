@@ -105,6 +105,15 @@ def build_gmail_signals(
         "context_bundle": context_bundle,
         "case_id": "",
     }
+    try:
+        from outbound_receipt import infer_live_direction
+
+        base_payload["direction"] = infer_live_direction(
+            source_message if isinstance(source_message, dict) else {},
+            mailbox=mailbox,
+        )
+    except Exception:  # noqa: BLE001
+        base_payload["direction"] = "unknown"
     base_artifacts = {
         "source": "process_snapshot",
         "raw_observation_id": observation.observation_id,

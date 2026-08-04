@@ -38,6 +38,9 @@ def test_projection_envelope_maps_trays_to_operator_blocks() -> None:
 
     assert envelope["schema_version"] == "projection_envelope.v1"
     assert envelope["case_id"] == "case_env_1"
+    assert "context_quality" in envelope
+    assert "readiness_facets" in envelope
+    assert "context_readiness" in envelope["readiness_facets"]
     assert envelope["read_only"] is True
     assert envelope["action_allowed"] is False
     assert envelope["desk_cards"]

@@ -296,6 +296,20 @@ class FeedVisibility(StrictModel):
     execution_attention_reason: str = ""
 
 
+class CommunicationReceipt(StrictModel):
+    """Approve ≠ send. Tracks manual-delivery pending vs observed Sent/outbound.
+
+    Additive optional field — legacy snapshots without it validate as None / absent.
+    """
+
+    state: Literal["none", "ready_for_manual_send", "communication_sent"] = "none"
+    sent_at: str = ""
+    gmail_message_id: str = ""
+    thread_id: str = ""
+    draft_id: str = ""
+    body_hash: str = ""
+
+
 class EngagementSnapshotV2(StrictModel):
     engagement_id: str
     case_id: str
@@ -318,6 +332,7 @@ class EngagementSnapshotV2(StrictModel):
     semantic_policy_plan_consistency: SemanticPolicyPlanConsistencyV1 | None = None
     decision_divergence_observation: DecisionDivergenceObservationV1 | None = None
     feed_visibility: FeedVisibility | None = None
+    communication_receipt: CommunicationReceipt | None = None
 
 
 def engagement_snapshot_v2_json_schema() -> dict[str, Any]:

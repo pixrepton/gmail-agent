@@ -208,6 +208,14 @@ def mark_execution_attention(stored: Any, *, reason: str) -> dict[str, Any]:
     return base
 
 
+def clear_execution_attention(stored: Any) -> dict[str, Any]:
+    """Clear visibility-only execution attention after confirmed communication_sent."""
+    base = mark_execution_attention(stored, reason="")
+    base["execution_attention"] = False
+    base["execution_attention_reason"] = ""
+    return base
+
+
 def _has_pending_operator_work(snapshot: Any) -> tuple[bool, str]:
     """Real executive evidence that an operator decision is outstanding. Never keyword-based."""
     stored = getattr(snapshot, "feed_visibility", None)
@@ -274,6 +282,7 @@ __all__ = [
     "classify_signal_for_feed",
     "effective_visibility_mode",
     "is_main_feed_member",
+    "clear_execution_attention",
     "mark_execution_attention",
     "merge_feed_visibility",
 ]

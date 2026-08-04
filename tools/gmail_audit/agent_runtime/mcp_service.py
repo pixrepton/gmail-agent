@@ -330,6 +330,15 @@ class AgentMcpService:
         memory_dump = snapshot.agent_memory.model_dump(mode="python")
         memory_dump["clarification_answers"] = clarification_answers
 
+        from outbound_receipt import build_ready_for_manual_send_receipt
+
+        receipt_draft_id = ""
+        receipt_body_hash = ""
+        for item in actions_payload:
+            if str(item.get("id") or "").strip() == aid:
+                receipt_draft_id = str(item.get("draft_id") or "")
+                receipt_body_hash = str(item.get("body_hash") or "")
+                break
         delta: dict[str, Any] = {
             "hitl_gate": {"required": False, "reason": ""},
             "actions": actions_payload,
@@ -339,6 +348,10 @@ class AgentMcpService:
                 "blocking": False,
             },
             "agent_memory": memory_dump,
+            "communication_receipt": build_ready_for_manual_send_receipt(
+                draft_id=receipt_draft_id,
+                body_hash=receipt_body_hash,
+            ),
         }
         patched = apply_snapshot_delta(snapshot, delta)
         try:

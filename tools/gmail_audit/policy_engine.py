@@ -68,7 +68,13 @@ class PolicyContext:
     # Timeline: list of {"event_type": str, "occurred_at": iso str, "channel": str?}
     event_timeline: list[dict[str, Any]] = field(default_factory=list)
     follow_up_cooldown_hours: float = 72.0
-    follow_up_event_types: tuple[str, ...] = ("follow_up_sent", "operator_follow_up", "outbound_follow_up")
+    follow_up_event_types: tuple[str, ...] = (
+        "follow_up_sent",
+        "operator_follow_up",
+        "outbound_follow_up",
+        "communication_sent",
+        "gmail.communication_sent",
+    )
     # Conflicts
     conflict_severity_threshold: str = "high"
     # Authoritative verdicts (may also be extracted from snapshot_meta)

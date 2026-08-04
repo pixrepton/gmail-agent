@@ -12,6 +12,7 @@ _TECHNICAL_PRECEDENCE: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("gmail_thread", ("gmail-agent",)),
     ("mailbox_case", ("gmail-agent",)),
     ("cieplo_workflow", ("topinstal-cieplo-orchestrator",)),
+    ("offer_snapshot", ("topinstal-lead-widget",)),
     ("calc_request_snapshot", ("topinstal-lead-widget",)),
 )
 

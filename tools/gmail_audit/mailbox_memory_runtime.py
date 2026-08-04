@@ -330,6 +330,22 @@ class MailboxMemoryRuntime:
         now_iso = datetime.now().astimezone().isoformat()
         sender = str(message.get("sender") or message.get("from") or "").strip()
         sender_email = _extract_first_email(sender)
+        mailbox = str(snapshot.get("mailbox") or "")
+        from outbound_receipt import (
+            counterparty_email_for_message,
+            infer_live_direction,
+            source_kind_for_direction,
+            try_apply_communication_sent_receipt,
+        )
+
+        direction = infer_live_direction(message if isinstance(message, dict) else {}, mailbox=mailbox)
+        source_kind = source_kind_for_direction(direction)
+        counterparty_email = counterparty_email_for_message(
+            message if isinstance(message, dict) else {},
+            direction=direction,
+            mailbox=mailbox,
+        )
+        customer_email = counterparty_email or (sender_email if direction != "outbound" else "")
         attachments_preview = build_attachment_records(snapshot)
         routing = route_gmail_message(
             subject=str(message.get("subject") or ""),
@@ -338,24 +354,36 @@ class MailboxMemoryRuntime:
             labels=list(message.get("labels") or []),
             body=str(message.get("body") or message.get("body_text") or ""),
             has_attachment=bool(attachments_preview),
-            direction="inbound",
-            source_kind="gmail_inbound",
+            direction=direction if direction in {"inbound", "outbound"} else "inbound",
+            source_kind=source_kind,
         )
         if not routing.upsert_allowed:
             return MailboxMemoryIngestResult(enabled=False, case_id=case_id, message_id=message_id)
+        existing_case = None
+        try:
+            existing_case = self.store.fetch_case(case_id)
+        except Exception:  # noqa: BLE001
+            existing_case = None
+        preserved_customer_email = ""
+        if isinstance(existing_case, dict):
+            preserved_customer_email = str(existing_case.get("customer_email") or "").strip()
+        case_customer_email = preserved_customer_email or customer_email
         case_row = {
             "case_id": case_id,
             "case_key": str(case_link_result.get("selected_case_key") or "").strip(),
             "thread_id": thread_id,
             "case_family": str((intake_result.get("case_assessment") or {}).get("case_family") or "unknown"),
-            "mailbox": str(snapshot.get("mailbox") or ""),
+            "mailbox": mailbox,
             "subject": str(message.get("subject") or ""),
             "status": "open",
-            "customer_name": _guess_customer_name(sender),
-            "customer_email": sender_email,
+            "customer_name": _guess_customer_name(
+                sender if direction != "outbound" else str((message.get("to") or [""])[0] if isinstance(message.get("to"), list) else message.get("to") or "")
+            ),
+            "customer_email": case_customer_email,
             "metadata": {
                 "case_link_decision": str(case_link_result.get("decision") or ""),
                 "source_message_id": message_id,
+                "direction": direction,
             },
             "created_at": message.get("date") or now_iso,
             "updated_at": now_iso,
@@ -363,10 +391,10 @@ class MailboxMemoryRuntime:
         case_row = apply_routing_to_case_row(case_row, routing)
         self.store.upsert_case(case_row)
         # ── Entity Identity: delegate to correlation_registry (identity + engagement + links) ──
-        if self.correlation_registry is not None:
+        if self.correlation_registry is not None and case_customer_email:
             self.correlation_registry.sync_mailbox_case(
                 case_id=case_id,
-                customer_email=sender_email,
+                customer_email=case_customer_email,
                 thread_id=thread_id,
                 message_id=message_id,
                 customer_name=str(case_row.get("customer_name") or ""),
@@ -376,7 +404,7 @@ class MailboxMemoryRuntime:
             "message_id": message_id,
             "case_id": case_id,
             "thread_id": thread_id,
-            "mailbox": str(snapshot.get("mailbox") or ""),
+            "mailbox": mailbox,
             "sender": sender,
             "sender_email": sender_email,
             "recipients": message.get("to") or [],
@@ -388,22 +416,43 @@ class MailboxMemoryRuntime:
             "raw_snapshot": snapshot,
             "created_at": message.get("date") or now_iso,
             "updated_at": now_iso,
+            "direction": direction,
         }
         self.store.upsert_message(message_row)
 
         events: list[dict[str, Any]] = []
+        if direction == "outbound":
+            event_type = "communication_sent"
+            summary_text = f"Wysłano wiadomość: {str(message.get('subject') or '').strip()}"
+        else:
+            event_type = "message_received"
+            summary_text = f"Odebrano wiadomość: {str(message.get('subject') or '').strip()}"
         events.append(
             self._append_event(
                 case_id=case_id,
                 message_id=message_id,
                 thread_id=thread_id,
-                event_type="message_received",
+                event_type=event_type,
                 occurred_at=message.get("date") or now_iso,
-                summary_text=f"Odebrano wiadomość: {str(message.get('subject') or '').strip()}",
-                payload={"sender": sender, "subject": str(message.get("subject") or "")},
+                summary_text=summary_text,
+                payload={
+                    "sender": sender,
+                    "subject": str(message.get("subject") or ""),
+                    "direction": direction,
+                },
                 source_refs=[{"type": "message", "message_id": message_id}],
             )
         )
+        if direction == "outbound":
+            db_url = str(getattr(self.store, "database_url", "") or "").strip()
+            try_apply_communication_sent_receipt(
+                case_id=case_id,
+                thread_id=thread_id,
+                message_id=message_id,
+                occurred_at=str(message.get("date") or now_iso),
+                correlation_registry=self.correlation_registry,
+                database_url=db_url,
+            )
 
         attachments = build_attachment_records(snapshot)
         attachment_rows: list[dict[str, Any]] = []
