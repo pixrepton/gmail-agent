@@ -8,6 +8,10 @@ from typing import Any
 from case_context_contract import build_case_context_pack_vnext
 from dash_preview import resolve_case_key_metadata
 from evidence_ref import normalize_case_guidance_evidence_refs, strip_forbidden_evidence_like_rows
+from operator_projection_quality import (
+    build_readiness_facets_projection,
+    build_understanding_quality_projection,
+)
 from v2_semantics import CANONICAL_DESK_NOTE_COMMANDS, command_from_lifecycle_intent, decision_type_from_command
 
 
@@ -290,7 +294,15 @@ def _build_case_patch(
     )
 
     cg = intelligence_result.get("case_guidance") or {}
-    return {
+    understanding_quality = build_understanding_quality_projection(intelligence_result)
+    readiness_facets = build_readiness_facets_projection(
+        intelligence_result,
+        projection_state={
+            "conflicting_facts": projection_state["conflicting_facts"],
+            "completeness_gaps": drive_projection.get("completeness_gaps") or [],
+        },
+    )
+    case_patch = {
         "command": command,
         "case_id": case_id,
         "case_key": effective_case_key,
@@ -353,7 +365,11 @@ def _build_case_patch(
         "latest_signal_id": signal_projection["signal_id"],
         "case_link_decision": case_link_decision or "no_link",
         "case_key_source": case_key_source,
+        "readiness_facets": readiness_facets,
     }
+    if understanding_quality is not None:
+        case_patch["understanding_quality"] = understanding_quality
+    return case_patch
 
 
 def _build_desk_note_patch(
@@ -411,8 +427,16 @@ def _build_desk_note_patch(
         str(case_patch.get("case_id") or "").strip()
         or str(case_understanding.get("case_id") or "").strip()
     )
+    understanding_quality = build_understanding_quality_projection(intelligence_result)
+    readiness_facets = build_readiness_facets_projection(
+        intelligence_result,
+        projection_state={
+            "conflicting_facts": projection_state["conflicting_facts"],
+            "completeness_gaps": drive_projection.get("completeness_gaps") or [],
+        },
+    )
 
-    return {
+    desk_note_patch = {
         "command": command,
         "desk_note_id": desk_note_id,
         "case_id": desk_case_id,
@@ -485,7 +509,11 @@ def _build_desk_note_patch(
         "safe_for_live_push": bool(action_plan.get("safe_for_live_push", False)),
         "safe_for_operator_projection": bool(action_plan.get("safe_for_operator_projection", False)),
         "priority": str(intake_output.get("priority") or "low"),
+        "readiness_facets": readiness_facets,
     }
+    if understanding_quality is not None:
+        desk_note_patch["understanding_quality"] = understanding_quality
+    return desk_note_patch
 
 
 def _build_decision_trace(

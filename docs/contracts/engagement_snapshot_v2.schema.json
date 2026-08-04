@@ -288,6 +288,49 @@
       "title": "ClarificationAnswerItem",
       "type": "object"
     },
+    "CommunicationReceipt": {
+      "additionalProperties": false,
+      "description": "Approve ≠ send. Tracks manual-delivery pending vs observed Sent/outbound.\n\nAdditive optional field — legacy snapshots without it validate as None / absent.",
+      "properties": {
+        "state": {
+          "default": "none",
+          "enum": [
+            "none",
+            "ready_for_manual_send",
+            "communication_sent"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "sent_at": {
+          "default": "",
+          "title": "Sent At",
+          "type": "string"
+        },
+        "gmail_message_id": {
+          "default": "",
+          "title": "Gmail Message Id",
+          "type": "string"
+        },
+        "thread_id": {
+          "default": "",
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "draft_id": {
+          "default": "",
+          "title": "Draft Id",
+          "type": "string"
+        },
+        "body_hash": {
+          "default": "",
+          "title": "Body Hash",
+          "type": "string"
+        }
+      },
+      "title": "CommunicationReceipt",
+      "type": "object"
+    },
     "DecisionDivergenceObservationV1": {
       "additionalProperties": false,
       "description": "Detection-only comparison of existing decision views and the selected tool.\n\nDifferent literals are not automatically conflicts: the three action surfaces\nand the two case-type surfaces have different owners and no exhaustive mapping.",
@@ -1038,6 +1081,17 @@
       "anyOf": [
         {
           "$ref": "#/$defs/FeedVisibility"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "communication_receipt": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CommunicationReceipt"
         },
         {
           "type": "null"

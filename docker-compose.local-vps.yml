@@ -100,6 +100,9 @@ services:
     environment:
       PYTHONUNBUFFERED: "1"
       GMAIL_AGENT_ENV_FILE: /etc/topinstal/gmail-agent.env
+      KALK_TOP_BASE_URL: http://host.docker.internal:8091
+      KALK_TOP_TIMEOUT_SEC: "30"
+      KALK_TOP_MAX_RETRIES: "2"
       # Local dev: cieplo-orchestrator API typically runs on host; keep the same convention as VPS compose.
       CIEPLO_WORKFLOW_CONTEXT_BASE_URL: http://host.docker.internal:8000
     extra_hosts:
@@ -134,6 +137,9 @@ services:
     environment:
       PYTHONUNBUFFERED: "1"
       GMAIL_AGENT_ENV_FILE: /etc/topinstal/gmail-agent.env
+      KALK_TOP_BASE_URL: http://host.docker.internal:8091
+      KALK_TOP_TIMEOUT_SEC: "30"
+      KALK_TOP_MAX_RETRIES: "2"
     command: ${GMAIL_AGENT_WORKER_COMMAND:-python tools/gmail_audit/gmail_intake.py doctor --skip-gmail --verbose}
     depends_on:
       mailbox-memory-db:

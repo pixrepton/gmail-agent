@@ -67,6 +67,8 @@ def build_agent_doctor_check(settings: AgentRuntimeSettings) -> dict:
         warnings.append("AGENT_MODEL_FALLBACK uses a free-tier model (dev/OpenRouter)")
     if "openrouter.ai" in str(settings.openai_base_url or "").lower():
         warnings.append("AGENT_OPENAI_BASE_URL targets OpenRouter")
+    if enabled and mode in {"prep", "primary"} and not str(settings.kalk_top_base_url or "").strip():
+        warnings.append("KALK_TOP_BASE_URL is not configured (planner kalk-top tool unavailable)")
     return {
         "status": status,
         "warnings": warnings,

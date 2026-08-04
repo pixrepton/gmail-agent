@@ -11,6 +11,7 @@ TOOL_DIR = Path(__file__).resolve().parent.parent
 if str(TOOL_DIR) not in sys.path:
     sys.path.insert(0, str(TOOL_DIR))
 
+from agent_runtime.validate import build_agent_doctor_check
 from agent_runtime.cp2025 import check_cp2025_eligibility
 from agent_runtime.kalk_top_client import KalkTopUnreachableError, call_calculate_offer
 from agent_runtime.openai_agent_client import OpenAIToolPlanner
@@ -83,6 +84,24 @@ def test_extract_facts_from_signal_text(monkeypatch: pytest.MonkeyPatch) -> None
     result = extract_facts_from_text(ToolCallPlan(tool_name="extract_facts_from_text"), ctx)
     assert result.status == "ok"
     assert result.snapshot_delta.get("hvac_profile", {}).get("heated_area_m2") == 128
+
+
+def test_doctor_warns_when_kalk_top_missing() -> None:
+    settings = AgentRuntimeSettings(
+        enabled=True,
+        mode="prep",
+        model="gpt-4o-mini",
+        model_fallback="",
+        max_rounds=12,
+        openai_api_key="sk-test",
+        openai_base_url="https://api.openai.com/v1",
+        kalk_top_base_url="",
+        kalk_top_agent_key="",
+        kalk_top_timeout_sec=4,
+        kalk_top_max_retries=3,
+    )
+    check = build_agent_doctor_check(settings)
+    assert any("KALK_TOP_BASE_URL is not configured" in w for w in check.get("warnings", []))
 
 
 def test_kalk_top_unreachable_maps_node_a_error() -> None:

@@ -116,6 +116,16 @@ def test_guidance_fields_on_case_patch_and_subset_on_note_patch() -> None:
             "unsupported_claims": [],
             "conflict_refs": [],
         },
+        "execution_metadata": {
+            "case_understanding_provenance": {
+                "schema_version": "v1",
+                "availability": "available",
+                "source_mode": "model_result",
+                "validation_state": "clean",
+                "reason_codes": [],
+                "observed_at": "2026-01-01T00:00:00Z",
+            }
+        },
         "attachment_intelligence": {},
         "thread_memory": {},
         "review_routing": {},
@@ -137,6 +147,12 @@ def test_guidance_fields_on_case_patch_and_subset_on_note_patch() -> None:
     assert cp["guidance_reason_summary_pl"] == "Sprawa dojrzała do oferty."
     assert cp["momentum"] == "growing"
     assert abs(float(cp["guidance_confidence"]) - 0.77) < 1e-9
+    uq = cp.get("understanding_quality") or {}
+    assert uq.get("availability") == "available"
+    assert uq.get("operator_label_pl")
+    rf = cp.get("readiness_facets") or {}
+    assert rf.get("context_readiness") == "decision_ready"
+    assert rf.get("operator_label_pl")
     cg_block = cp.get("case_guidance") or {}
     refs = cg_block.get("evidence_refs") or []
     assert refs
