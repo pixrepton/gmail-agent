@@ -5,7 +5,7 @@ alwaysApply: true
 
 # TOP-INSTAL Core Context Router
 
-This is the only always-on Cursor rule. Keep it short. Detailed procedures live in Agent Skills and runbooks.
+This is the only always-on Cursor rule in this repo. Keep it short. Detailed procedures live in workspace skills and runbooks.
 
 ## Default Token Discipline
 
@@ -16,68 +16,57 @@ This is the only always-on Cursor rule. Keep it short. Detailed procedures live 
 
 ## Authority Order
 
-1. `AGENTS.md` - constitution and non-negotiable architecture boundaries.
-2. `LOCAL_WORKSPACE_RULES.md` - local workspace truth, Git discipline, archive/context hygiene.
-3. `docs/README.md`, `docs/core/PROJECT_README.md`, `docs/runbooks/LAST_PROVEN_STATE.md` - current documentation canon; use LPS only for proof/runtime claims.
-4. `.agents/SKILL_ROUTER.md` - task type to skill/doc routing.
-5. `docs/dev/AGENT_DEVELOPMENT_HARNESS.md` - active agent control-plane map when agent workflow, MCP, proof, or docs are in scope.
-6. Ecosystem skills (kanon): `knowledge/agent-os/skills/<skill>/SKILL.md` — router `.agents/SKILL_ROUTER.md`.
-7. Repo-only skills: `.agents/skills/<skill>/SKILL.md`.
-8. References under the selected skill path (`knowledge/agent-os/skills/<skill>/references/` or `.agents/skills/<skill>/references/`).
-9. Source files and tests - inspect after the task scope is narrowed.
+1. `AGENTS.md` (this repo) and `../../AGENTS.md` (workspace constitution).
+2. `../../knowledge/INDEX.md` and `../../knowledge/source-of-truth.md` for cross-repo routing.
+3. `docs/core/PROJECT_README.md`, `docs/runbooks/LAST_PROVEN_STATE.md` — repo canon; LPS only for proof/runtime claims.
+4. `../../knowledge/system-atlas/tooling/agent-harness/AGENT_DEVELOPMENT_HARNESS.md` — when harness/MCP/proof workflow is in scope.
+5. `../../knowledge/system-atlas/tooling/agent-harness/AGENT_SKILLS_REGISTRY.md` — pick 1-3 skills.
+6. `../../.agents/skills/<skill>/SKILL.md` — open only selected skills.
+7. `references/` under the selected skill — only when required.
+8. Source files and tests — after scope is narrow.
 
 ## Non-Negotiable Boundaries
 
-- Node A = WordPress / Daszek / operator surface / REST endpoints / JSONL projection storage.
-- Node B = VPS / `gmail-agent` / Python runtime / Postgres / pgvector / policy / workers.
+- Node A = WordPress / Daszek / operator surface / REST endpoints / JSONL projection storage (`../../daszek/`).
+- Node B = `gmail-agent` Python runtime / Postgres / pgvector / policy / workers.
 - Node A and Node B communicate through HTTP/REST bridge, not shared filesystem.
-- Daszek is projection-only, not the intelligence layer or source of truth.
-- `gmail-agent` owns Gmail-first intake, mailbox memory, policy, reconciliation, and Daszek projection.
+- Daszek is projection-only, not source of truth.
+- `gmail-agent` owns Gmail intake, mailbox memory, policy, reconciliation, and Daszek projection feed.
 - `kalk-top` owns HVAC calculation, selection, pricing, and `OfferDTO`.
 - Local files are not live proof of VPS, WordPress, Gmail, Drive, Postgres, or Gate B.
 
 ## Git i repo (always-on)
 
-- Repo ma normalną historię **Git** — `git status`, `git diff`, `git log` (read-only / orientacja) są **OK**, gdy skracają dochodzenie; łącz z edytorem i LSP.
-- **Zapis do repo** (commit, push, merge, rebase, branchy, hooki): tylko gdy operator wyraźnie tego chce lub poda politykę; nie commituj sekretów ani plików ignorowanych.
-- W tym workspace Git jest pomocniczy/diagnostyczny; nie traktuj Git jako workflow truth ani dowodu runtime.
-- **GitNexus** (`gitnexus-static-repo-intel`) = statyczny graf / impact — używaj przez skill i raporty; katalog `.gitnexus` to cache indeksu, nie źródło prawdy projektu.
+- Read-oriented `git status`, `git diff`, `git log` are OK for orientation.
+- Writes (commit, push, merge): operator intent or `scripts/ai_os_task.py` from workspace root.
+- Do not commit secrets or ignored files.
 
 ## Conflict resolution
 
-- `knowledge/memory/OPERATOR_DECISIONS.md` **supersedes** repo rules (local-only 2026-05-30).
-- VPS deploy: **explicit operator request only** — patrz [32-vps-deploy-mandate.mdc](./32-vps-deploy-mandate.mdc) (reference, `alwaysApply: false`).
+- `../../knowledge/memory/OPERATOR_DECISIONS.md` supersedes repo rules.
+- VPS/prod: explicit operator request only — see workspace `05-local-only-mandate.mdc`.
 
 ## Context Loading
 
-Before non-trivial work: read the task, orient through `AGENTS.md`, `docs/README.md`, `docs/core/PROJECT_README.md`, and `docs/runbooks/LAST_PROVEN_STATE.md` only when proof claims are in scope. Select at most 1-3 relevant skills via `.agents/SKILL_ROUTER.md` when present, open only selected `SKILL.md`, open `references/` only when required, then inspect targeted files. Do not scan the whole repo or load broad README/docs/history/prompt packs until the current canon and skill route narrow scope.
+Before non-trivial work: read task, `AGENTS.md`, workspace `AGENTS.md` when cross-repo, and LPS only for proof claims. Select at most 1-3 skills from the workspace registry. Do not load `memory-bank/`, `.claude/**`, `.gitnexus/**`, archives, or broad doc trees by default.
 
-Do not load offloaded archives, `.claude/**`, `.serena/**`, `.gitnexus/**`, raw `repo-intelligence` graphs, `graphify-out/**`, old Cursor plan dumps, `runs/**`, or upload/cache folders as default context.
+## Skill Router (names → workspace `.agents/skills/`)
 
-When the workspace includes Desktop `knowledge/`: after substantive cross-repo sessions, follow `knowledge/MEMORY_GOVERNANCE.md` (repo `agent-handover` + `knowledge/timeline/YYYY-MM.md`). Chronology index: `knowledge/timeline/README.md`.
+`karpathy-guidelines` (repo rule `karpathy-guidelines.mdc`); then as needed:
 
-## Skill Router
+`cursor-codex-harness`, `topinstal-node-topology`, `gmail-agent-proof-run`, `policy-action-gates`, `agent-skill-quality-gate`.
 
-Use local skills instead of inflating Cursor rules:
-
-`karpathy-guidelines` for coding/review/refactor discipline; then domain skills as needed:
-
-`topinstal-node-topology`, `daszek-v3-projection-audit`, `gmail-agent-proof-run`, `kalk-top-offerdto-contract`, `case-context-memory-pack`, `operator-feedback-learning-loop`, `policy-action-gates`, `drive-document-intelligence-ingest`, `hvac-sales-engineer-reasoning`, `skrzat-control-plane-design`, `release-gate-proof-pack`, `crm-integration-bridge`, `cursor-codex-harness`, `gitnexus-static-repo-intel`, `agent-skill-quality-gate`, `context-budget-audit`, `topinstal-domain-language-governance`.
-
-Workspace rule when editing structured LLM routing or `tools/gmail_audit` LLM env: `.cursor/rules/31-node-b-llm-routing.mdc` (keep aligned with `tools/gmail_audit/README.md` and `docs/runbooks/CANONICAL_PRODUCTION_RUNTIME_AND_OPERATIONS.md`).
+Backlog skills: see registry; do not assume they exist until listed as active.
 
 ## Hard Rule
 
-Do not turn Cursor rules into a second `AGENTS.md`. If a task matches a skill, use the skill. Proof discipline -> `release-gate-proof-pack` or `gmail-agent-proof-run`. GitNexus -> `knowledge/agent-os/skills/gitnexus-static-repo-intel/SKILL.md`. Context bloat -> `knowledge/agent-os/skills/context-budget-audit/SKILL.md`. Coding discipline -> `knowledge/agent-os/skills/karpathy-guidelines/SKILL.md`.
+Do not turn Cursor rules into a second `AGENTS.md`. If a task matches a skill, use the skill. Proof → `gmail-agent-proof-run`. Code graph → `CODE_INTELLIGENCE_ROUTER.md` at workspace. Coding discipline → `karpathy-guidelines.mdc`.
 
 ## MCP and tooling anti-drift (always-on)
 
-- Do **not** start by editing `.cursor/mcp.json`. First read [MCP_OPERATING_MODEL.md](../../docs/dev/MCP_OPERATING_MODEL.md), then prefer repo `just`/CLI where a command already exists.
-- **Request handling order** (default): narrow file reads + LSP / symbols (+ opcjonalnie małe odczyty `git` typu status/diff/log) → `just` or documented CLI → `gmail-agent-repo-assistant` MCP → operator-enabled **allowed-manual** MCP from the matrix → never **forbidden** rows or unlisted servers.
-- Prefer **code execution** (scripts, `gmail_intake.py`, `pytest`) over widening the MCP surface; see [AGENT_DEVELOPMENT_HARNESS.md](../../docs/dev/AGENT_DEVELOPMENT_HARNESS.md).
-- After changing `.cursor/mcp.json`, update `ALLOWED_PROJECT_MCP_SERVER_IDS` in `tools/scripts/agent_harness_audit.py` together with the allowlist row.
-- Large tool results belong in files or short summaries — not pasted wholesale into chat ([AGENT_CONTEXT_BUDGET_POLICY.md](../../docs/dev/AGENT_CONTEXT_BUDGET_POLICY.md)).
-- Treat MCP output as **hints**; verify with source reads, tests, or runtime artifacts before claims (`AGENTS.md`, proof skills).
-- If the user says “add MCP” or “wire a tool”, route through the matrix and harness — do not improvise a second policy layer in rules or chat.
-- Markdown links inside `.cursor/rules/*.mdc` resolve from **that file’s folder** — use e.g. `../../docs/dev/...`, never bare `docs/...` alone; otherwise `support/context_pack_audit.py` fails (`unresolved_missing`). Full wording: `.cursor/rules/30-agent-harness-and-mcp.mdc` (section **`.cursor/rules` Markdown link hygiene**).
-- When you fix a **class** of mistakes (audit, parser, CI, harness), persist the lesson in rules / harness / validation docs before closing the task — same expectation as in rule **30** (**Future-proofing**).
+- Prefer workspace `CODE_INTELLIGENCE_ROUTER.md` before adding MCP servers.
+- Request order: narrow reads + LSP → `just`/CLI → repo-assistant MCP → allowed workspace MCP → never forbidden servers.
+- Prefer code execution (`pytest`, `gmail_intake.py`, workspace `preflight-local-stack.ps1`) over widening MCP.
+- Treat MCP output as hints; verify with source reads and tests.
+- Markdown links in `.cursor/rules/*.mdc` resolve relative to this folder — use `../../` for workspace paths.
+- After harness edits: `python ../../scripts/context_link_audit.py --scope gmail-agent` from workspace root.

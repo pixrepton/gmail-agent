@@ -2,14 +2,9 @@
 description: "Use only for proof discipline, architecture authority, Gate A/Gate B claims, live/runtime evidence, LAST_PROVEN_STATE, package truth, or final done/not-proven reports. Do not use for routine local edits."
 alwaysApply: false
 globs:
-  - "docs/CONSTITUTION*.md"
-  - "docs/ARCHITECTURE*.md"
-  - "docs/core/PACKAGE_TRUTH_MAP.md"
-  - "docs/core/CONTEXT_PACK_SCOPE.md"
-  - "docs/core/PHYSICAL_TOPOLOGY.md"
+  - "docs/core/**"
   - "docs/runbooks/**"
   - "docs/proof-packs/**"
-  - "memory-bank/**"
 ---
 
 # Proof and Authority Protocol
@@ -18,13 +13,13 @@ Use this rule only when the task involves proof, authority, architecture claims,
 
 ## Load Discipline
 
-Do not read the full authority stack for routine edits. First select the smallest relevant skill:
+Do not read the full authority stack for routine edits. First select the smallest relevant workspace skill:
 
-- `release-gate-proof-pack` - final reports, Gate A/Gate B, evidence summaries.
-- `gmail-agent-proof-run` - doctor, period/replay, bridge drain, runtime verification.
-- `topinstal-node-topology` - Node A/B ownership and deployment topology.
-- `daszek-v3-projection-audit` - Daszek projection proof.
-- `case-context-memory-pack` - memory/retrieval proof.
+- `../../.agents/skills/gmail-agent-proof-run/SKILL.md` — doctor, replay, bridge, runtime verification.
+- `../../.agents/skills/topinstal-node-topology/SKILL.md` — Node A/B ownership and deployment topology.
+- `policy-action-gates` — policy/HITL/execution proof.
+
+Backlog skills (load only if restored): `release-gate-proof-pack`, `daszek-v3-projection-audit`, `case-context-memory-pack`.
 
 Read deeper docs only when claims require them, not by default.
 
@@ -34,17 +29,18 @@ Read deeper docs only when claims require them, not by default.
 - Static repo graph is not runtime proof.
 - MCP output is not Gate B proof.
 - Daszek fixture success is not WordPress/operator proof.
-- Never claim Gate B without live VPS/Node A/operator evidence when in scope.
-- Separate: implemented / tested locally / fixtures / VPS / WordPress-Node A / operator verified / not proven.
+- Default: local Docker only; VPS/prod requires explicit operator scope.
+- Separate: implemented / tested locally / stack smoke / operator verified / not proven.
+- Use labels from workspace `92-proof-gate-discipline.mdc`.
 
 ## Topology and Pack Truth
 
-Treat this workspace as a partial context pack. Start diagnosis with: which physical node owns this state, and how do nodes communicate? Do not model Node A WordPress uploads as local Node B paths. Missing REST/API bridge is infra/config risk, not only a Python bug.
+Multi-repo workspace: identify owning nested Git repo and physical node before claims. Node A and Node B communicate via REST bridge, not shared filesystem.
 
 ## Root Cause Discipline
 
-For cross-layer bugs, hold at least two hypotheses until one is falsified with file-path, command, log, or external evidence. If repo-graph MCP is empty or stale, do not infer absence of answers; fall back to runbooks and source reads.
+Hold at least two hypotheses until one is falsified with file-path, command, log, or external evidence. If graph MCP is stale, fall back to runbooks and source reads.
 
 ## Durable State
 
-After substantive proof/handover work, update `memory-bank/agent-handover.md` or `memory-bank/current-state.md` only when the fact is durable, non-secret, and repo-relevant.
+After substantive proof/handover, update `../../knowledge/memory/LAST_SESSION.md` only when operator instructs per `../../knowledge/SESSION_MEMORY_POLICY.md`. Do not use `memory-bank/`.
