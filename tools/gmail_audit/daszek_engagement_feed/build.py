@@ -9,13 +9,20 @@ from typing import Any
 
 from agent_runtime.store import OperatorEngagementStore
 from agent_runtime.turn_journal import AgentTurnJournal
-from daszek_engagement_feed.case import build_case_detail_from_engagement, snapshot_to_feed_case
+from daszek_engagement_feed.case import (
+    _snapshot_title,
+    build_case_detail_from_engagement,
+    operator_essence_pl_from_snapshot,
+    snapshot_to_feed_case,
+)
 from daszek_engagement_feed.day import compose_day_sections
 from daszek_engagement_feed.desk import snapshot_to_desk_item
 from daszek_engagement_feed.tasks import snapshot_to_feed_tasks
 from daszek_v3_operational_feed import build_operational_feed_snapshot
 from daszek_v3_operational_feed_contract import strip_forbidden_nested, validate_operational_feed_snapshot
+from feed_visibility import effective_visibility_mode
 from llm_contracts.engagement_snapshot_v2 import EngagementSnapshotV2
+from operator_desk_priority import order_desk_snapshots
 
 ENGAGEMENT_FEED_SCHEMA_VERSION = "2"
 _OPERATOR_DESK_PREFIX = "_operator_desk"
@@ -227,12 +234,51 @@ def build_feed_from_engagement_snapshots(
     return {"desk": desk, "cases": cases, "tasks": tasks, "case_details": case_details}
 
 
+def build_case_timeline_only_items(
+    snapshots: list[EngagementSnapshotV2],
+    *,
+    meta_by_case: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Roadmap 2.4: give `case_timeline_only` an actual consumer.
+
+    SLICE-2B classified reference-only signals as `case_timeline_only` — "belongs on the case
+    timeline, is not a desk card". Nothing then read that classification, so in practice those
+    signals were as invisible as `hidden` ones and the distinction was decorative.
+
+    These rows are deliberately NOT desk items and NOT feed cases: they carry no `note_id`, no
+    presence mode and no next action, and they are returned in their own bucket
+    (`feed.case_timeline_only`) so no consumer can mistake one for operator work.
+    """
+    meta_map = dict(meta_by_case or {})
+    items: list[dict[str, Any]] = []
+    for snapshot in snapshots or []:
+        meta = meta_map.get(_snapshot_meta_key(snapshot)) or meta_map.get(snapshot.case_id) or {}
+        mode, reasons = effective_visibility_mode(snapshot)
+        items.append(
+            strip_forbidden_nested(
+                {
+                    "case_id": snapshot.case_id,
+                    "engagement_id": snapshot.engagement_id,
+                    "title": _snapshot_title(snapshot, subject=str(meta.get("subject") or "")),
+                    "summary_pl": operator_essence_pl_from_snapshot(snapshot),
+                    "feed_visibility_mode": mode,
+                    "why_on_desk_reason_codes": [str(r)[:80] for r in reasons][:8],
+                    "occurred_at": str(meta.get("received_at") or ""),
+                    "main_feed_member": False,
+                    "read_only": True,
+                }
+            )
+        )
+    return items
+
+
 def build_engagement_feed_envelope(
     feed_core: dict[str, Any],
     *,
     snapshot_id: str,
     source: dict[str, Any] | None = None,
     day: dict[str, Any] | None = None,
+    case_timeline_only: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build validated Daszek envelope (mapping in thin package; contract via v3 builder)."""
     sid = str(snapshot_id or "").strip()
@@ -255,10 +301,13 @@ def build_engagement_feed_envelope(
     )
     feed_obj = dict(envelope.get("feed") or {})
     feed_obj["case_details"] = feed_core["case_details"]
+    # Separate bucket, never merged into desk/cases: these are case-history rows, not desk work.
+    feed_obj["case_timeline_only"] = list(case_timeline_only or [])
     meta = dict(feed_obj.get("feed_meta") or {})
     meta["feed_schema_version"] = ENGAGEMENT_FEED_SCHEMA_VERSION
     meta["exporter"] = "gmail-agent.tools.gmail_audit.daszek_engagement_feed"
     meta["agent_runtime"] = True
+    meta["case_timeline_only_count"] = len(feed_obj["case_timeline_only"])
     feed_obj["feed_meta"] = meta
     envelope["feed"] = feed_obj
     envelope["subtitle"] = "Podgląd operacyjny z EngagementSnapshot.v2 (agent runtime)."
@@ -284,16 +333,34 @@ def _list_main_feed_snapshots(list_fn: Any, *, limit: int) -> list[EngagementSna
     """
     from feed_visibility import is_main_feed_member
 
+    main_feed, _timeline_only = _list_feed_snapshots_by_bucket(list_fn, limit=limit)
+    return main_feed
+
+
+def _list_feed_snapshots_by_bucket(
+    list_fn: Any,
+    *,
+    limit: int,
+) -> tuple[list[EngagementSnapshotV2], list[EngagementSnapshotV2]]:
+    """Same bounded overfetch, returning BOTH buckets: main feed and `case_timeline_only`.
+
+    Roadmap 2.4: the timeline-only bucket is collected from the rows the scan already walked, so
+    giving `case_timeline_only` a consumer costs no extra query and cannot change which snapshots
+    reach the main feed.
+    """
+    from feed_visibility import is_case_timeline_only, is_main_feed_member
+
     fetch = max(1, int(limit))
     seen_rows = 0
     while True:
         rows = list_fn(limit=fetch) or []
         qualifying = [snap for snap in rows if is_main_feed_member(snap)]
+        timeline_only = [snap for snap in rows if is_case_timeline_only(snap)]
         if len(qualifying) >= limit:
-            return qualifying[:limit]
+            return qualifying[:limit], timeline_only[:limit]
         if len(rows) <= seen_rows or len(rows) < fetch or fetch >= _MAIN_FEED_MAX_SCAN:
             # store exhausted, or the scan ceiling reached: return everything that qualifies
-            return qualifying[:limit]
+            return qualifying[:limit], timeline_only[:limit]
         seen_rows = len(rows)
         fetch = min(fetch * 4, _MAIN_FEED_MAX_SCAN)
 
@@ -307,17 +374,27 @@ def build_operational_feed_from_engagement_store(
     case_limit: int = 50,
     snapshot_id: str | None = None,
     source: dict[str, Any] | None = None,
+    exceptions_only: bool = False,
 ) -> dict[str, Any]:
+    """Build the Daszek operational feed from the engagement store.
+
+    Args:
+        exceptions_only: Roadmap 2.4 opt-in hard filter — drop plain `main_feed` cards whose
+            readiness is `no_action_required`. Default `False` keeps the feed backward compatible;
+            the soft exception-first ORDERING is always applied and removes nothing.
+    """
     limit = max(1, int(case_limit))
     snapshots: list[EngagementSnapshotV2] = []
+    timeline_only: list[EngagementSnapshotV2] = []
     if case_ids:
         # An explicit case query is a direct lookup, not the main feed: membership does not apply.
         snapshots = operator_store.load_snapshots_for_case_ids(case_ids[:limit])
     else:
         list_fn = getattr(operator_store, "list_recent_snapshots", None)
         if callable(list_fn):
-            snapshots = _list_main_feed_snapshots(list_fn, limit=limit)
-    meta = _message_meta_by_case(mailbox_store, snapshots)
+            snapshots, timeline_only = _list_feed_snapshots_by_bucket(list_fn, limit=limit)
+            snapshots = order_desk_snapshots(snapshots, exceptions_only=exceptions_only)
+    meta = _message_meta_by_case(mailbox_store, snapshots + timeline_only)
     feed_core = build_feed_from_engagement_snapshots(
         snapshots,
         journal=journal,
@@ -332,7 +409,13 @@ def build_operational_feed_from_engagement_store(
         ).encode("utf-8")
         sid = "eng-feed-" + hashlib.sha256(raw).hexdigest()[:20]
     day = compose_day_sections(mailbox_store, snapshots)
-    envelope = build_engagement_feed_envelope(feed_core, snapshot_id=sid, source=source, day=day)
+    envelope = build_engagement_feed_envelope(
+        feed_core,
+        snapshot_id=sid,
+        source=source,
+        day=day,
+        case_timeline_only=build_case_timeline_only_items(timeline_only, meta_by_case=meta),
+    )
     rep = validate_operational_feed_snapshot(envelope)
     if not rep.ok:
         raise ValueError("engagement feed invalid: " + "; ".join(rep.errors))

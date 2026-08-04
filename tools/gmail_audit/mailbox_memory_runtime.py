@@ -2150,15 +2150,20 @@ def infer_case_status(*, business_result: dict[str, Any], action_plan_result: di
 
 
 def infer_lifecycle_from_case_status(status: str) -> str:
-    """Map legacy case_status to lifecycle_state (2026-06-25)."""
-    mapping = {
-        "awaiting_review": "qualification",
-        "awaiting_reply": "qualification",
-        "active": "qualification",
-        "waiting": "waiting_for_client",
-        "open": "new_lead",
-    }
-    return mapping.get(status, "qualification")
+    """Map `infer_case_status` output to lifecycle_state (2026-06-25).
+
+    Roadmap 2.1: the local mapping table that used to live here was a second lifecycle authority.
+    It now delegates to `CaseLifecycleState`'s own mapping (`map_case_status_to_lifecycle`, dialect
+    `pipeline`), which owns both status dialects and their one documented `open` collision. The
+    resolved values are unchanged; only the owner is.
+    """
+    from llm_contracts.case_lifecycle import CaseLifecycleState, map_case_status_to_lifecycle
+
+    return map_case_status_to_lifecycle(
+        status,
+        dialect="pipeline",
+        default=CaseLifecycleState.QUALIFICATION,
+    ).value
 
 
 def derive_next_action_record(

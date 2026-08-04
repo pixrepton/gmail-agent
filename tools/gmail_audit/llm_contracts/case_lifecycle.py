@@ -200,6 +200,48 @@ CASE_STATUS_TO_LIFECYCLE: dict[str, CaseLifecycleState] = {
     "closed":   CaseLifecycleState.COMPLETED,
 }
 
+# ── Dialekt pipeline'u (infer_case_status) → CaseLifecycleState ─────────
+# Roadmap 2.1: `mailbox_memory_runtime.infer_lifecycle_from_case_status` trzymał własną,
+# rozbieżną mapę. Mapa żyje teraz tutaj, przy CaseLifecycleState, żeby lifecycle miał jedno
+# źródło prawdy.
+#
+# `open` występuje w OBU słownikach i znaczy co innego w każdym:
+#   * dialekt `mailbox`  — wiersz sprawy jest otwarty (cel przejścia set_case_status) → QUALIFICATION;
+#   * dialekt `pipeline` — `infer_case_status` nie znalazł nic konkretnego → NEW_LEAD.
+# Kolizja jest jawna i rozstrzygana przez `dialect`, nie przez ciche nadpisanie jednej z map.
+PIPELINE_CASE_STATUS_TO_LIFECYCLE: dict[str, CaseLifecycleState] = {
+    "awaiting_review": CaseLifecycleState.QUALIFICATION,
+    "awaiting_reply":  CaseLifecycleState.QUALIFICATION,
+    "active":          CaseLifecycleState.QUALIFICATION,
+    "waiting":         CaseLifecycleState.WAITING_CLIENT,
+    "open":            CaseLifecycleState.NEW_LEAD,
+}
+
+
+def map_case_status_to_lifecycle(
+    status: str,
+    *,
+    dialect: str = "mailbox",
+    default: CaseLifecycleState = CaseLifecycleState.QUALIFICATION,
+) -> CaseLifecycleState:
+    """Mapuje case_status na CaseLifecycleState — jedno wejście dla obu dialektów.
+
+    Args:
+        status: wartość case_status.
+        dialect: `pipeline` dla wyników `infer_case_status`, `mailbox` dla statusów wiersza sprawy.
+        default: stan gdy status jest nieznany w obu mapach.
+    """
+    text = str(status or "").strip().lower()
+    if str(dialect or "").strip().lower() == "pipeline":
+        order = (PIPELINE_CASE_STATUS_TO_LIFECYCLE, CASE_STATUS_TO_LIFECYCLE)
+    else:
+        order = (CASE_STATUS_TO_LIFECYCLE, PIPELINE_CASE_STATUS_TO_LIFECYCLE)
+    for mapping in order:
+        result = mapping.get(text)
+        if result is not None:
+            return result
+    return default
+
 
 def map_operational_to_lifecycle(
     operational_code: str,
@@ -254,6 +296,9 @@ __all__ = [
     "SLA_HOURS",
     "TERMINAL_STATES",
     "OPERATIONAL_TO_LIFECYCLE",
+    "CASE_STATUS_TO_LIFECYCLE",
+    "PIPELINE_CASE_STATUS_TO_LIFECYCLE",
+    "map_case_status_to_lifecycle",
     "is_terminal",
     "is_valid_transition",
     "validate_transition",

@@ -135,6 +135,40 @@ class CaseUnderstandingProvenance(StrictModel):
     validation_error_count: int = Field(default=0, ge=0)
 
 
+class CaseUnderstandingStatusV1(StrictModel):
+    """SLICE-2C: how good our reasoning about this case currently is — status ONLY.
+
+    `case_understanding_provenance` records the mechanics of the run that produced the
+    Understanding (source mode, validation state, counts). This is the one-word operator-facing
+    read derived from it, so consumers stop re-deriving "is our understanding good enough?" from
+    provenance internals, each with its own rules.
+
+    Hard boundary, and the reason this slice exists: **this field must never influence feed
+    membership**. `feed_visibility` does not import or read it, and a `degraded` or `unavailable`
+    status neither hides an existing card nor creates a new one. Understanding quality and desk
+    membership are different questions with different owners; conflating them would let a reasoning
+    failure silently remove real operator work from the desk.
+
+    `reasoning_not_required` is a normal outcome, not a defect: some lanes deliberately skip heavy
+    reasoning.
+
+    `corrected` provenance does NOT map to `degraded` — see `CaseUnderstandingProvenance`, which
+    deliberately refuses to editorialise about how bad a normalisation was. Only a genuine
+    substitute (`source_mode="fallback"`) is reported as `degraded`.
+    """
+
+    schema_version: Literal["case_understanding_status.v1"] = "case_understanding_status.v1"
+    status: Literal["ok", "degraded", "unavailable", "reasoning_not_required"]
+    #: mirrors `CaseUnderstandingProvenance.source_mode`; empty means "not known", never fabricated
+    source: str = ""
+    reason: str = ""
+    reason_codes: list[str] = Field(default_factory=list)
+    source_signal_id: str = ""
+    observed_at: str = ""
+    #: age of the underlying Understanding in seconds when it could be computed; `None` otherwise
+    age_seconds: int | None = None
+
+
 class PolicyActionEnvelopeV1(StrictModel):
     """Bounded read-only projection of canonical MailboxMemory policy/action records."""
 
@@ -330,6 +364,9 @@ class EngagementSnapshotV2(StrictModel):
     #: SLICE-3A: set and cleared in lockstep with `case_understanding` by
     #: `graph._ground_current_signal`, so the two can never describe different signals.
     case_understanding_provenance: CaseUnderstandingProvenance | None = None
+    #: SLICE-2C: derived one-word status for the same Understanding, written and cleared in the
+    #: same lockstep. Display and triage only — `feed_visibility` must not read it.
+    case_understanding_status: CaseUnderstandingStatusV1 | None = None
     policy_action_envelope: PolicyActionEnvelopeV1 | None = None
     semantic_policy_plan_consistency: SemanticPolicyPlanConsistencyV1 | None = None
     decision_divergence_observation: DecisionDivergenceObservationV1 | None = None

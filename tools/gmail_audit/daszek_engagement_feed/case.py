@@ -71,6 +71,40 @@ def why_on_desk_pl_from_snapshot(snapshot: EngagementSnapshotV2) -> str:
     return ""
 
 
+def why_on_desk_reason_codes_from_snapshot(snapshot: EngagementSnapshotV2) -> list[str]:
+    """Roadmap 2.4: the MEMBERSHIP half of "why am I seeing this".
+
+    `why_on_desk_pl_from_snapshot` answers why the case matters (business prose from
+    Understanding). This answers the different question the operator also asks — why is this card
+    on the desk at all — with the visibility reason codes that actually decided it, including the
+    dynamic executive override. Empty when there is nothing honest to say.
+
+    Reading `effective_visibility_mode` here is read-only: this function projects the decision, it
+    does not participate in making it.
+    """
+    from feed_visibility import effective_visibility_mode
+
+    _mode, reasons = effective_visibility_mode(snapshot)
+    return [str(reason)[:80] for reason in reasons][:8]
+
+
+def feed_visibility_mode_from_snapshot(snapshot: EngagementSnapshotV2) -> str:
+    from feed_visibility import effective_visibility_mode
+
+    mode, _reasons = effective_visibility_mode(snapshot)
+    return mode
+
+
+def case_understanding_status_from_snapshot(snapshot: EngagementSnapshotV2) -> dict[str, Any]:
+    """SLICE-2C: pass the status through for DISPLAY. Never used for card membership."""
+    status = getattr(snapshot, "case_understanding_status", None)
+    if status is None:
+        return {}
+    payload = status.model_dump(mode="python")
+    payload["operator_label_pl"] = str(payload.get("reason") or "")
+    return payload
+
+
 def what_changed_pl_from_snapshot(snapshot: EngagementSnapshotV2) -> str:
     """A1: 'what changed since last time' — only populated when honestly
     available from Understanding's thread_delta; empty otherwise."""
@@ -163,6 +197,12 @@ def snapshot_to_feed_case(
             # A1: only populated when honestly available from a fresh, correlated
             # Understanding for this exact turn's signal — empty otherwise (never fabricated).
             "why_on_desk": why_on_desk_pl_from_snapshot(snapshot),
+            # Roadmap 2.4: membership "why" next to the business "why" — never merged into the
+            # prose field, so a consumer can render or ignore each independently.
+            "why_on_desk_reason_codes": why_on_desk_reason_codes_from_snapshot(snapshot),
+            "feed_visibility_mode": feed_visibility_mode_from_snapshot(snapshot),
+            # SLICE-2C: display only.
+            "case_understanding_status": case_understanding_status_from_snapshot(snapshot),
             "what_changed_pl": what_changed_pl_from_snapshot(snapshot),
             "risks": [r.model_dump(mode="python") for r in cu.risks] if cu is not None else [],
             "understanding_missing_critical_fields": list(cu.missing_critical_fields) if cu is not None else [],

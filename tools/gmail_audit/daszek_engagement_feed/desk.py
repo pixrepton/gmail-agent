@@ -6,10 +6,13 @@ from typing import Any
 
 from daszek_engagement_feed.case import (
     _snapshot_title,
+    case_understanding_status_from_snapshot,
     draft_reply_pl_from_snapshot,
+    feed_visibility_mode_from_snapshot,
     operator_essence_pl_from_snapshot,
     recommended_next_step_pl_from_snapshot,
     why_on_desk_pl_from_snapshot,
+    why_on_desk_reason_codes_from_snapshot,
 )
 from daszek_engagement_feed.labels import (
     case_kind_ui_meta,
@@ -90,6 +93,12 @@ def snapshot_to_desk_item(
             # A1: only populated when honestly available from a fresh, correlated
             # Understanding for this exact turn's signal — empty otherwise.
             "why_on_desk": why_on_desk_pl_from_snapshot(snapshot),
+            # Roadmap 2.4: membership reason codes (why this card is on the desk) alongside the
+            # business prose (why the case matters). Two questions, two fields.
+            "why_on_desk_reason_codes": why_on_desk_reason_codes_from_snapshot(snapshot),
+            "feed_visibility_mode": feed_visibility_mode_from_snapshot(snapshot),
+            # SLICE-2C: display only — never a desk membership input.
+            "case_understanding_status": case_understanding_status_from_snapshot(snapshot),
             # F5: nagłówek maila (nadawca / data / kanał / załączniki — tylko metadane).
             **channel,
         }

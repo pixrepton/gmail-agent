@@ -208,6 +208,74 @@ def mark_execution_attention(stored: Any, *, reason: str) -> dict[str, Any]:
     return base
 
 
+def apply_operator_visibility_override(stored: Any, *, mode: str, reason: str = "") -> dict[str, Any]:
+    """Roadmap 2.4: the operator reclassifies where a signal belongs, explicitly and auditably.
+
+    Only the three STORED base modes are accepted. `attention_required` is rejected on purpose: it
+    is not a routing verdict but a dynamic read-time override recomputed from real executive state,
+    so persisting it would let a stale flag speak for state that has since changed.
+
+    What this function does NOT do, deliberately:
+
+    * it does not disable the executive safety override — a case the operator hid still surfaces as
+      `attention_required` while real operator work is outstanding (`_has_pending_operator_work`).
+      Hiding is a preference; an unresolved HITL gate is a fact;
+    * it does not stop later monotonic promotion (`merge_feed_visibility`). An operator hiding a
+      case today must not permanently silence a business message that arrives on it tomorrow.
+
+    Both properties are asserted in `test_aios_2_4_x1_exceptions_only.py`.
+    """
+    target = str(mode or "").strip().lower()
+    if target not in _BASE_MODE_RANK:
+        raise ValueError(
+            f"operator override mode must be one of {sorted(_BASE_MODE_RANK)}; got {mode!r}"
+        )
+    base = mark_execution_attention(stored, reason="")
+    base["execution_attention"] = bool(getattr(stored, "execution_attention", False))
+    base["execution_attention_reason"] = str(getattr(stored, "execution_attention_reason", "") or "")
+    previous = str(getattr(stored, "mode", "") or VISIBILITY_MAIN_FEED) if stored is not None else VISIBILITY_MAIN_FEED
+    trail = f"operator_reclassified:{previous}->{target}"
+    if str(reason or "").strip():
+        trail = f"{trail}:{str(reason).strip()[:40]}"
+    base["mode"] = target
+    base["operator_override"] = True
+    base["reason_codes"] = [*base["reason_codes"], trail][-_MAX_REASON_CODES:]
+    return base
+
+
+def clear_operator_visibility_override(stored: Any) -> dict[str, Any] | None:
+    """Clear an operator reclassification and restore routing-derived base mode."""
+    if stored is None:
+        return None
+    if not bool(getattr(stored, "operator_override", False)):
+        return None
+
+    lane = str(getattr(stored, "source_lane", "") or "").strip().lower()
+    triage = str(getattr(stored, "source_triage_class", "") or "").strip().lower()
+    reasons = [
+        str(r)
+        for r in (getattr(stored, "reason_codes", None) or [])
+        if str(r).strip() and not str(r).startswith("operator_reclassified:")
+    ]
+
+    if lane == "skip" or triage == "ignore":
+        base_mode = VISIBILITY_HIDDEN
+    elif lane == "reference_only" or triage == "reference_only":
+        base_mode = VISIBILITY_CASE_TIMELINE_ONLY
+    else:
+        base_mode = VISIBILITY_MAIN_FEED
+
+    return {
+        "mode": base_mode,
+        "reason_codes": reasons[-_MAX_REASON_CODES:],
+        "source_lane": lane,
+        "source_triage_class": triage,
+        "operator_override": False,
+        "execution_attention": bool(getattr(stored, "execution_attention", False)),
+        "execution_attention_reason": str(getattr(stored, "execution_attention_reason", "") or ""),
+    }
+
+
 def clear_execution_attention(stored: Any) -> dict[str, Any]:
     """Clear visibility-only execution attention after confirmed communication_sent."""
     base = mark_execution_attention(stored, reason="")
@@ -272,6 +340,17 @@ def is_main_feed_member(snapshot: Any) -> bool:
     return mode in MAIN_FEED_MODES
 
 
+def is_case_timeline_only(snapshot: Any) -> bool:
+    """True when this snapshot belongs on a case timeline but NOT in the main feed.
+
+    Roadmap 2.4: `case_timeline_only` existed as a classification with no reader, which made it
+    indistinguishable from `hidden` in practice. This is the predicate the feed build uses to
+    surface those signals in their own bucket, separately from the operator's desk.
+    """
+    mode, _reasons = effective_visibility_mode(snapshot)
+    return mode == VISIBILITY_CASE_TIMELINE_ONLY
+
+
 __all__ = [
     "FEED_VISIBILITY_MODES",
     "MAIN_FEED_MODES",
@@ -279,8 +358,11 @@ __all__ = [
     "VISIBILITY_CASE_TIMELINE_ONLY",
     "VISIBILITY_HIDDEN",
     "VISIBILITY_MAIN_FEED",
+    "apply_operator_visibility_override",
+    "clear_operator_visibility_override",
     "classify_signal_for_feed",
     "effective_visibility_mode",
+    "is_case_timeline_only",
     "is_main_feed_member",
     "clear_execution_attention",
     "mark_execution_attention",

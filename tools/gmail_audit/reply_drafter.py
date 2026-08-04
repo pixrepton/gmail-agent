@@ -135,6 +135,12 @@ def run_reply_drafter(
         parsed = gate_reply_draft_commitments(
             parsed, case_state=_draft_case_state(intake_result, business_result, context_bundle)
         )
+        parsed = gate_reply_draft_content_sanity(
+            parsed,
+            case_kind=_draft_case_kind(snapshot, intake_result, business_result),
+            snapshot=snapshot,
+            intent=str((business_result or {}).get("recommended_next_action") or "").strip(),
+        )
         parsed["execution_metadata"] = stage_call
         return parsed
     except GroqClientError as exc:
@@ -321,6 +327,80 @@ def gate_reply_draft_commitments(parsed: dict[str, Any], *, case_state: dict[str
     return out
 
 
+def _draft_case_kind(
+    snapshot: dict[str, Any] | None,
+    intake_result: dict[str, Any] | None,
+    business_result: dict[str, Any] | None,
+) -> str:
+    """Best-effort case_kind for content sanity (Brain1 path has no EngagementSnapshot)."""
+    for source in (business_result, intake_result, snapshot):
+        if not isinstance(source, dict):
+            continue
+        for key in ("case_kind", "case_type"):
+            value = str(source.get(key) or "").strip()
+            if value:
+                return value
+        decision = source.get("decision") if isinstance(source.get("decision"), dict) else {}
+        for key in ("case_kind", "case_type"):
+            value = str(decision.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def gate_reply_draft_content_sanity(
+    parsed: dict[str, Any],
+    *,
+    case_kind: str = "",
+    snapshot: Any = None,
+    intent: str = "",
+    policy_allows_draft: bool | None = None,
+) -> dict[str, Any]:
+    """Apply Model A ``evaluate_draft_sanity`` to every Brain1 draft body.
+
+    Shared content floor for slice 1.4: empty/placeholder/forbidden promise /
+    known-fact reask / service-sales ask must not ship as clean sendable drafts.
+    Failures mark ``requires_manual_edit`` (and disable draft when body is empty).
+    """
+    from agent_runtime.draft_sanity import evaluate_draft_sanity
+
+    drafts = list(parsed.get("drafts") or [])
+    if not drafts:
+        return parsed
+
+    reasons_all: list[str] = []
+    any_empty = False
+    for draft in drafts:
+        if not isinstance(draft, dict):
+            continue
+        body = str(draft.get("body") or "")
+        sanity = evaluate_draft_sanity(
+            body=body,
+            case_kind=case_kind,
+            intent=intent,
+            snapshot=snapshot,
+            policy_allows_draft=policy_allows_draft,
+        )
+        if sanity.get("ok"):
+            continue
+        codes = [str(code) for code in (sanity.get("reason_codes") or []) if str(code).strip()]
+        reasons_all.extend(f"draft_sanity:{code}" for code in codes)
+        if "empty_body" in codes:
+            any_empty = True
+
+    if not reasons_all:
+        return parsed
+
+    out = dict(parsed)
+    out["requires_manual_edit"] = True
+    out["do_not_send_reasons"] = list(
+        dict.fromkeys(list(parsed.get("do_not_send_reasons") or []) + reasons_all)
+    )
+    if any_empty:
+        out["draft_enabled"] = False
+    return out
+
+
 def parse_and_validate_reply_draft(raw_text: str) -> dict[str, Any]:
     """Parse raw reply-drafter output into a validated contract."""
     try:
@@ -382,6 +462,8 @@ __all__ = [
     "build_skipped_reply_draft",
     "build_reply_draft_prompt_input",
     "fallback_reply_drafter",
+    "gate_reply_draft_commitments",
+    "gate_reply_draft_content_sanity",
     "run_reply_drafter",
     "should_draft_reply",
 ]

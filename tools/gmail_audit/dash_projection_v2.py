@@ -9,6 +9,7 @@ from case_context_contract import build_case_context_pack_vnext
 from dash_preview import resolve_case_key_metadata
 from evidence_ref import normalize_case_guidance_evidence_refs, strip_forbidden_evidence_like_rows
 from operator_projection_quality import (
+    build_case_readiness_projection,
     build_readiness_facets_projection,
     build_understanding_quality_projection,
 )
@@ -302,6 +303,11 @@ def _build_case_patch(
             "completeness_gaps": drive_projection.get("completeness_gaps") or [],
         },
     )
+    # Roadmap 2.2: composed verdict alongside — never instead of — the thin facets.
+    case_readiness = build_case_readiness_projection(
+        intelligence_result,
+        readiness_facets=readiness_facets,
+    )
     case_patch = {
         "command": command,
         "case_id": case_id,
@@ -366,6 +372,7 @@ def _build_case_patch(
         "case_link_decision": case_link_decision or "no_link",
         "case_key_source": case_key_source,
         "readiness_facets": readiness_facets,
+        "case_readiness": case_readiness,
     }
     if understanding_quality is not None:
         case_patch["understanding_quality"] = understanding_quality
@@ -434,6 +441,10 @@ def _build_desk_note_patch(
             "conflicting_facts": projection_state["conflicting_facts"],
             "completeness_gaps": drive_projection.get("completeness_gaps") or [],
         },
+    )
+    case_readiness = build_case_readiness_projection(
+        intelligence_result,
+        readiness_facets=readiness_facets,
     )
 
     desk_note_patch = {
@@ -510,6 +521,7 @@ def _build_desk_note_patch(
         "safe_for_operator_projection": bool(action_plan.get("safe_for_operator_projection", False)),
         "priority": str(intake_output.get("priority") or "low"),
         "readiness_facets": readiness_facets,
+        "case_readiness": case_readiness,
     }
     if understanding_quality is not None:
         desk_note_patch["understanding_quality"] = understanding_quality

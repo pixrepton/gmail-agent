@@ -71,6 +71,39 @@ def _positive_int(value: Any, default: int) -> int:
     return parsed if parsed > 0 else default
 
 
+#: projection keys that honestly answer "since when is this case in its CURRENT lifecycle state".
+#: `latest_signal_at` / `updated_at` are absent on purpose: the first measures mail traffic and the
+#: second is regenerated on every projection build, so neither measures time-in-state.
+_LIFECYCLE_STATE_SINCE_KEYS = (
+    "lifecycle_state_since",
+    "lifecycle_state_updated_at",
+    "lifecycle_updated_at",
+    "lifecycle_entered_at",
+)
+
+
+def _hours_in_lifecycle_state(snapshot: dict[str, Any]) -> float | None:
+    """Hours in the current lifecycle state, or ``None`` when nothing measured it.
+
+    ``None`` is a first-class answer: `stagnation_sot` reports `sla_status_source`
+    `non_temporal_heuristic` for it instead of inventing a temporal verdict.
+    """
+    if not isinstance(snapshot, dict):
+        return None
+    for key in _LIFECYCLE_STATE_SINCE_KEYS:
+        raw = str(snapshot.get(key) or "").strip()
+        if not raw:
+            continue
+        try:
+            since = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        now = datetime.now(since.tzinfo) if since.tzinfo else datetime.now()
+        delta_hours = (now - since).total_seconds() / 3600.0
+        return delta_hours if delta_hours >= 0 else None
+    return None
+
+
 def _worker_health_base_poll_interval_seconds(settings: Any) -> int:
     candidates: list[int] = []
     if bool(getattr(settings, "gmail_change_detection_enabled", False)):
@@ -585,16 +618,35 @@ def create_app(
             except Exception:
                 lifecycle_state = ops_code or "new_lead"
 
-        # SLA status
-        sla_status = "ok"
+        # SLA / stagnation status (Roadmap 2.1)
+        # Previously: `state in SLA_HOURS` -> `at_risk`. That reported "this state HAS an SLA
+        # budget" as "this case is close to breaching it", i.e. a structural fact dressed up as a
+        # time-based verdict. It now goes through the waiting-vs-stagnation SoT, and every answer
+        # carries `sla_status_source` so a real clock-based verdict is distinguishable from a guess.
+        #
+        # `hours_in_state` is only supplied when the projection actually carries a lifecycle-state
+        # timestamp. `latest_signal_at` is deliberately NOT used as a substitute: mail silence is
+        # what `waiting_for_client` means, and treating it as elapsed SLA time is the exact
+        # waiting-equals-stagnation conflation this slice removes.
+        sla_projection = {
+            "sla_status": "unknown",
+            "sla_status_source": "non_temporal_heuristic",
+            "sla_hours": None,
+            "hours_in_state": None,
+            "stagnation_status": "not_evaluable",
+            "is_stagnating": False,
+        }
         if lifecycle_state:
             try:
-                from llm_contracts.case_lifecycle import SLA_HOURS, CaseLifecycleState
-                state = CaseLifecycleState(lifecycle_state)
-                if state in SLA_HOURS:
-                    sla_status = "at_risk"
-            except (ValueError, ImportError):
+                from stagnation_sot import sla_status_projection
+
+                sla_projection = sla_status_projection(
+                    lifecycle_state=lifecycle_state,
+                    hours_in_state=_hours_in_lifecycle_state(snapshot),
+                )
+            except ImportError:
                 pass
+        sla_status = str(sla_projection.get("sla_status") or "unknown")
 
         # Case goal z next_action
         next_action = contract.get("next_action", pack_dict.get("next_action", {}))
@@ -636,6 +688,11 @@ def create_app(
             "pending_decisions": pending_decisions[:10],
             "coherence_warnings": coherence_warnings[:20],
             "sla_status": sla_status,
+            "sla_status_source": str(sla_projection.get("sla_status_source") or "unknown"),
+            "sla_hours": sla_projection.get("sla_hours"),
+            "hours_in_state": sla_projection.get("hours_in_state"),
+            "stagnation_status": str(sla_projection.get("stagnation_status") or "not_evaluable"),
+            "is_stagnating": bool(sla_projection.get("is_stagnating")),
         }
 
     @app.get("/cases/{case_id}/attachments/{attachment_ref}")
@@ -1214,6 +1271,82 @@ def create_app(
         sanitized_payload["operator_id"] = operator_id
         _record_hitl_operator_action(settings, engagement_id=engagement_id, payload=sanitized_payload, action="materialize_approve")
         return result
+
+    @app.post("/engagements/{engagement_id}/feed-visibility/override")
+    def engagement_feed_visibility_override(
+        engagement_id: str,
+        payload: dict[str, Any] = Body(default_factory=dict),
+        principal=Depends(_require_mutation_principal),
+    ) -> dict[str, Any]:
+        from operator_visibility_bridge import apply_operator_feed_visibility_override
+
+        operator_id = principal.operator_id
+        claimed_operator_id = str(payload.get("operator_id") or "").strip()
+        if claimed_operator_id and claimed_operator_id != operator_id:
+            logger.warning(
+                "FEED_VISIBILITY_OVERRIDE_OPERATOR_ID_BODY_IGNORED",
+                extra={"x": {
+                    "engagement_id": engagement_id,
+                    "claimed_operator_id": claimed_operator_id,
+                    "verified_operator_id": operator_id,
+                }},
+            )
+        clear = bool(payload.get("clear"))
+        mode = payload.get("mode")
+        if mode is not None:
+            mode = str(mode).strip() or None
+        reason = str(payload.get("reason") or payload.get("operator_reason") or "").strip()
+        expected_version = (
+            int(payload["expected_version"])
+            if str(payload.get("expected_version") or "").strip().isdigit()
+            else None
+        )
+        settings = load_settings(require_groq=False, require_google=False)
+        result = apply_operator_feed_visibility_override(
+            engagement_id=engagement_id,
+            operator_id=operator_id,
+            settings=settings,
+            mode=mode,
+            clear=clear,
+            reason=reason,
+            expected_version=expected_version,
+        )
+        if not result.get("ok"):
+            status = str(result.get("status") or "")
+            if status == "not_found":
+                raise HTTPException(status_code=404, detail=str(result.get("error") or "engagement not found"))
+            if status == "invalid_mode":
+                raise HTTPException(status_code=400, detail=str(result.get("error") or "invalid mode"))
+            if status == "ambiguous_request":
+                raise HTTPException(status_code=400, detail=str(result.get("error") or "ambiguous_request"))
+            if status == "version_conflict":
+                raise HTTPException(status_code=409, detail=str(result.get("error") or "version conflict"))
+            if status == "forbidden":
+                raise HTTPException(status_code=409, detail=str(result.get("error") or "forbidden mutation"))
+            raise HTTPException(status_code=409, detail=str(result.get("error") or "override failed"))
+        sanitized_payload = dict(payload)
+        sanitized_payload["operator_id"] = operator_id
+        _record_hitl_operator_action(
+            settings,
+            engagement_id=engagement_id,
+            payload=sanitized_payload,
+            action="feed_visibility_override",
+        )
+        return result
+
+    @app.get("/system/operational-feed")
+    def system_operational_feed_preview(
+        exceptions_only: bool = Query(default=False),
+        case_limit: int = Query(default=50, ge=1, le=200),
+    ) -> dict[str, Any]:
+        from operator_visibility_bridge import build_operational_feed_preview
+
+        settings = load_settings(require_groq=False, require_google=False)
+        return build_operational_feed_preview(
+            settings,
+            exceptions_only=exceptions_only,
+            case_limit=case_limit,
+        )
 
     @app.get("/learning/rule-candidates")
     def list_learning_rule_candidates(

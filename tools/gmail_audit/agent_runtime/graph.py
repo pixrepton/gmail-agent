@@ -678,6 +678,19 @@ def _ground_current_signal(
         delta["case_understanding_provenance"] = provenance
     elif snapshot.case_understanding_provenance is not None:
         delta["case_understanding_provenance"] = None
+    # SLICE-2C: the derived status travels in the SAME lockstep as the provenance it comes from,
+    # so it can never describe an Understanding that is gone or one from an earlier signal. It is
+    # display/triage state only -- `feed_visibility` does not read it and membership is unaffected.
+    if "case_understanding_provenance" in delta:
+        from case_understanding_status import build_case_understanding_status
+
+        status = (
+            build_case_understanding_status(delta["case_understanding_provenance"])
+            if isinstance(delta["case_understanding_provenance"], dict)
+            else None
+        )
+        if status is not None or snapshot.case_understanding_status is not None:
+            delta["case_understanding_status"] = status
     if isinstance(policy_envelope, dict) and policy_envelope:
         delta["policy_action_envelope"] = policy_envelope
     elif snapshot.policy_action_envelope is not None:
@@ -937,6 +950,8 @@ def _is_loop_terminal(snapshot: EngagementSnapshotV2) -> bool:
 _BRAIN1_OWNED_SNAPSHOT_FIELDS = (
     "case_understanding",
     "case_understanding_provenance",
+    # SLICE-2C: derived from provenance around the planner, never authored by a tool.
+    "case_understanding_status",
     "policy_action_envelope",
 )
 _RUNTIME_OWNED_SNAPSHOT_FIELDS = (
