@@ -153,6 +153,23 @@ def build_case_understanding_projection(
                     "summary_pl": str(item.get("summary_pl") or "")[:320],
                 }
             )
+    # PLANNER-FIDELITY-CLOSEOUT-02 / roadmap 1.3: sharpen vague NBA for planner.
+    from agent_runtime.recommended_next_step_quality import sharpen_recommended_next_step
+
+    case_kind_uo = ""
+    nested = uo.get("case_understanding")
+    if isinstance(nested, dict):
+        case_kind_uo = str(nested.get("case_family") or "")
+    if not case_kind_uo:
+        case_kind_uo = str(uo.get("case_family") or "")
+    sharpened = sharpen_recommended_next_step(
+        title_pl=str(nba.get("title_pl") or ""),
+        reason_pl=str(nba.get("reason_pl") or ""),
+        action_type=str(nba.get("action_type") or nba.get("recommended_action") or ""),
+        case_kind=case_kind_uo,
+        missing_critical_fields=[str(x) for x in (uo.get("missing_critical_fields") or [])[:6]],
+        essence_pl=essence,
+    )
     return {
         "source_signal_id": source_signal_id,
         "generated_at": str(uo.get("created_at") or ""),
@@ -161,7 +178,7 @@ def build_case_understanding_projection(
         "why_pl": str(oe.get("why_pl") or "")[:600],
         "missing_critical_fields": [str(x)[:240] for x in (uo.get("missing_critical_fields") or [])[:6]],
         "risks": risks,
-        "recommended_next_step_pl": str(nba.get("title_pl") or nba.get("reason_pl") or "")[:400],
+        "recommended_next_step_pl": sharpened[:400],
     }
 
 
