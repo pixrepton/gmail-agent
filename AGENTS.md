@@ -1,49 +1,76 @@
 # AGENTS.md — gmail-agent
 
-**Status:** aktywny router repo.
+Status: active L2 adapter (Typ A). **Node B.**
 
-## Rola
+## Safety capsule
 
-`gmail-agent` jest Node B. Odpowiada za intake Gmail/Drive, journal i replay, mailbox/case runtime, engagement state, policy, execution, operational feed oraz konsumpcję feedbacku.
+- Code and local proof in this repo beat historical docs.
+- Default target is **local Docker**, not VPS/production.
+- No production mutation without explicit operator order and dedicated proof.
+- Do not write other repos without explicit `ai_os_task` scope expansion.
+- Cross-repo contract changes require Gate A here and in every changed consumer.
+- Do not declare `done` without the appropriate Gate A / runtime proof for the layer changed.
+- When opened inside `top-code workspace`, root `../AGENTS.md` also applies.
+- Missing root does not waive these local rules.
 
-Nie jest właścicielem HVAC pricing, sizing ani `OfferDTO`; to należy do `kalk-top`.
+## Role
 
-## Czytaj najpierw
+Mailbox intake, cases, engagements, policy, decisions, execution state, operational feed, journal/replay.  
+**Operational Source of Truth for cases.**
 
-1. root `../AGENTS.md`;
-2. `../knowledge/INDEX.md` i `../knowledge/source-of-truth.md`;
-3. `../knowledge/memory/OPERATOR_DECISIONS.md` oraz `ACTIVE_WORKSPACE.md`;
-4. `README.md`;
-5. `docs/core/CONSTITUTION_V2_1.md`;
-6. `docs/core/PROJECT_README.md`;
-7. `docs/runbooks/LAST_PROVEN_STATE.md` tylko dla proof/runtime claims;
-8. aktualny kod i targeted tests.
+## Owns / Must not
 
-Nie czytaj historycznych handoffów, proof-packów, archiwów ani raw exports jako aktywnej prawdy.
+| Owns | Must not |
+|------|----------|
+| Case / engagement / mailbox runtime | HVAC pricing / sizing / `OfferDTO` (`kalk-top`) |
+| Policy and HITL execution contracts | Being a second UI SoT (Daszek is projection-only) |
+| Durable Postgres case truth; Node B feed/projection builders | Live Gmail send or Calendar write without separate decision + proof |
 
-## Runtime boundaries i freeze
+## Read first
 
-- Domyślnie local Docker only; VPS/prod są zawieszone.
-- Daszek jest projection-only; Node B pozostaje SoT spraw i wykonania.
-- Zachowaj semantykę `message_id`, `signal_id`, `engagement_id`, `case_id`, `run_id`, `trace_id` i `source_signal_ids`.
-- Zachowaj `POSTGRES_ATOMIC_MUTATION_CONFIRMED`; nie wracaj do stale full-row overwrite.
-- `/tasks*` write routes pozostają fail-closed.
-- Zachowaj stabilny `decision_key` oraz rozdzielenie `accepted`, execution, completion i convergence.
-- Nie ponawiaj automatycznie `outcome_unknown`.
-- Nie przywracaj finalnego sukcesu UI przed matching fresh projection.
-- Brak autonomicznego customer email, Calendar write lub CRM write bez policy/HITL i osobnego proofu.
+1. This file
+2. Root `../AGENTS.md` when available
+3. `../knowledge/INDEX.md` when the task needs cross-repo knowledge routing
+4. `docs/core/PROJECT_README.md`, `docs/core/CONSTITUTION_V2_1.md`
+5. `docs/runbooks/LAST_PROVEN_STATE.md` **only** for runtime claims
+6. Current code and targeted tests
 
-## Verification
+Do not treat historical handoffs, archives, or raw exports as active truth.
 
-Używaj targeted tests podczas implementacji. Pełny closeout obejmuje odpowiedni suite, workspace gate oraz — dla kodu bake’owanego — rebuild/recreate, host/container parity i health.
+## Write and task scope
+
+- Scope via `scripts/ai_os_task.py` (`gmail-agent:<path>`).
+- Do not write `../knowledge/memory/*` without an explicit operator instruction.
+- Do not create a local memory-bank.
+
+## Gate A
+
+**Full package gate (closeout):**
 
 ```powershell
-python -m compileall tools/gmail_audit scripts -q
-python -m pytest tools/gmail_audit/tests -q --tb=line
-python tools/gmail_audit/gmail_intake.py doctor --skip-gmail --verbose
+python -m pytest tools/gmail_audit/tests -q
 ```
 
-Nie uruchamiaj realnych replayów, customer send ani operacji VPS bez jawnego zakresu.
+**Focused gate (iteration):** run the specific test modules covering the changed surface.
+
+Doctor / Docker / host-container parity are **runtime/Gate B** concerns — use only when the change touches runtime images, compose, or live API behavior. They are not a substitute for the pytest Gate A above.
+
+## Cross-repo contract changes
+
+1. Identify the owning repo of the contract (often this repo for case/feed/HITL).
+2. Change owner contract + tests first.
+3. Then change consumers (e.g. `daszek`).
+4. Run Gate A for owner and every changed consumer.
+5. Do not invent client-only compatibility.
+6. A `knowledge` doc update alone does not change runtime.
+
+## Anti-goals
+
+- Production as default target
+- Stale full-row case overwrite; preserve atomic mutation and `decision_key` semantics
+- Shadow Case OS outside this repo
+- HVAC calculation inside Node B
+- Final UI success semantics owned here but implemented only in Daszek without Node B proof
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
