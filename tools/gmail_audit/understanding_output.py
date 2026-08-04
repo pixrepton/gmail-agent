@@ -844,6 +844,15 @@ _CUSTOMER_STATE_INTENT_PL = {
 }
 
 _BUSINESS_INTERPRETATION_UNAVAILABLE = "business interpretation unavailable."
+# fallback_business_reasoning() historically used a different English sentence; treat both
+# as non-interpretations so customer_intent_pl does not leak the placeholder to the judge.
+_BUSINESS_REASONING_UNAVAILABLE_MARKERS = frozenset(
+    {
+        _BUSINESS_INTERPRETATION_UNAVAILABLE,
+        "business reasoning unavailable.",
+        "business reasoning unavailable",
+    }
+)
 
 
 def _customer_intent_pl(cu: dict[str, Any], business: dict[str, Any], intake: dict[str, Any]) -> str:
@@ -856,7 +865,7 @@ def _customer_intent_pl(cu: dict[str, Any], business: dict[str, Any], intake: di
         if s:
             return s[:300]
     interpretation = operator_feed_plain_summary(business.get("business_interpretation") or "", fallback="")
-    if interpretation and interpretation.strip().lower() != _BUSINESS_INTERPRETATION_UNAVAILABLE:
+    if interpretation and interpretation.strip().lower() not in _BUSINESS_REASONING_UNAVAILABLE_MARKERS:
         return interpretation[:300]
     label = _CUSTOMER_STATE_INTENT_PL.get(str(business.get("customer_state_guess") or "").strip())
     if label:

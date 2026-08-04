@@ -585,6 +585,23 @@ def run_central_structured_stage(
                 }})
 
         if deepseek_stage is not None:
+            deepseek_raw = str(deepseek_stage.get("response_text") or "").strip()
+            deepseek_parse_status = str(deepseek_stage.get("parse_status") or "").strip()
+            # Empty / unusable DeepSeek payload must not block the previous provider chain.
+            # Exit-2 showed many business_reasoning fallbacks when DeepSeek returned a stage
+            # object that later collapsed to "Business reasoning unavailable."
+            if output_model is not None and (
+                not deepseek_raw
+                or deepseek_parse_status in {"empty_content", "parse_failed", "pydantic_failed"}
+            ):
+                logger.warning("LLM_FALLBACK_DEEPSEEK_EMPTY_TO_PREVIOUS_CHAIN", extra={"x": {
+                    "stage": stage_name,
+                    "parse_status": deepseek_parse_status or "empty_response_text",
+                    "response_len": len(deepseek_raw),
+                }})
+                deepseek_stage = None
+
+        if deepseek_stage is not None:
             request_meta = dict(deepseek_stage.get("request_meta") or {})
             provider = "deepseek"
             model_name = str(deepseek_stage.get("model_name") or settings.deepseek_model)

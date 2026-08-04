@@ -81,6 +81,8 @@ def test_select_judge_config_prefers_groq_before_openrouter(monkeypatch) -> None
     monkeypatch.setattr(judge_module, "_dotenv_value", lambda _path, _key: "")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_API_KEYS", raising=False)
+    monkeypatch.delenv("AGENT_GROQ_API_KEY", raising=False)
     monkeypatch.setenv("AGENT_OPENAI_API_KEY", "sk-or-v1-test")
     monkeypatch.setenv("OPENAI_COMPAT_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
@@ -91,6 +93,89 @@ def test_select_judge_config_prefers_groq_before_openrouter(monkeypatch) -> None
     assert config.provider == GROQ_PROVIDER
     assert config.model == "llama-3.3-70b-versatile"
     assert config.fallback == "none"
+
+
+def test_groq_key_pool_merges_plural_and_singular(monkeypatch) -> None:
+    monkeypatch.setattr(judge_module, "_env_file_candidates", lambda: [])
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_API_KEYS", raising=False)
+    monkeypatch.delenv("AGENT_GROQ_API_KEY", raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_primary")
+    monkeypatch.setenv("GROQ_API_KEYS", "gsk_second,gsk_third")
+    monkeypatch.setenv("AGENT_GROQ_API_KEY", "gsk_primary")
+
+    assert judge_module._groq_key_pool() == ("gsk_second", "gsk_third", "gsk_primary")
+
+
+def test_secret_value_prefers_gmail_agent_env_file(monkeypatch, tmp_path: Path) -> None:
+    override = tmp_path / "local-vps.env"
+    override.write_text("GROQ_API_KEY=gsk_from_override\nGROQ_API_KEYS=gsk_a,gsk_b\n", encoding="utf-8")
+    stale = tmp_path / "stale.env"
+    stale.write_text("GROQ_API_KEY=gsk_stale\n", encoding="utf-8")
+    monkeypatch.setenv("GMAIL_AGENT_ENV_FILE", str(override))
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_API_KEYS", raising=False)
+    monkeypatch.setattr(
+        judge_module,
+        "_env_file_candidates",
+        lambda: [override, stale],
+    )
+
+    assert judge_module._secret_value("GROQ_API_KEY") == "gsk_from_override"
+    assert judge_module._groq_key_pool() == ("gsk_a", "gsk_b", "gsk_from_override")
+
+
+def test_openai_compatible_invoke_rotates_groq_keys_on_401(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class _Resp:
+        def __init__(self, status_code: int, text: str = "", payload: dict | None = None):
+            self.status_code = status_code
+            self.text = text
+            self._payload = payload or {}
+
+        def json(self):
+            return self._payload
+
+    def fake_post(url, headers=None, json=None, timeout=None):  # noqa: A002
+        del url, json, timeout
+        auth = (headers or {}).get("authorization", "")
+        key = auth.replace("Bearer ", "")
+        calls.append(key)
+        if key == "gsk_bad":
+            return _Resp(401, '{"error":{"message":"Invalid API Key"}}')
+        return _Resp(
+            200,
+            payload={
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"case_id":"FU-05","dimensions":{"essence":{"applicable":true,'
+                                '"verdict":"PASS","reason_code":"ok","evidence":"e"}},'
+                                '"overall_verdict":"CLEAR_PASS","unsafe_misinterpretation":false}'
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    import requests
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(judge_module, "_groq_key_pool", lambda: ("gsk_bad", "gsk_good"))
+    monkeypatch.setattr(judge_module, "_secret_value", lambda _key: "")
+
+    payload = judge_module._openai_compatible_invoke(
+        "system",
+        "user",
+        "FU-05",
+        judge_module.JudgeConfig(provider=GROQ_PROVIDER, model="llama-3.3-70b-versatile"),
+    )
+
+    assert calls == ["gsk_bad", "gsk_good"]
+    assert payload["case_id"] == "FU-05"
 
 
 def test_judge_input_excludes_human_labels_and_old_scores() -> None:

@@ -18,6 +18,7 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, Field, ValidationError
 
+from api_key_pool import parse_api_key_pool
 from eval_measurement_scoring import canonical_json_sha256
 from llm_client import TopInstalLLMClient, TopInstalLLMError
 
@@ -154,8 +155,7 @@ def select_judge_config() -> JudgeConfig:
             endpoint=openai_base.rstrip("/"),
             anthropic_version="not_applicable",
         )
-    groq_key = _secret_value("GROQ_API_KEY") or _secret_value("AGENT_GROQ_API_KEY")
-    if groq_key:
+    if _groq_key_pool():
         return JudgeConfig(
             provider=GROQ_PROVIDER,
             model=_config_value("JUDGE_GROQ_MODEL") or GROQ_MODEL,
@@ -673,19 +673,21 @@ def _anthropic_invoke(system: str, user: str, case_id: str, config: JudgeConfig)
 def _openai_compatible_invoke(system: str, user: str, case_id: str, config: JudgeConfig) -> dict[str, Any]:
     import requests
 
-    api_key = (
-        (_secret_value("AGENT_OPENAI_API_KEY") or _secret_value("OPENAI_API_KEY"))
-        if config.provider == OPENAI_NATIVE_PROVIDER
-        else (_secret_value("GROQ_API_KEY") or _secret_value("AGENT_GROQ_API_KEY"))
-        if config.provider == GROQ_PROVIDER
-        else (
-            _secret_value("OPENROUTER_API_KEY")
-            or _secret_value("OPENAI_COMPAT_API_KEY")
-            or _secret_value("AGENT_OPENAI_API_KEY")
-            or _secret_value("AGENT_OPENAI_NATIVE_API_KEY")
+    if config.provider == OPENAI_NATIVE_PROVIDER:
+        api_keys = parse_api_key_pool(
+            _secret_value("AGENT_OPENAI_API_KEY"),
+            _secret_value("OPENAI_API_KEY"),
         )
-    )
-    if not api_key:
+    elif config.provider == GROQ_PROVIDER:
+        api_keys = _groq_key_pool()
+    else:
+        api_keys = parse_api_key_pool(
+            _secret_value("OPENROUTER_API_KEY"),
+            _secret_value("OPENAI_COMPAT_API_KEY"),
+            _secret_value("AGENT_OPENAI_API_KEY"),
+            _secret_value("AGENT_OPENAI_NATIVE_API_KEY"),
+        )
+    if not api_keys:
         raise TopInstalLLMError("OpenAI-compatible judge API key is not configured.")
     url = config.endpoint.rstrip("/") + "/chat/completions"
     response_format = {"type": "json_object"}
@@ -705,22 +707,37 @@ def _openai_compatible_invoke(system: str, user: str, case_id: str, config: Judg
         ],
     }
     response = None
-    for attempt in range(1, max(1, int(config.max_retries)) + 1):
-        response = requests.post(
-            url,
-            headers={"authorization": f"Bearer {api_key}", "content-type": "application/json"},
-            json=body,
-            timeout=config.timeout_sec,
-        )
-        if response.status_code != 429 or attempt >= int(config.max_retries):
+    last_status = 0
+    last_text = "missing response"
+    for key_index, api_key in enumerate(api_keys):
+        auth_rejected = False
+        for attempt in range(1, max(1, int(config.max_retries)) + 1):
+            response = requests.post(
+                url,
+                headers={"authorization": f"Bearer {api_key}", "content-type": "application/json"},
+                json=body,
+                timeout=config.timeout_sec,
+            )
+            last_status = int(response.status_code)
+            last_text = response.text
+            if response.status_code == 429 and attempt < int(config.max_retries):
+                time.sleep(_retry_after_seconds(response.text))
+                continue
+            if response.status_code in {401, 403}:
+                auth_rejected = True
+                break
             break
-        time.sleep(_retry_after_seconds(response.text))
+        if response is not None and response.status_code < 400:
+            break
+        if auth_rejected and key_index + 1 < len(api_keys):
+            continue
+        break
     if response is None or response.status_code >= 400:
-        status_code = response.status_code if response is not None else 0
-        text = response.text if response is not None else "missing response"
+        status_code = response.status_code if response is not None else last_status
+        text = response.text if response is not None else last_text
         raise TopInstalLLMError(
-            f"OpenAI judge HTTP {status_code}: {text[:500]}",
-            details={"status_code": status_code, "case_id": case_id},
+            f"OpenAI judge HTTP {status_code}: {_sanitize_error(text[:500])}",
+            details={"status_code": status_code, "case_id": case_id, "key_pool_size": len(api_keys)},
         )
     data = response.json()
     choices = data.get("choices") if isinstance(data.get("choices"), list) else []
@@ -738,12 +755,65 @@ def _openai_compatible_invoke(system: str, user: str, case_id: str, config: Judg
     return payload
 
 
+def _env_file_candidates() -> list[Path]:
+    """Match runtime env priority used by local-vps / load_settings.
+
+    GMAIL_AGENT_ENV_FILE (mounted .env.local-vps) must win over tools/gmail_audit/.env,
+    otherwise the judge reads a stale single GROQ_API_KEY while the app uses the pool.
+    """
+
+    tool_dir = Path(__file__).resolve().parent
+    repo_root = tool_dir.parent.parent
+    candidates: list[Path] = []
+    override = (os.getenv("GMAIL_AGENT_ENV_FILE") or "").strip()
+    if override:
+        candidates.append(Path(override).expanduser())
+    candidates.extend(
+        [
+            # Prefer local-vps app env before tools/.env so host-side judge
+            # matches docker runtime (compose mounts this as GMAIL_AGENT_ENV_FILE).
+            repo_root / ".env.local-vps",
+            tool_dir / ".env",
+            repo_root / ".env",
+        ]
+    )
+    seen: set[Path] = set()
+    ordered: list[Path] = []
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        ordered.append(path)
+    return ordered
+
+
 def _secret_value(key: str) -> str:
-    return (os.getenv(key) or _dotenv_value(Path(__file__).resolve().parent / ".env", key)).strip()
+    env_val = (os.getenv(key) or "").strip()
+    if env_val:
+        return env_val
+    for path in _env_file_candidates():
+        value = _dotenv_value(path, key).strip()
+        if value:
+            return value
+    return ""
 
 
 def _config_value(key: str) -> str:
-    return (os.getenv(key) or _dotenv_value(Path(__file__).resolve().parent / ".env", key)).strip()
+    return _secret_value(key)
+
+
+def _groq_key_pool() -> tuple[str, ...]:
+    """Deduped Groq key pool: GROQ_API_KEYS + GROQ_API_KEY + AGENT_GROQ_API_KEY."""
+
+    return parse_api_key_pool(
+        _secret_value("GROQ_API_KEYS"),
+        _secret_value("GROQ_API_KEY"),
+        _secret_value("AGENT_GROQ_API_KEY"),
+    )
 
 
 def _normalize_openai_model(model: str) -> str:
@@ -756,6 +826,7 @@ def _normalize_openai_model(model: str) -> str:
 def _sanitize_error(text: str) -> str:
     text = re.sub(r"sk-[A-Za-z0-9_\-]+", "[REDACTED_API_KEY]", text)
     text = re.sub(r"sk-or-v1[A-Za-z0-9_\-]+", "[REDACTED_API_KEY]", text)
+    text = re.sub(r"gsk_[A-Za-z0-9_\-]+", "[REDACTED_API_KEY]", text)
     return text
 
 
