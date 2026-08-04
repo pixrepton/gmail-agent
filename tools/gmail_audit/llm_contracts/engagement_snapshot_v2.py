@@ -98,6 +98,8 @@ class CaseUnderstandingProjection(StrictModel):
     missing_critical_fields: list[str] = Field(default_factory=list)
     risks: list[UnderstandingRiskItem] = Field(default_factory=list)
     recommended_next_step_pl: str = ""
+    # Roadmap 1.3: preferred tool class for planner (not a hard tool binding).
+    planner_action_hint: str = ""
 
 
 class CaseUnderstandingProvenance(StrictModel):

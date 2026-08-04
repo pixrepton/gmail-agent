@@ -127,6 +127,15 @@ def _compact_view(snapshot: Any) -> dict[str, Any]:
     brain1 = _brain1_context(snapshot)
     if brain1 is not None:
         view["brain1_context"] = brain1
+        # Roadmap 1.3: surface next-step + tool-class at top level so the planner
+        # does not have to dig into nested understanding / re-parse vague escalate.
+        und = brain1.get("understanding") if isinstance(brain1.get("understanding"), dict) else {}
+        next_step = str(und.get("recommended_next_step_pl") or "").strip()
+        hint = str(und.get("planner_action_hint") or "").strip()
+        if next_step:
+            view["preferred_operator_next_step_pl"] = next_step[:400]
+        if hint:
+            view["preferred_tool_class"] = hint[:80]
     policy_envelope = getattr(snapshot, "policy_action_envelope", None)
     if policy_envelope is not None:
         view["policy_action_envelope"] = policy_envelope.model_dump(exclude_none=True)
@@ -381,11 +390,13 @@ class OpenAIToolPlanner:
             "Wiadomość do klienta (generate_draft_reply) przygotuj dopiero po jego uzyskaniu lub po potwierdzeniu operatora, "
             "że kontekst jest niedostępny. "
             "o metraż pytaj tylko dla spraw ofertowych (wycena_oferta / zapytanie_klienta).\n"
-            "Jeśli brain1_context.understanding.recommended_next_step_pl jest konkretne — "
-            "traktuj je jako domyślny cel tej tury i dobierz narzędzie z dostępnej allowlisty "
-            "do TEJ akcji (nie zastępuj ogólnym escalate / «wymagana ręczna ocena»). "
-            "Nie pytaj ponownie o fakty już obecne w hvac_profile ani w brain1 missing_critical_fields "
-            "(to lista BRAKÓW — pytaj tylko o te pola).\n"
+            "Jeśli preferred_operator_next_step_pl LUB brain1_context.understanding.recommended_next_step_pl "
+            "jest ustawione — to jest DOMINUJĄCY cel tej tury. "
+            "preferred_tool_class (jeśli obecne) wskazuje klasę narzędzia; wybierz konkretne narzędzie "
+            "z dostępnej allowlisty zgodne z tą klasą i z treścią next_step. "
+            "ZAKAZ: nie zastępuj tego ogólnym escalate_internal / «wymagana ręczna ocena» / ignore / wait. "
+            "Nie pytaj ponownie o fakty już obecne w hvac_profile; brain1 missing_critical_fields "
+            "to lista BRAKÓW — pytaj tylko o te pola.\n"
             "WAŻNE: Jeśli case_id jest już ustawione (nie jest puste ani '(nowy lead)') — to jest FOLLOW-UP na istniejącej sprawie. "
             f"{followup_instruction}"
             "extract_facts_from_text używaj TYLKO gdy case_id jest puste (nowy lead)."

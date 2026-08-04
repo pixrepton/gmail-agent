@@ -140,7 +140,11 @@ def build_understanding_output(
         "missing_fields_count": len(missing_fields),
         "conflicts_count": len(conflicts),
     }})
-    return {
+    case_family = str(
+        cu.get("case_family") or (intake.get("case_assessment") or {}).get("case_family") or "unknown"
+    )
+    business_area = str(cu.get("business_area") or intake.get("business_area") or "")
+    uo: dict[str, Any] = {
         "schema_version": UNDERSTANDING_SCHEMA_VERSION,
         "understanding_output_id": "uo_" + hashlib.sha256(uid_seed.encode("utf-8")).hexdigest()[:22],
         "case_id": case_id,
@@ -165,8 +169,8 @@ def build_understanding_output(
         },
         "situation_summary_pl": essence,
         "situation_summary": {
-            "case_family": str(cu.get("case_family") or (intake.get("case_assessment") or {}).get("case_family") or "unknown"),
-            "business_area": str(cu.get("business_area") or intake.get("business_area") or ""),
+            "case_family": case_family,
+            "business_area": business_area,
             "case_link_decision": str((case_link_result or {}).get("decision") or ""),
             "intake_action": str((intake.get("decision") or {}).get("action") or ""),
         },
@@ -219,6 +223,20 @@ def build_understanding_output(
         "situation_clusters": _situation_clusters(ci, intake),
         "source": "deterministic_projection",
     }
+    # Roadmap 1.3: sharpen vague NBA at Understanding source (projection re-applies as defense).
+    from agent_runtime.recommended_next_step_quality import apply_nba_quality_to_understanding
+
+    uo = apply_nba_quality_to_understanding(
+        uo, case_kind=case_family, business_area=business_area
+    )
+    nba_out = uo.get("next_best_action_recommendation")
+    if isinstance(nba_out, dict) and str(nba_out.get("title_pl") or "").strip():
+        oe = uo.get("operator_explanation")
+        if isinstance(oe, dict):
+            oe["what_system_suggests_pl"] = operator_feed_plain_summary(
+                nba_out.get("title_pl") or "", fallback=""
+            )[:400]
+    return uo
 
 
 def validate_understanding_invariants(raw: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
@@ -293,6 +311,15 @@ def validate_understanding_invariants(raw: dict[str, Any]) -> tuple[dict[str, An
             obj.pop(forbidden, None)
             errors.append(f"removed_forbidden_{forbidden}")
     errors.extend(_validate_understanding_situation_only(obj))
+    # Roadmap 1.3: defense-in-depth sharpen for UO that bypassed build_understanding_output.
+    from agent_runtime.recommended_next_step_quality import apply_nba_quality_to_understanding
+
+    ss = obj.get("situation_summary") if isinstance(obj.get("situation_summary"), dict) else {}
+    obj = apply_nba_quality_to_understanding(
+        obj,
+        case_kind=str(ss.get("case_family") or obj.get("case_family") or ""),
+        business_area=str(ss.get("business_area") or ""),
+    )
     return obj, errors
 
 

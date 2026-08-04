@@ -153,32 +153,51 @@ def build_case_understanding_projection(
                     "summary_pl": str(item.get("summary_pl") or "")[:320],
                 }
             )
-    # PLANNER-FIDELITY-CLOSEOUT-02 / roadmap 1.3: sharpen vague NBA for planner.
-    from agent_runtime.recommended_next_step_quality import sharpen_recommended_next_step
+    # Roadmap 1.3: sharpen vague NBA for planner (+ optional tool-class hint).
+    from agent_runtime.recommended_next_step_quality import (
+        planner_action_hint,
+        sharpen_recommended_next_step,
+    )
 
-    case_kind_uo = ""
-    nested = uo.get("case_understanding")
-    if isinstance(nested, dict):
-        case_kind_uo = str(nested.get("case_family") or "")
-    if not case_kind_uo:
-        case_kind_uo = str(uo.get("case_family") or "")
+    nested = uo.get("case_understanding") if isinstance(uo.get("case_understanding"), dict) else {}
+    ss = uo.get("situation_summary") if isinstance(uo.get("situation_summary"), dict) else {}
+    case_kind_uo = str(
+        nested.get("case_family")
+        or ss.get("case_family")
+        or uo.get("case_family")
+        or ""
+    )
+    business_area_uo = str(ss.get("business_area") or nested.get("business_area") or "")
+    what_changed = str(delta.get("operator_visible_delta_summary") or "")
+    missing_fields = [str(x)[:240] for x in (uo.get("missing_critical_fields") or [])[:6]]
+    # Prefer already-sharpened title from Understanding source; re-sharpen as defense.
     sharpened = sharpen_recommended_next_step(
         title_pl=str(nba.get("title_pl") or ""),
         reason_pl=str(nba.get("reason_pl") or ""),
         action_type=str(nba.get("action_type") or nba.get("recommended_action") or ""),
         case_kind=case_kind_uo,
-        missing_critical_fields=[str(x) for x in (uo.get("missing_critical_fields") or [])[:6]],
+        business_area=business_area_uo,
+        case_family=case_kind_uo,
+        missing_critical_fields=missing_fields,
         essence_pl=essence,
+        what_changed_pl=what_changed,
+    )
+    quality = nba.get("quality") if isinstance(nba.get("quality"), dict) else {}
+    hint = str(quality.get("planner_action_hint") or "").strip() or planner_action_hint(
+        sharpened_pl=sharpened,
+        case_kind=case_kind_uo,
+        missing_critical_fields=missing_fields,
     )
     return {
         "source_signal_id": source_signal_id,
         "generated_at": str(uo.get("created_at") or ""),
         "essence_pl": essence[:700],
-        "what_changed_pl": str(delta.get("operator_visible_delta_summary") or "")[:400],
+        "what_changed_pl": what_changed[:400],
         "why_pl": str(oe.get("why_pl") or "")[:600],
-        "missing_critical_fields": [str(x)[:240] for x in (uo.get("missing_critical_fields") or [])[:6]],
+        "missing_critical_fields": missing_fields,
         "risks": risks,
         "recommended_next_step_pl": sharpened[:400],
+        "planner_action_hint": hint[:80],
     }
 
 
