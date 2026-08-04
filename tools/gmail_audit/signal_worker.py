@@ -77,6 +77,7 @@ _MAX_CONSECUTIVE_PROJECTION_FAILURES = 2
 _POLL_RETRY_ATTEMPTS = 2  # 1 initial + 1 retry
 _POLL_RETRY_BASE_DELAY_SECONDS = 0.25
 _SLA_WATCHER_INTERVAL_SEC = 15 * 60
+_FOLLOW_UP_GUARDIAN_INTERVAL_SEC = 15 * 60
 
 
 def _classify_worker_error(exc: BaseException) -> str:
@@ -1217,6 +1218,7 @@ def _run_worker_idle_maintenance(
     except Exception as exc:  # noqa: BLE001
         logger.warning("worker_idle_feed_heartbeat_failed: %s", exc)
     _maybe_run_sla_watcher_tick(run_state=run_state, settings=settings)
+    _maybe_run_follow_up_guardian_tick(run_state=run_state, settings=settings)
     bridge_interval = max(1, int(getattr(settings, "daszek_bridge_drain_interval_iterations", 5) or 5))
     if iteration % bridge_interval != 0:
         return
@@ -1260,6 +1262,46 @@ def _maybe_run_sla_watcher_tick(*, run_state: dict[str, Any], settings: Settings
         summary["sla_watcher_error_count"] = int(summary.get("sla_watcher_error_count") or 0) + 1
         summary["last_sla_watcher_error"] = str(exc)[:500]
         logger.warning("worker_idle_sla_watcher_failed: %s", exc)
+
+
+def _maybe_run_follow_up_guardian_tick(*, run_state: dict[str, Any], settings: Settings) -> None:
+    """Roadmap 3.1 -- sibling tick to `_maybe_run_sla_watcher_tick`, same throttle pattern.
+
+    Turns silent, SLA-breached cases into a new operator-facing proposal (see
+    `follow_up_guardian.py`), the temporal signal `sla_watcher` itself deliberately does not
+    produce (it only ages already-existing decisions)."""
+    summary = run_state.setdefault("summary", {})
+    now_mono = time.monotonic()
+    last_mono = float(summary.get("last_follow_up_guardian_monotonic") or 0.0)
+    if last_mono and (now_mono - last_mono) < _FOLLOW_UP_GUARDIAN_INTERVAL_SEC:
+        return
+    summary["last_follow_up_guardian_monotonic"] = now_mono
+    try:
+        from follow_up_guardian import follow_up_guardian_oneshot
+
+        result = follow_up_guardian_oneshot(settings)
+        summary["follow_up_guardian_tick_count"] = (
+            int(summary.get("follow_up_guardian_tick_count") or 0) + 1
+        )
+        summary["last_follow_up_guardian_result"] = {
+            "ok": bool(result.get("ok")) if isinstance(result, dict) else False,
+            "checked": int(result.get("checked") or 0) if isinstance(result, dict) else 0,
+            "proposed_count": int(result.get("proposed_count") or 0) if isinstance(result, dict) else 0,
+        }
+        if not bool(result.get("ok")):
+            summary["follow_up_guardian_error_count"] = (
+                int(summary.get("follow_up_guardian_error_count") or 0) + 1
+            )
+            summary["last_follow_up_guardian_error"] = str(result.get("error") or "unknown")[:500]
+            logger.warning(
+                "worker_idle_follow_up_guardian_failed: %s", summary["last_follow_up_guardian_error"]
+            )
+    except Exception as exc:  # noqa: BLE001
+        summary["follow_up_guardian_error_count"] = (
+            int(summary.get("follow_up_guardian_error_count") or 0) + 1
+        )
+        summary["last_follow_up_guardian_error"] = str(exc)[:500]
+        logger.warning("worker_idle_follow_up_guardian_failed: %s", exc)
 
 
 def _apply_projection_refresh(*, run_state: dict[str, Any], processed: dict[str, Any]) -> None:

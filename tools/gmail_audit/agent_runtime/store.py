@@ -69,6 +69,21 @@ class OperatorEngagementStore(ABC):
         _ = limit
         return []
 
+    def list_recent_snapshots_with_updated_at(
+        self, *, limit: int = 50
+    ) -> list[tuple[EngagementSnapshotV2, str]]:
+        """Roadmap 3.1 (Follow-up Guardian): snapshots paired with their row `updated_at`.
+
+        `updated_at` is not a field on `EngagementSnapshotV2` itself (see `_snapshot_from_row`);
+        it lives only on the storage row. The guardian needs it as the honest proxy for "how long
+        has this case sat with no new signal in its current `operational_status.code`" -- no other
+        `hours_in_state` source exists anywhere in this repo (confirmed: `lifecycle_state_since` /
+        `lifecycle_state_updated_at` are read by `api_app._hours_in_lifecycle_state` but never
+        written). Default empty; overridden by each concrete store.
+        """
+        _ = limit
+        return []
+
 
 def _resolve_trace_id(signal: Mapping[str, Any], trace_id: str | None) -> str:
     explicit = str(trace_id or "").strip()
@@ -199,6 +214,19 @@ class InMemoryOperatorEngagementStore(OperatorEngagementStore):
         out: list[EngagementSnapshotV2] = []
         for row in rows[: max(1, int(limit))]:
             out.append(_snapshot_from_row(row))
+        return out
+
+    def list_recent_snapshots_with_updated_at(
+        self, *, limit: int = 50
+    ) -> list[tuple[EngagementSnapshotV2, str]]:
+        rows = sorted(
+            self._rows.values(),
+            key=lambda r: str(r.get("updated_at") or ""),
+            reverse=True,
+        )
+        out: list[tuple[EngagementSnapshotV2, str]] = []
+        for row in rows[: max(1, int(limit))]:
+            out.append((_snapshot_from_row(row), str(row.get("updated_at") or "")))
         return out
 
     def list_staging_engagement_ids(self) -> list[str]:
@@ -334,6 +362,23 @@ class PostgresOperatorEngagementStore(OperatorEngagementStore):
             {"limit": max(1, int(limit))},
         )
         return [_snapshot_from_row(row) for row in rows]
+
+    def list_recent_snapshots_with_updated_at(
+        self, *, limit: int = 50
+    ) -> list[tuple[EngagementSnapshotV2, str]]:
+        rows = self._fetch_all(
+            """
+            SELECT engagement_id, case_id, version, snapshot_data, last_trace_id, updated_at
+            FROM operator_engagement_snapshots
+            ORDER BY updated_at DESC
+            LIMIT %(limit)s
+            """,
+            {"limit": max(1, int(limit))},
+        )
+        return [
+            (_snapshot_from_row(row), str(row.get("updated_at") or ""))
+            for row in rows
+        ]
 
     def list_staging_engagement_ids(self) -> list[str]:
         rows = self._fetch_all(
