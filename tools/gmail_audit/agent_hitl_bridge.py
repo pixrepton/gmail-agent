@@ -335,6 +335,7 @@ def approve_hitl_engagement(
     operator_draft_pl: str | None = None,
     operator_answer_pl: str | None = None,
     expected_body_hash: str | None = None,
+    expected_revision: int | None = None,
 ) -> dict[str, Any]:
     settings = settings or load_settings(require_groq=False, require_google=False)
     aid = str(action_id or "").strip()
@@ -403,6 +404,7 @@ def approve_hitl_engagement(
         operator_draft_pl=operator_draft_pl,
         operator_answer_pl=operator_answer_pl,
         expected_body_hash=expected_body_hash,
+        expected_revision=expected_revision,
     )
     if not result.get("ok"):
         return result

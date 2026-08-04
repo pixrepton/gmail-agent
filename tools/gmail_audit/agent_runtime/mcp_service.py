@@ -183,6 +183,7 @@ class AgentMcpService:
         operator_draft_pl: str | None = None,
         operator_answer_pl: str | None = None,
         expected_body_hash: str | None = None,
+        expected_revision: int | None = None,
     ) -> dict[str, Any]:
         eid = str(engagement_id or "").strip()
         aid = str(action_id or "").strip()
@@ -230,6 +231,21 @@ class AgentMcpService:
                 f"current is {action.body_hash!r} (revision {action.revision}) — stale draft, refetch before approving",
                 engagement_id=eid,
             )
+        if (
+            expected_revision is not None
+            and action is not None
+            and int(action.revision or 1) > 0
+        ):
+            try:
+                expected_rev = int(expected_revision)
+            except (TypeError, ValueError):
+                expected_rev = -1
+            if expected_rev >= 1 and expected_rev != int(action.revision or 1):
+                return _error(
+                    f"revision mismatch for action_id {aid!r}: expected {expected_rev}, "
+                    f"current is {action.revision} — stale draft, refetch before approving",
+                    engagement_id=eid,
+                )
 
         from datetime import datetime, timezone
 
@@ -669,6 +685,13 @@ def dispatch_mcp_tool(service: AgentMcpService, name: str, arguments: Mapping[st
         if answer_raw is None:
             answer_raw = args.get("clarification_answer_pl")
         expected_raw = args.get("expected_body_hash")
+        expected_rev_raw = args.get("expected_revision")
+        expected_revision: int | None = None
+        if expected_rev_raw is not None and str(expected_rev_raw).strip() != "":
+            try:
+                expected_revision = int(expected_rev_raw)
+            except (TypeError, ValueError):
+                expected_revision = None
         return service.approve_hitl_action(
             engagement_id=str(args.get("engagement_id") or ""),
             action_id=str(args.get("action_id") or ""),
@@ -676,6 +699,7 @@ def dispatch_mcp_tool(service: AgentMcpService, name: str, arguments: Mapping[st
             operator_draft_pl=str(draft_raw).strip() if draft_raw is not None else None,
             operator_answer_pl=str(answer_raw).strip() if answer_raw is not None else None,
             expected_body_hash=str(expected_raw).strip() if expected_raw is not None else None,
+            expected_revision=expected_revision,
         )
     if name == "get_agent_turns":
         return service.get_agent_turns(

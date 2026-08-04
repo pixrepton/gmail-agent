@@ -267,6 +267,29 @@ class TestPreviewHitlApprovalIdentityChain:
         assert out.get("ok") is False
         assert "body_hash mismatch" in str(out.get("error") or "")
 
+    def test_stale_expected_revision_is_rejected(self) -> None:
+        created = _materialize_draft(_snapshot(), _plan())
+        store = InMemoryOperatorEngagementStore()
+        pending = created.model_copy(
+            update={
+                "hitl_gate": HitlGate(required=True, reason="draft_ready_for_approval"),
+                "operational_status": OperationalStatus(
+                    code="pending_operator", steps_remaining=1, blocking=True
+                ),
+            }
+        )
+        store.insert_snapshot(pending)
+        svc = AgentMcpService(settings=_settings(), store=store)
+
+        out = svc.approve_hitl_action(
+            engagement_id="eng_int04",
+            action_id="draft_reply",
+            operator_id="op1",
+            expected_revision=99,
+        )
+        assert out.get("ok") is False
+        assert "revision mismatch" in str(out.get("error") or "")
+
     def test_empty_operator_draft_edit_is_rejected(self) -> None:
         created = _materialize_draft(_snapshot(), _plan())
         store = InMemoryOperatorEngagementStore()
