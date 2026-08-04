@@ -12,8 +12,16 @@ from typing import Any
 
 from agent_runtime.constitution import AgentConstitution
 from agent_runtime.decision_divergence import evaluate_decision_divergence
+from agent_runtime.effective_tools import compute_effective_available_tools
+from agent_runtime.envelope_presence import (
+    classify_envelope_presence,
+    policy_path_requires_envelope,
+)
+from agent_runtime.failure_taxonomy import attribution, attach_attribution
+from agent_runtime.known_fact_guard import guard_known_fact_reask
 from agent_runtime.metrics import record_agent_turn
 from agent_runtime.planner import ToolPlanner
+from agent_runtime.planner_run_budget import PlannerRunBudget, build_planner_run_budget
 from agent_runtime.policy_action_spine import (
     annotate_action_parent_refs,
     correlate_tool_plan,
@@ -86,6 +94,8 @@ class AgentTurnRecord:
 class AgentGraphRunResult:
     snapshot: EngagementSnapshotV2
     turns: list[AgentTurnRecord] = field(default_factory=list)
+    planner_run_budget: dict[str, Any] = field(default_factory=dict)
+    last_effective_tools: dict[str, Any] = field(default_factory=dict)
 
 
 class AgentGraphEngine:
@@ -153,8 +163,47 @@ class AgentGraphEngine:
         turn_idx = int(start_turn_idx)
         tool_call_count = 0
         completed_read_once_tools: set[str] = set()
+        run_budget = build_planner_run_budget(
+            max_rounds=int(getattr(getattr(ctx, "settings", None), "max_rounds", None) or 12),
+            constitution_tool_budget=dict(self._constitution.tool_budget or {}),
+        )
+        # Align soft turn budget with remaining steps on the snapshot.
+        run_budget.max_turns = min(
+            run_budget.max_turns,
+            max(1, int(current.operational_status.steps_remaining)),
+        )
+        known_fact_correction_used = False
         while int(current.operational_status.steps_remaining) > 0:
             if _is_loop_terminal(current):
+                break
+            budget_hit = run_budget.check_before_turn()
+            if budget_hit:
+                current = apply_snapshot_delta(
+                    current,
+                    {
+                        "operational_status": {
+                            "code": "pending_operator",
+                            "blocking": True,
+                            "steps_remaining": 0,
+                        },
+                        "hitl_gate": {
+                            "required": True,
+                            "reason": f"planner_budget_exceeded:{budget_hit}",
+                        },
+                        "agent_memory": {
+                            "reasoning_trace": [
+                                {
+                                    "turn": turn_idx,
+                                    "summary_pl": (
+                                        f"Budżet planera wyczerpany ({budget_hit}). "
+                                        "Zatrzymano bezpiecznie z dotychczasowym evidence. "
+                                        "[PLANNER_BUDGET_EXCEEDED]"
+                                    ),
+                                }
+                            ]
+                        },
+                    },
+                )
                 break
             # Limit liczby tool calls na turÄ™ (chroni przed zapÄ™tleniem LLM)
             if tool_call_count >= MAX_TOOL_CALLS_PER_TURN:
@@ -175,6 +224,12 @@ class AgentGraphEngine:
                 scoped_tools or list(self._constitution.tool_allowlist),
                 completed_read_once_tools,
             )
+            effective = compute_effective_available_tools(
+                available_tools,
+                constitution=self._constitution,
+                settings=getattr(ctx, "settings", None),
+            )
+            available_tools = effective.offered
             try:
                 plan = self._planner.plan_next_tool(
                     snapshot=current,
@@ -221,37 +276,142 @@ class AgentGraphEngine:
                 )
                 sub_agent = "general"
             else:
-                policy_block = _policy_enforcement_block(current, plan)
+                policy_block = _policy_enforcement_block(
+                    current,
+                    plan,
+                    signal_payload=ctx.signal_payload if isinstance(ctx.signal_payload, dict) else {},
+                )
                 if policy_block is not None:
                     result = policy_block
                     sub_agent = "general"
                 elif plan.tool_name not in available_tools:
-                    result = ToolResult(
-                        status="error",
-                        turn_summary_pl=f"NarzÄ™dzie {plan.tool_name} nie byĹ‚o dostÄ™pne w tej turze.",
-                        snapshot_delta={
-                            "operational_status": {"code": "pending_operator", "blocking": True},
-                            "hitl_gate": {"required": True, "reason": f"tool_not_offered:{plan.tool_name}"},
-                        },
+                    result = attach_attribution(
+                        ToolResult(
+                            status="error",
+                            turn_summary_pl=(
+                                f"Narzędzie {plan.tool_name} nie było dostępne w tej turze."
+                            ),
+                            snapshot_delta={
+                                "operational_status": {
+                                    "code": "pending_operator",
+                                    "blocking": True,
+                                },
+                                "hitl_gate": {
+                                    "required": True,
+                                    "reason": f"tool_not_offered:{plan.tool_name}",
+                                },
+                            },
+                        ),
+                        attribution(
+                            failure_class="TOOL_UNAVAILABLE",
+                            owner="infra",
+                            stage="planner_offer",
+                            retryable=False,
+                            safe_next_step="use_offered_alternative",
+                            detail=f"filtered_out={list(effective.unavailable_notes)[:4]}",
+                        ),
                     )
                     sub_agent = "general"
                 else:
-                    duplicate_research = _duplicate_rag_research_result(current, plan)
-                    if duplicate_research is not None:
-                        result = duplicate_research
+                    reask = guard_known_fact_reask(
+                        tool_name=plan.tool_name,
+                        arguments=plan.arguments,
+                        snapshot=current,
+                    )
+                    if reask is not None:
+                        if not known_fact_correction_used:
+                            known_fact_correction_used = True
+                            result = attach_attribution(
+                                ToolResult(
+                                    status="error",
+                                    turn_summary_pl=(
+                                        "Zablokowano ponowne pytanie o znany fakt: "
+                                        + ", ".join(reask.get("fact_keys") or [])
+                                        + ". Wybierz inną akcję w ramach budżetu."
+                                    ),
+                                    next_tool_hint="generate_draft_reply",
+                                    snapshot_delta={
+                                        "agent_memory": {
+                                            "reasoning_trace": [
+                                                {
+                                                    "turn": 0,
+                                                    "summary_pl": (
+                                                        "known_fact_reask_blocked: "
+                                                        + ",".join(
+                                                            reask.get("fact_keys") or []
+                                                        )
+                                                    ),
+                                                }
+                                            ]
+                                        }
+                                    },
+                                ),
+                                attribution(
+                                    failure_class="PLANNER_KNOWN_FACT_REASK",
+                                    owner="planner",
+                                    stage="pre_tool_guard",
+                                    retryable=True,
+                                    safe_next_step="choose_non_reask_action",
+                                    detail=",".join(reask.get("fact_keys") or []),
+                                ),
+                            )
+                        else:
+                            result = attach_attribution(
+                                ToolResult(
+                                    status="error",
+                                    turn_summary_pl=(
+                                        "Ponowne pytanie o znany fakt po korekcie — "
+                                        "bezpieczna abstencja, wymaga operatora."
+                                    ),
+                                    snapshot_delta={
+                                        "operational_status": {
+                                            "code": "pending_operator",
+                                            "blocking": True,
+                                        },
+                                        "hitl_gate": {
+                                            "required": True,
+                                            "reason": "known_fact_reask_blocked",
+                                        },
+                                    },
+                                ),
+                                attribution(
+                                    failure_class="SAFE_ABSTENTION",
+                                    owner="planner",
+                                    stage="pre_tool_guard",
+                                    retryable=False,
+                                    safe_next_step="request_operator_clarification",
+                                    detail=",".join(reask.get("fact_keys") or []),
+                                ),
+                            )
                         sub_agent = "general"
                     else:
-                        sub_agent = select_sub_agent(tool_name=plan.tool_name, snapshot=current)
-                        logger.info(
-                            "agent_tool_shadow engagement=%s tool=%s sub_agent=%s",
-                            current.engagement_id,
-                            plan.tool_name,
-                            sub_agent,
-                        )
-                        result = self._execute_tool_with_timeout(
-                            plan, ctx, sub_agent=sub_agent, operator_scope=operator_scope
-                        )
+                        duplicate_research = _duplicate_rag_research_result(current, plan)
+                        if duplicate_research is not None:
+                            result = duplicate_research
+                            sub_agent = "general"
+                        else:
+                            sub_agent = select_sub_agent(
+                                tool_name=plan.tool_name, snapshot=current
+                            )
+                            logger.info(
+                                "agent_tool_shadow engagement=%s tool=%s sub_agent=%s",
+                                current.engagement_id,
+                                plan.tool_name,
+                                sub_agent,
+                            )
+                            result = self._execute_tool_with_timeout(
+                                plan,
+                                ctx,
+                                sub_agent=sub_agent,
+                                operator_scope=operator_scope,
+                            )
             tool_call_count += 1
+            run_budget.record_turn(
+                tool_name=plan.tool_name,
+                status=result.status,
+                tokens=int(getattr(result, "tokens_used", 0) or 0)
+                + self._planner_tokens(),
+            )
             if result.status == "ok" and plan.tool_name in _READ_ONCE_AFTER_OK_TOOLS:
                 completed_read_once_tools.add(plan.tool_name)
             # P7: Event Spine â€” agent.tool.invoked
@@ -337,7 +497,12 @@ class AgentGraphEngine:
                     "hitl_gate": HitlGate(required=True, reason="budget_exhausted"),
                 }
             )
-        return AgentGraphRunResult(snapshot=current, turns=turns)
+        return AgentGraphRunResult(
+            snapshot=current,
+            turns=turns,
+            planner_run_budget=run_budget.as_dict(),
+            last_effective_tools={},
+        )
 
     def _planner_tokens(self) -> int:
         tokens = getattr(self._planner, "last_tokens_used", 0)
@@ -556,9 +721,49 @@ def _observe_policy_plan(
 def _policy_enforcement_block(
     snapshot: EngagementSnapshotV2,
     plan: ToolCallPlan,
+    *,
+    signal_payload: dict[str, Any] | None = None,
 ) -> ToolResult | None:
-    """RP-30: enforce policy/plan conflicts that were previously telemetry-only."""
+    """RP-30 + PLANNER-EXEC-FIDELITY-01: enforce policy/plan conflicts and required envelope."""
+    payload = signal_payload if isinstance(signal_payload, dict) else {}
     consistency = snapshot.semantic_policy_plan_consistency
+    envelope = snapshot.policy_action_envelope
+    presence = classify_envelope_presence(
+        envelope,
+        case_understanding_present=snapshot.case_understanding is not None,
+        policy_required=policy_path_requires_envelope(snapshot, payload),
+        harness_mode=bool(payload.get("harness_mode")),
+    )
+    action_tools = frozenset({"generate_draft_reply", "propose_mutation"})
+    if (
+        presence.get("status") == "wiring_failure"
+        and plan.tool_name in action_tools
+    ):
+        return attach_attribution(
+            ToolResult(
+                status="error",
+                turn_summary_pl=(
+                    "Brak wymaganego policy/action envelope po Brain 1 — "
+                    "fail-closed, wymaga operatora (wiring failure)."
+                ),
+                snapshot_delta={
+                    "operational_status": {"code": "pending_operator", "blocking": True},
+                    "hitl_gate": {
+                        "required": True,
+                        "reason": "policy_envelope_wiring_failure",
+                    },
+                },
+            ),
+            attribution(
+                failure_class="POLICY_ENVELOPE_MISSING",
+                owner="policy",
+                stage="policy_enforcement",
+                retryable=False,
+                safe_next_step="rebuild_policy_spine_or_escalate",
+                detail=",".join(presence.get("reason_codes") or []),
+            ),
+        )
+
     if consistency is None:
         return None
     if str(consistency.status or "") != "conflicting":
@@ -566,16 +771,30 @@ def _policy_enforcement_block(
     reasons = {str(item) for item in (consistency.reason_codes or [])}
     if "policy_blocks_actionable_tool" not in reasons:
         return None
-    return ToolResult(
-        status="error",
-        turn_summary_pl="Polityka blokuje wybrane narzedzie — wymaga decyzji operatora.",
-        snapshot_delta={
-            "operational_status": {"code": "pending_operator", "blocking": True},
-            "hitl_gate": {
-                "required": True,
-                "reason": f"policy_blocks_actionable_tool:{plan.tool_name}",
+    return attach_attribution(
+        ToolResult(
+            status="error",
+            turn_summary_pl="Polityka blokuje wybrane narzedzie — wymaga decyzji operatora.",
+            snapshot_delta={
+                "operational_status": {"code": "pending_operator", "blocking": True},
+                "hitl_gate": {
+                    "required": True,
+                    "reason": f"policy_blocks_actionable_tool:{plan.tool_name}",
+                },
             },
-        },
+        ),
+        attribution(
+            failure_class="POLICY_TOOL_MISMATCH",
+            owner="policy",
+            stage="policy_enforcement",
+            retryable=False,
+            safe_next_step="request_operator_clarification",
+            correlation={
+                "policy_decision_id": str(consistency.policy_decision_id or ""),
+                "action_proposal_id": str(consistency.action_proposal_id or ""),
+            },
+            detail=plan.tool_name,
+        ),
     )
 
 
@@ -727,6 +946,12 @@ _RUNTIME_OWNED_SNAPSHOT_FIELDS = (
 _PROTECTED_SNAPSHOT_FIELDS = (
     *_BRAIN1_OWNED_SNAPSHOT_FIELDS,
     *_RUNTIME_OWNED_SNAPSHOT_FIELDS,
+    # Ephemeral attribution payload — lives on ToolResult, not EngagementSnapshotV2.
+    "execution_attribution",
+    "draft_sanity",
+    "planner_run_budget",
+    "effective_tools",
+    "envelope_presence",
 )
 
 

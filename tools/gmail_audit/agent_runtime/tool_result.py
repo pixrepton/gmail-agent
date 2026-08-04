@@ -25,5 +25,9 @@ class ToolResult(BaseModel):
     turn_summary_pl: str = ""
     tokens_used: int = 0
     next_tool_hint: str | None = None
+    # PLANNER-EXEC-FIDELITY-01: optional attribution (empty = unclassified legacy).
+    failure_class: str = ""
+    failure_owner: str = ""
+    retryable: bool | None = None
 
     model_config = ConfigDict(extra="forbid")

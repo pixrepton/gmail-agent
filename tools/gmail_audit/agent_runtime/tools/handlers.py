@@ -102,6 +102,9 @@ def apply_facts_to_snapshot_and_store(
 
 
 def generate_draft_reply(plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolResult:
+    from agent_runtime.draft_sanity import evaluate_draft_sanity
+    from agent_runtime.failure_taxonomy import attach_attribution, attribution
+
     profile = ctx.snapshot.hvac_profile
     intent = str(plan.arguments.get("intent") or "quote").strip()
     area = profile.heated_area_m2 or "?"
@@ -122,6 +125,56 @@ def generate_draft_reply(plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolR
         # Fail-closed: an empty/whitespace-only body is not a valid operator-facing
         # draft. Never let it into final_actions as if it were a real artifact.
         return ToolResult(status="error", turn_summary_pl="generate_draft_reply produced an empty body.")
+
+    envelope = getattr(ctx.snapshot, "policy_action_envelope", None)
+    policy_allows = None
+    if envelope is not None and getattr(envelope, "freshness", "") == "current":
+        policy_allows = bool(getattr(envelope, "allowed_by_policy", True))
+
+    sanity = evaluate_draft_sanity(
+        body=body,
+        case_kind=str(ctx.snapshot.case_kind or ""),
+        intent=intent,
+        snapshot=ctx.snapshot,
+        policy_allows_draft=policy_allows,
+    )
+    if not sanity.get("ok"):
+        return attach_attribution(
+            ToolResult(
+                status="error",
+                turn_summary_pl=(
+                    "Draft sanity gate zablokował treść skierowaną do klienta: "
+                    + ", ".join(sanity.get("reason_codes") or [])
+                ),
+                snapshot_delta={
+                    "hitl_gate": {
+                        "required": True,
+                        "reason": "draft_sanity_failed:"
+                        + ",".join(sanity.get("reason_codes") or [])[:120],
+                    },
+                    "operational_status": {"code": "pending_operator", "blocking": True},
+                    "actions": [
+                        {
+                            "id": "draft_reply",
+                            "enabled": False,
+                            "payload_pl": body,
+                            "disabled_reason_pl": "DRAFT_SANITY_FAILED: "
+                            + ",".join(sanity.get("reason_codes") or []),
+                            "identity_state": "identity_incomplete",
+                        }
+                    ],
+                },
+            ),
+            attribution(
+                failure_class="DRAFT_SANITY_FAILED",
+                owner="quality",
+                stage="draft_sanity_gate",
+                retryable=True,
+                safe_next_step="request_operator_clarification",
+                detail=",".join(sanity.get("reason_codes") or []),
+            ),
+        )
+
     action_id = "draft_reply"
     case_id = str(ctx.snapshot.case_id or "")
     source_signal_id = str(ctx.snapshot.signal_id or "")
@@ -613,17 +666,38 @@ def check_cp2025_eligibility_tool(_plan: ToolCallPlan, ctx: ToolExecutionContext
 
 
 def call_kalk_top_quote(_plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolResult:
+    from agent_runtime.failure_taxonomy import (
+        attach_attribution,
+        classify_tool_handler_error,
+    )
+
     payload = build_calc_request_from_profile(ctx.snapshot.model_dump(mode="python"))
     try:
         offer = call_calculate_offer(payload, settings=ctx.settings)
     except KalkTopUnreachableError as exc:
-        return ToolResult(
+        result = ToolResult(
             status="node_a_error",
             turn_summary_pl=f"kalk-top niedostępny: {exc}",
             snapshot_delta={"operational_status": {"code": "node_a_error"}},
         )
+        return attach_attribution(
+            result,
+            classify_tool_handler_error(
+                tool_name="call_kalk_top_quote",
+                summary=str(exc),
+                status="node_a_error",
+            ),
+        )
     except KalkTopClientError as exc:
-        return ToolResult(status="error", turn_summary_pl=str(exc))
+        result = ToolResult(status="error", turn_summary_pl=str(exc))
+        return attach_attribution(
+            result,
+            classify_tool_handler_error(
+                tool_name="call_kalk_top_quote",
+                summary=str(exc),
+                status="error",
+            ),
+        )
     totals = ""
     pricing = offer.get("pricing") if isinstance(offer.get("pricing"), dict) else {}
     totals_obj = pricing.get("totals") if isinstance(pricing.get("totals"), dict) else {}
@@ -647,7 +721,45 @@ def call_kalk_top_quote(_plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolR
 
 
 def request_operator_clarification(plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolResult:
+    from agent_runtime.failure_taxonomy import attach_attribution, attribution
+    from agent_runtime.known_fact_guard import guard_known_fact_reask
+
     ask = str(plan.arguments.get("ask_pl") or "Operatorze, proszę o decyzję w tej sprawie.").strip()
+    blocked = guard_known_fact_reask(
+        tool_name="request_operator_clarification",
+        arguments={"ask_pl": ask},
+        snapshot=ctx.snapshot,
+    )
+    if blocked is not None:
+        return attach_attribution(
+            ToolResult(
+                status="error",
+                turn_summary_pl=(
+                    "Zablokowano pytanie o znany fakt: "
+                    + ", ".join(blocked.get("fact_keys") or [])
+                ),
+                next_tool_hint="generate_draft_reply",
+                snapshot_delta={
+                    "agent_memory": {
+                        "reasoning_trace": [
+                            {
+                                "turn": 0,
+                                "summary_pl": "known_fact_reask_blocked:"
+                                + ",".join(blocked.get("fact_keys") or []),
+                            }
+                        ]
+                    }
+                },
+            ),
+            attribution(
+                failure_class="PLANNER_KNOWN_FACT_REASK",
+                owner="planner",
+                stage="tool_handler",
+                retryable=True,
+                safe_next_step="choose_non_reask_action",
+                detail=",".join(blocked.get("fact_keys") or []),
+            ),
+        )
     return ToolResult(
         status="ok",
         turn_summary_pl=ask,

@@ -149,6 +149,7 @@ class OpenAIToolPlanner:
         self._settings = settings
         self._client = client
         self.last_tokens_used: int = 0
+        self.last_effective_tools: dict[str, Any] = {}
         # Shared thread pool for timeout-enforced LLM calls
         self._executor = ThreadPoolExecutor(max_workers=2)
 
@@ -165,14 +166,34 @@ class OpenAIToolPlanner:
                 "No agent planner LLM configured (set AGENT_OPENAI_NATIVE_API_KEY, "
                 "AGENT_OPENAI_API_KEY, or GROQ/CEREBRAS/NVIDIA keys)"
             )
-        from agent_runtime.policy_guardrails import filter_planner_allowlist
+        from agent_runtime.effective_tools import compute_effective_available_tools
 
-        filtered = filter_planner_allowlist(available_tools, constitution)
+        effective = compute_effective_available_tools(
+            available_tools,
+            constitution=constitution,
+            settings=self._settings,
+        )
+        filtered = effective.offered
         if not filtered:
-            raise OpenAIAgentPlannerError("No tools available after policy filter")
+            raise OpenAIAgentPlannerError("No tools available after policy/config filter")
         tools = openai_tool_definitions(filtered)
-        messages = self._build_messages(snapshot=snapshot, constitution=constitution, available_tools=filtered)
-        logger.info("LLM_TOOL_OFFER", extra={"x": {"tools": list(filtered)}})
+        messages = self._build_messages(
+            snapshot=snapshot,
+            constitution=constitution,
+            available_tools=filtered,
+            unavailable_notes=effective.unavailable_notes,
+        )
+        logger.info(
+            "LLM_TOOL_OFFER",
+            extra={
+                "x": {
+                    "tools": list(filtered),
+                    "filtered_out": list(effective.unavailable_notes),
+                }
+            },
+        )
+        # Expose last effective availability for telemetry / proofs (no persistence).
+        self.last_effective_tools = effective.as_dict()
         last_exc: Exception | None = None
         for index, endpoint in enumerate(endpoints):
             provider_name = endpoint.base_url or "openai"
@@ -275,6 +296,7 @@ class OpenAIToolPlanner:
         snapshot: Any,
         constitution: AgentConstitution,
         available_tools: tuple[str, ...] = (),
+        unavailable_notes: tuple[str, ...] = (),
     ) -> list[dict[str, Any]]:
         sections = "\n\n".join(
             f"## {title}\n{body}"
@@ -285,6 +307,12 @@ class OpenAIToolPlanner:
         instruction_prefix = ""
         if snapshot.user_instruction:
             instruction_prefix = f"Instrukcja operatora: {snapshot.user_instruction}\n\n"
+        unavailable_block = ""
+        if unavailable_notes:
+            unavailable_block = (
+                "Narzedzia niedostepne w tej turze (NIE wywoluj ich; to brak konfiguracji/capability, "
+                f"nie blad rozumienia sprawy): {'; '.join(unavailable_notes)}.\n"
+            )
 
         # EVAL-RECOVERY-1: the draft/follow-up instructions below must only reference
         # tools actually offered this turn. propose_mutation(operation=generate_draft)
@@ -332,6 +360,7 @@ class OpenAIToolPlanner:
         system = (
             f"{instruction_prefix}{sections}\n\n"
             f"Narzedzia dostepne w tej turze: {', '.join(available_tools)}.\n"
+            f"{unavailable_block}"
             f"Zakazane akcje: {', '.join(constitution.forbidden_actions)}.\n"
             f"Język odpowiedzi operatora: {constitution.language}.\n"
             f"Typ sprawy (case_kind): {snapshot.case_kind}. {goal}\n"
