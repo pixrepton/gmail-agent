@@ -93,13 +93,6 @@ def _llm_cache_disabled() -> bool:
 
     if os.getenv("GMAIL_AUDIT_DISABLE_LLM_CACHE", "").strip().lower() in {"1", "true", "yes"}:
         return True
-    # Default under pytest: live mailbox cache must not satisfy “failure envelope” unit tests.
-    if os.getenv("PYTEST_CURRENT_TEST") and os.getenv("GMAIL_AUDIT_LLM_CACHE_OPT_IN", "").strip().lower() not in {
-        "1",
-        "true",
-        "yes",
-    }:
-        return True
     return False
 
 

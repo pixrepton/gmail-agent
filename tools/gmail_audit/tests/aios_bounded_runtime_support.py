@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import subprocess
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -14,6 +16,7 @@ import pytest
 import requests
 
 TOOL_DIR = Path(__file__).resolve().parent.parent
+GMAIL_AGENT_REPO_ROOT = TOOL_DIR.parent.parent
 PLAYWRIGHT_ENV_PATH = TOOL_DIR / ".env.playwright.local"
 DEFAULT_NODE_B_URL = "http://127.0.0.1:8766"
 DEFAULT_DASZEK_URL = "http://127.0.0.1:8090/daszek/"
@@ -383,22 +386,127 @@ def set_active_manifest(manifest: dict[str, Any] | None) -> None:
     _ACTIVE_MANIFEST = manifest
 
 
+def _run_git(*args: str, cwd: Path | None = None) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=str(cwd or GMAIL_AGENT_REPO_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return ""
+        return (result.stdout or "").strip()
+    except Exception:
+        return ""
+
+
+def _tracked_diff_sha256() -> str:
+    diff = _run_git("diff", "HEAD")
+    if not diff and _run_git("diff", "--cached"):
+        diff = _run_git("diff", "--cached")
+    if not diff:
+        return ""
+    return hashlib.sha256(diff.encode("utf-8")).hexdigest()
+
+
+def _node_b_image_metadata() -> tuple[str, str]:
+    image_ref = os.getenv("AIOS_NODE_B_IMAGE", "gmail-agent-nodeb-api").strip() or "gmail-agent-nodeb-api"
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "--format", "{{.Id}} {{.Created}}", image_ref],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return "", ""
+        parts = (result.stdout or "").strip().split(" ", 1)
+        if len(parts) == 2:
+            return parts[0], parts[1]
+        if parts:
+            return parts[0], ""
+    except Exception:
+        pass
+    return "", ""
+
+
+def _resolve_intelligence_mode() -> str:
+    if os.getenv("AIOS_LIVE_LLM_INTELLIGENCE", "").strip().lower() in {"1", "true", "yes"}:
+        return "live_llm_intelligence"
+    return "deterministic_test_double"
+
+
+def _resolve_runtime_wiring_mode() -> str:
+    return "production_runtime_wiring"
+
+
+def _parse_gate_a_result_from_env() -> dict[str, int] | None:
+    raw = os.getenv("AIOS_GATE_A_RESULT_JSON", "").strip()
+    if raw:
+        try:
+            payload = json.loads(raw)
+            if isinstance(payload, dict):
+                return {
+                    "passed": int(payload.get("passed", 0)),
+                    "skipped": int(payload.get("skipped", 0)),
+                    "failed": int(payload.get("failed", 0)),
+                }
+        except Exception:
+            pass
+    passed = os.getenv("AIOS_GATE_A_PASSED", "").strip()
+    if passed:
+        try:
+            return {
+                "passed": int(passed),
+                "skipped": int(os.getenv("AIOS_GATE_A_SKIPPED", "0") or 0),
+                "failed": int(os.getenv("AIOS_GATE_A_FAILED", "0") or 0),
+            }
+        except ValueError:
+            return None
+    return None
+
+
+def record_pytest_session_result(manifest: dict[str, Any], *, passed: int, skipped: int, failed: int) -> None:
+    manifest["pytest_result"] = {"passed": passed, "skipped": skipped, "failed": failed}
+
+
+def record_gate_a_result(manifest: dict[str, Any], *, passed: int, skipped: int, failed: int) -> None:
+    manifest["gate_a_result"] = {"passed": passed, "skipped": skipped, "failed": failed}
+
+
 def begin_proof_manifest() -> dict[str, Any]:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     proof_id = f"phase3-runtime-{stamp}-{uuid.uuid4().hex[:8]}"
     urls = resolve_bounded_runtime_urls()
-    return {
+    image_id, image_created = _node_b_image_metadata()
+    gate_a = _parse_gate_a_result_from_env()
+    manifest: dict[str, Any] = {
+        "manifest_schema_version": "1",
         "proof_id": proof_id,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "completed_at": "",
+        "git_head_sha": _run_git("rev-parse", "HEAD"),
+        "working_tree_dirty": bool(_run_git("status", "--porcelain")),
+        "tracked_diff_sha256": _tracked_diff_sha256(),
+        "node_b_image_id": image_id,
+        "node_b_image_created_at": image_created,
         "node_b_url": urls.node_b_base,
         "daszek_url": daszek_app_url(urls),
         "runtime_preflight": bounded_runtime_preflight(urls=urls)["runtime_preflight"],
+        "runtime_wiring_mode": _resolve_runtime_wiring_mode(),
+        "intelligence_mode": _resolve_intelligence_mode(),
+        "live_gmail_send_enabled": False,
+        "test_command": os.getenv("AIOS_PHASE3_TEST_COMMAND", "").strip(),
         "journeys": {},
         "live_send_invocations": 0,
         "trace_paths": [],
         "screenshot_paths": [],
     }
+    if gate_a is not None:
+        manifest["gate_a_result"] = gate_a
+    return manifest
 
 
 def get_active_manifest() -> dict[str, Any]:
@@ -417,6 +525,12 @@ def record_journey_result(manifest: dict[str, Any], journey_key: str, payload: d
 
 def finalize_proof_manifest(manifest: dict[str, Any]) -> Path:
     manifest["completed_at"] = datetime.now(timezone.utc).isoformat()
+    if "pytest_result" not in manifest:
+        manifest["pytest_result"] = {"passed": 0, "skipped": 0, "failed": 0}
+    if "gate_a_result" not in manifest:
+        gate_a = _parse_gate_a_result_from_env()
+        if gate_a is not None:
+            manifest["gate_a_result"] = gate_a
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_dir = proof_artifacts_root() / stamp
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -447,6 +561,8 @@ __all__ = [
     "wait_for_ready_for_manual_send",
     "proof_artifacts_root",
     "record_journey_result",
+    "record_gate_a_result",
+    "record_pytest_session_result",
     "require_bounded_runtime",
     "resolve_bounded_runtime_urls",
     "runtime_health",

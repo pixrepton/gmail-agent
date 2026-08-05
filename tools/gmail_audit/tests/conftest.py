@@ -14,6 +14,8 @@ if str(TESTS_DIR) not in sys.path:
 from aios_bounded_runtime_support import (
     begin_proof_manifest,
     finalize_proof_manifest,
+    get_active_manifest,
+    record_pytest_session_result,
     runtime_proof_required,
     set_active_manifest,
 )
@@ -82,8 +84,6 @@ def _aios_phase3_runtime_manifest_session():
     manifest = begin_proof_manifest()
     set_active_manifest(manifest)
     yield manifest
-    finalize_proof_manifest(manifest)
-    set_active_manifest(None)
 
 
 @pytest.fixture(autouse=True)
@@ -92,6 +92,9 @@ def _kalk_top_test_opt_in(request: pytest.FixtureRequest, monkeypatch: pytest.Mo
         monkeypatch.setenv("GMAIL_AUDIT_KALK_TOP_TEST_OPT_IN", "1")
     else:
         monkeypatch.delenv("GMAIL_AUDIT_KALK_TOP_TEST_OPT_IN", raising=False)
+        monkeypatch.delenv("KALK_TOP_BASE_URL", raising=False)
+        monkeypatch.delenv("KALK_TOP_AGENT_KEY", raising=False)
+        monkeypatch.delenv("TOPINSTAL_CALC_AGENT_API_KEY", raising=False)
     yield
 
 
@@ -118,8 +121,27 @@ def _hermetic_llm_provider_env(request: pytest.FixtureRequest, monkeypatch: pyte
         return
     # Block agent_runtime.settings._load_agent_runtime_env_file from re-hydrating .env mid-test.
     monkeypatch.setenv("GMAIL_AUDIT_SKIP_AGENT_DOTENV", "1")
-    if not request.node.get_closest_marker("llm_cache"):
+    if request.node.get_closest_marker("llm_cache"):
+        monkeypatch.delenv("GMAIL_AUDIT_DISABLE_LLM_CACHE", raising=False)
+    else:
         monkeypatch.setenv("GMAIL_AUDIT_DISABLE_LLM_CACHE", "1")
     for name in _HERMETIC_PROVIDER_ENV:
         monkeypatch.delenv(name, raising=False)
     yield
+
+
+def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter, exitstatus: int, config: pytest.Config) -> None:
+    if not runtime_proof_required():
+        return
+    manifest = get_active_manifest()
+    if manifest is None:
+        return
+    stats = terminalreporter.stats
+    record_pytest_session_result(
+        manifest,
+        passed=len(stats.get("passed", [])),
+        skipped=len(stats.get("skipped", [])),
+        failed=len(stats.get("failed", [])),
+    )
+    finalize_proof_manifest(manifest)
+    set_active_manifest(None)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -154,12 +154,6 @@ def load_agent_runtime_settings() -> AgentRuntimeSettings:
         ).strip(),
         staging_ttl_hours=_parse_positive_int(os.getenv("AGENT_STAGING_TTL_HOURS"), default=72),
     )
-    if os.getenv("PYTEST_CURRENT_TEST") and not os.getenv("GMAIL_AUDIT_KALK_TOP_TEST_OPT_IN"):
-        settings = replace(
-            settings,
-            kalk_top_base_url="",
-            kalk_top_agent_key="",
-        )
     return settings
 
 
@@ -322,15 +316,8 @@ def _load_agent_runtime_env_file() -> Path | None:
     global _DOTENV_LOADED
     if _DOTENV_LOADED:
         return None
-    # Gate A hermeticism: pytest + conftest strip provider keys; do not re-load developer .env.
+    # Gate A hermeticism: conftest sets GMAIL_AUDIT_SKIP_AGENT_DOTENV; do not load developer .env.
     if os.getenv("GMAIL_AUDIT_SKIP_AGENT_DOTENV", "").strip().lower() in {"1", "true", "yes"}:
-        _DOTENV_LOADED = True
-        return None
-    if os.getenv("PYTEST_CURRENT_TEST") and os.getenv("GMAIL_AUDIT_ALLOW_AGENT_DOTENV", "").strip().lower() not in {
-        "1",
-        "true",
-        "yes",
-    }:
         _DOTENV_LOADED = True
         return None
     provider_env_names = (
