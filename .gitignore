@@ -123,3 +123,7 @@ tools/gmail_audit/backend/model_cache/
 
 # Docker auto-created runtime files
 etc/topinstal/
+
+# Accidental nested copy of sibling repo (never commit)
+rag-chat-asystent/
+
