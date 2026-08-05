@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 
@@ -120,7 +120,7 @@ def resolve_agent_runtime_branch() -> tuple[str, bool]:
 def load_agent_runtime_settings() -> AgentRuntimeSettings:
     _load_agent_runtime_env_file()
     mode, agent_enabled = resolve_agent_runtime_branch()
-    return AgentRuntimeSettings(
+    settings = AgentRuntimeSettings(
         enabled=agent_enabled,
         mode=mode,
         model=(os.getenv("AGENT_MODEL", DEFAULT_AGENT_MODEL) or DEFAULT_AGENT_MODEL).strip(),
@@ -154,6 +154,13 @@ def load_agent_runtime_settings() -> AgentRuntimeSettings:
         ).strip(),
         staging_ttl_hours=_parse_positive_int(os.getenv("AGENT_STAGING_TTL_HOURS"), default=72),
     )
+    if os.getenv("PYTEST_CURRENT_TEST") and not os.getenv("GMAIL_AUDIT_KALK_TOP_TEST_OPT_IN"):
+        settings = replace(
+            settings,
+            kalk_top_base_url="",
+            kalk_top_agent_key="",
+        )
+    return settings
 
 
 def _parse_bool(raw: str | None, *, default: bool) -> bool:
@@ -314,6 +321,17 @@ def _load_agent_runtime_env_file() -> Path | None:
     """Load the same local dotenv source the Gmail structured runtime uses."""
     global _DOTENV_LOADED
     if _DOTENV_LOADED:
+        return None
+    # Gate A hermeticism: pytest + conftest strip provider keys; do not re-load developer .env.
+    if os.getenv("GMAIL_AUDIT_SKIP_AGENT_DOTENV", "").strip().lower() in {"1", "true", "yes"}:
+        _DOTENV_LOADED = True
+        return None
+    if os.getenv("PYTEST_CURRENT_TEST") and os.getenv("GMAIL_AUDIT_ALLOW_AGENT_DOTENV", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+    }:
+        _DOTENV_LOADED = True
         return None
     provider_env_names = (
         "DEEPSEEK_API_KEY",

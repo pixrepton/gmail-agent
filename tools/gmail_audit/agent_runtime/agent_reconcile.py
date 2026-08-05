@@ -293,7 +293,7 @@ def _run_mailbox_intelligence_downstream(
     dry_run: bool,
     entity_link_dict: dict[str, Any],
     intake_output: dict[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], list[str]]:
     """Run mailbox SoT + intelligence pipeline before agent execute (full Case OS profile)."""
     from event_memory import EventLog
     from gmail_intake import build_context_bundle, hydrate_intelligence_seam_config
@@ -334,7 +334,12 @@ def _run_mailbox_intelligence_downstream(
     )
     warnings = list(downstream.warnings)
     warnings.append("agent_runtime_with_mailbox_intelligence_downstream")
-    return downstream.case_intelligence_result, downstream.mailbox_memory_result, warnings
+    return (
+        downstream.case_intelligence_result,
+        downstream.mailbox_memory_result,
+        downstream.reply_result if isinstance(downstream.reply_result, dict) else {},
+        warnings,
+    )
 
 
 def agent_runtime_reconcile_active(settings: AgentRuntimeSettings | None = None) -> bool:
@@ -699,9 +704,15 @@ def run_agent_reconcile(
 
     case_intelligence_result: dict[str, Any] = {}
     mailbox_memory_result: dict[str, Any] = {}
+    reply_draft_result: dict[str, Any] = {}
     if _case_os_intelligence_downstream_active(runtime_context.settings):
         try:
-            case_intelligence_result, mailbox_memory_result, intel_warnings = _run_mailbox_intelligence_downstream(
+            (
+                case_intelligence_result,
+                mailbox_memory_result,
+                reply_draft_result,
+                intel_warnings,
+            ) = _run_mailbox_intelligence_downstream(
                 signal,
                 runtime_context=runtime_context,
                 dry_run=dry_run,
@@ -783,6 +794,15 @@ def run_agent_reconcile(
                 case_intelligence_result,
                 message_id=str(agent_signal.get("message_id") or ""),
             )
+            from agent_runtime.draft_lineage_transport import build_upstream_draft_transport
+
+            upstream_transport = build_upstream_draft_transport(
+                reply_result=reply_draft_result,
+                case_id=case_id,
+                source_signal_id=str(signal.signal_id or ""),
+            )
+            if upstream_transport is not None:
+                agent_signal["upstream_draft_transport"] = upstream_transport
             run_result = execute_agent_run(
                 resolution.engagement_id,
                 store=operator_store,

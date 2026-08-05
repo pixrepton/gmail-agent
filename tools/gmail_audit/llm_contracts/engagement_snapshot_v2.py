@@ -344,6 +344,16 @@ class CommunicationReceipt(StrictModel):
     thread_id: str = ""
     draft_id: str = ""
     body_hash: str = ""
+    draft_origin: Literal["brain1", "brain2_fallback", "legacy_unknown"] = "legacy_unknown"
+
+
+class DraftLineageProvenance(StrictModel):
+    """AI-OS 3.2: durable draft origin after Brain1 transport or Brain2 fallback."""
+
+    draft_origin: Literal["brain1", "brain2_fallback", "legacy_unknown"] = "legacy_unknown"
+    origin_correlation_id: str = ""
+    origin_producer: str = ""
+    origin_created_at: str = ""
 
 
 class EngagementSnapshotV2(StrictModel):
@@ -372,6 +382,7 @@ class EngagementSnapshotV2(StrictModel):
     decision_divergence_observation: DecisionDivergenceObservationV1 | None = None
     feed_visibility: FeedVisibility | None = None
     communication_receipt: CommunicationReceipt | None = None
+    draft_lineage_provenance: DraftLineageProvenance | None = None
 
 
 def engagement_snapshot_v2_json_schema() -> dict[str, Any]:

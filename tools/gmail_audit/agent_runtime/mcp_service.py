@@ -334,6 +334,10 @@ class AgentMcpService:
 
         receipt_draft_id = ""
         receipt_body_hash = ""
+        receipt_draft_origin = "legacy_unknown"
+        provenance = getattr(snapshot, "draft_lineage_provenance", None)
+        if provenance is not None:
+            receipt_draft_origin = str(getattr(provenance, "draft_origin", "") or "legacy_unknown")
         for item in actions_payload:
             if str(item.get("id") or "").strip() == aid:
                 receipt_draft_id = str(item.get("draft_id") or "")
@@ -351,6 +355,7 @@ class AgentMcpService:
             "communication_receipt": build_ready_for_manual_send_receipt(
                 draft_id=receipt_draft_id,
                 body_hash=receipt_body_hash,
+                draft_origin=receipt_draft_origin,
             ),
         }
         patched = apply_snapshot_delta(snapshot, delta)

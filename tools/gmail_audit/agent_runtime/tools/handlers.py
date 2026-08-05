@@ -178,6 +178,13 @@ def generate_draft_reply(plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolR
     action_id = "draft_reply"
     case_id = str(ctx.snapshot.case_id or "")
     source_signal_id = str(ctx.snapshot.signal_id or "")
+    from agent_runtime.draft_lineage_provenance import build_draft_lineage_provenance
+
+    provenance = build_draft_lineage_provenance(
+        draft_origin="brain2_fallback",
+        origin_correlation_id=source_signal_id,
+        origin_producer="generate_draft_reply",
+    )
     return ToolResult(
         status="ok",
         turn_summary_pl="Draft odpowiedzi przygotowany (bez wysyłki).",
@@ -206,6 +213,7 @@ def generate_draft_reply(plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolR
             ],
             "hitl_gate": {"required": True, "reason": "draft_ready_for_approval"},
             "operational_status": {"code": "pending_operator"},
+            "draft_lineage_provenance": provenance,
         },
     )
 

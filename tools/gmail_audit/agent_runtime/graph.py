@@ -399,12 +399,37 @@ class AgentGraphEngine:
                                 plan.tool_name,
                                 sub_agent,
                             )
-                            result = self._execute_tool_with_timeout(
-                                plan,
-                                ctx,
-                                sub_agent=sub_agent,
-                                operator_scope=operator_scope,
-                            )
+                            if plan.tool_name == "generate_draft_reply":
+                                from agent_runtime.draft_lineage_transport import (
+                                    resolve_generate_draft_reply,
+                                )
+
+                                transferred, allow_fallback = resolve_generate_draft_reply(
+                                    ctx.signal_payload
+                                )
+                                if transferred is not None:
+                                    result = transferred
+                                elif allow_fallback:
+                                    result = self._execute_tool_with_timeout(
+                                        plan,
+                                        ctx,
+                                        sub_agent=sub_agent,
+                                        operator_scope=operator_scope,
+                                    )
+                                else:
+                                    result = ToolResult(
+                                        status="error",
+                                        turn_summary_pl=(
+                                            "Brak upstream draft i fallback zablokowany."
+                                        ),
+                                    )
+                            else:
+                                result = self._execute_tool_with_timeout(
+                                    plan,
+                                    ctx,
+                                    sub_agent=sub_agent,
+                                    operator_scope=operator_scope,
+                                )
             tool_call_count += 1
             run_budget.record_turn(
                 tool_name=plan.tool_name,

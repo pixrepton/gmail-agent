@@ -61,7 +61,8 @@ def source_kind_for_direction(direction: str) -> str:
     return "gmail_inbound"
 
 
-def build_ready_for_manual_send_receipt(*, draft_id: str = "", body_hash: str = "") -> dict[str, Any]:
+def build_ready_for_manual_send_receipt(*, draft_id: str = "", body_hash: str = "", draft_origin: str = "") -> dict[str, Any]:
+    origin = str(draft_origin or "legacy_unknown").strip() or "legacy_unknown"
     return {
         "state": "ready_for_manual_send",
         "sent_at": "",
@@ -69,6 +70,7 @@ def build_ready_for_manual_send_receipt(*, draft_id: str = "", body_hash: str = 
         "thread_id": "",
         "draft_id": str(draft_id or ""),
         "body_hash": str(body_hash or ""),
+        "draft_origin": origin,
     }
 
 

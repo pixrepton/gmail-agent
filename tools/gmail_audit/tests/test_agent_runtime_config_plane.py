@@ -164,6 +164,9 @@ import json, os, sys
 sys.path.insert(0, {tool_dir!r})
 for _name in {plane_env!r}:
     os.environ.pop(_name, None)
+# Subprocess must not inherit Gate A hermetic flags from the parent pytest process.
+os.environ.pop("GMAIL_AUDIT_SKIP_AGENT_DOTENV", None)
+os.environ.pop("PYTEST_CURRENT_TEST", None)
 {setup}
 from agent_runtime.settings import load_agent_runtime_settings
 s = load_agent_runtime_settings()

@@ -2,8 +2,10 @@
 .env.local
 .env.*
 !.env.example
+!.env.playwright.local.example
 runs/
 debug/
+artifacts/
 __pycache__/
 .cache/
 .pytest_cache/

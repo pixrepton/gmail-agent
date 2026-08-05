@@ -181,6 +181,11 @@
           "default": "",
           "title": "Recommended Next Step Pl",
           "type": "string"
+        },
+        "planner_action_hint": {
+          "default": "",
+          "title": "Planner Action Hint",
+          "type": "string"
         }
       },
       "title": "CaseUnderstandingProjection",
@@ -261,6 +266,72 @@
       "title": "CaseUnderstandingProvenance",
       "type": "object"
     },
+    "CaseUnderstandingStatusV1": {
+      "additionalProperties": false,
+      "description": "SLICE-2C: how good our reasoning about this case currently is — status ONLY.\n\n`case_understanding_provenance` records the mechanics of the run that produced the\nUnderstanding (source mode, validation state, counts). This is the one-word operator-facing\nread derived from it, so consumers stop re-deriving \"is our understanding good enough?\" from\nprovenance internals, each with its own rules.\n\nHard boundary, and the reason this slice exists: **this field must never influence feed\nmembership**. `feed_visibility` does not import or read it, and a `degraded` or `unavailable`\nstatus neither hides an existing card nor creates a new one. Understanding quality and desk\nmembership are different questions with different owners; conflating them would let a reasoning\nfailure silently remove real operator work from the desk.\n\n`reasoning_not_required` is a normal outcome, not a defect: some lanes deliberately skip heavy\nreasoning.\n\n`corrected` provenance does NOT map to `degraded` — see `CaseUnderstandingProvenance`, which\ndeliberately refuses to editorialise about how bad a normalisation was. Only a genuine\nsubstitute (`source_mode=\"fallback\"`) is reported as `degraded`.",
+      "properties": {
+        "schema_version": {
+          "const": "case_understanding_status.v1",
+          "default": "case_understanding_status.v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "degraded",
+            "unavailable",
+            "reasoning_not_required"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "source": {
+          "default": "",
+          "title": "Source",
+          "type": "string"
+        },
+        "reason": {
+          "default": "",
+          "title": "Reason",
+          "type": "string"
+        },
+        "reason_codes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reason Codes",
+          "type": "array"
+        },
+        "source_signal_id": {
+          "default": "",
+          "title": "Source Signal Id",
+          "type": "string"
+        },
+        "observed_at": {
+          "default": "",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "age_seconds": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Age Seconds"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "title": "CaseUnderstandingStatusV1",
+      "type": "object"
+    },
     "ClarificationAnswerItem": {
       "additionalProperties": false,
       "properties": {
@@ -325,6 +396,16 @@
         "body_hash": {
           "default": "",
           "title": "Body Hash",
+          "type": "string"
+        },
+        "draft_origin": {
+          "default": "legacy_unknown",
+          "enum": [
+            "brain1",
+            "brain2_fallback",
+            "legacy_unknown"
+          ],
+          "title": "Draft Origin",
           "type": "string"
         }
       },
@@ -439,6 +520,39 @@
         "tool_relation_status"
       ],
       "title": "DecisionDivergenceObservationV1",
+      "type": "object"
+    },
+    "DraftLineageProvenance": {
+      "additionalProperties": false,
+      "description": "AI-OS 3.2: durable draft origin after Brain1 transport or Brain2 fallback.",
+      "properties": {
+        "draft_origin": {
+          "default": "legacy_unknown",
+          "enum": [
+            "brain1",
+            "brain2_fallback",
+            "legacy_unknown"
+          ],
+          "title": "Draft Origin",
+          "type": "string"
+        },
+        "origin_correlation_id": {
+          "default": "",
+          "title": "Origin Correlation Id",
+          "type": "string"
+        },
+        "origin_producer": {
+          "default": "",
+          "title": "Origin Producer",
+          "type": "string"
+        },
+        "origin_created_at": {
+          "default": "",
+          "title": "Origin Created At",
+          "type": "string"
+        }
+      },
+      "title": "DraftLineageProvenance",
       "type": "object"
     },
     "FeedVisibility": {
@@ -1044,6 +1158,17 @@
       ],
       "default": null
     },
+    "case_understanding_status": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CaseUnderstandingStatusV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "policy_action_envelope": {
       "anyOf": [
         {
@@ -1092,6 +1217,17 @@
       "anyOf": [
         {
           "$ref": "#/$defs/CommunicationReceipt"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "draft_lineage_provenance": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DraftLineageProvenance"
         },
         {
           "type": "null"

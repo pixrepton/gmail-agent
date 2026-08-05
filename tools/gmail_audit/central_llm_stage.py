@@ -88,8 +88,25 @@ def _get_cache_db_url() -> str:
     return str(os.environ.get("MAILBOX_MEMORY_DATABASE_URL", os.environ.get("MAILBOX_DB_URL", ""))).strip()
 
 
+def _llm_cache_disabled() -> bool:
+    import os
+
+    if os.getenv("GMAIL_AUDIT_DISABLE_LLM_CACHE", "").strip().lower() in {"1", "true", "yes"}:
+        return True
+    # Default under pytest: live mailbox cache must not satisfy “failure envelope” unit tests.
+    if os.getenv("PYTEST_CURRENT_TEST") and os.getenv("GMAIL_AUDIT_LLM_CACHE_OPT_IN", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+    }:
+        return True
+    return False
+
+
 def _cache_read(cache_key: str, stage_name: str) -> str | None:
     """Odczytaj odpowiedz z cache. Zwraca JSON string lub None."""
+    if _llm_cache_disabled():
+        return None
     db_url = _get_cache_db_url()
     if not db_url:
         return None
@@ -112,6 +129,8 @@ def _cache_read(cache_key: str, stage_name: str) -> str | None:
 
 def _cache_write(cache_key: str, stage_name: str, provider: str, model: str, temperature: float, response: str, ttl_hours: int = 24) -> None:
     """Zapisz odpowiedz do cache."""
+    if _llm_cache_disabled():
+        return
     db_url = _get_cache_db_url()
     if not db_url:
         return

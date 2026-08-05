@@ -149,7 +149,10 @@ def test_list_cases_filters_case_family() -> None:
     assert "case_family != 'internal_task'" in sql
 
 
-def test_list_cases_no_db() -> None:
+def test_list_cases_no_db(monkeypatch) -> None:
+    # list_cases also falls back to os.environ MAILBOX_MEMORY_DATABASE_URL.
+    monkeypatch.delenv("MAILBOX_MEMORY_DATABASE_URL", raising=False)
+    monkeypatch.delenv("MAILBOX_DB_URL", raising=False)
     client = _make_client()
     settings = _mock_settings("")
     with patch("api_app.load_settings", return_value=settings):
