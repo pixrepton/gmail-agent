@@ -98,3 +98,21 @@ def test_manifest_does_not_store_password_or_tokens(tmp_path: Path, monkeypatch:
     payload = out.read_text(encoding="utf-8")
     for forbidden in ("password", "csrf_token", "Authorization", "cookie"):
         assert forbidden not in payload.lower()
+
+
+def test_working_tree_dirtiness_distinguishes_tracked_and_untracked() -> None:
+    """Provenance must not collapse untracked-only dirt into a silent clean tree."""
+    dirtiness = harness._working_tree_dirtiness()
+    assert set(dirtiness) >= {
+        "working_tree_dirty",
+        "tracked_working_tree_dirty",
+        "untracked_paths_present",
+        "untracked_paths_count",
+    }
+    assert dirtiness["working_tree_dirty"] is (
+        dirtiness["tracked_working_tree_dirty"] or dirtiness["untracked_paths_present"]
+    )
+    assert dirtiness["untracked_paths_count"] >= 0
+    if dirtiness["untracked_paths_present"]:
+        assert dirtiness["untracked_paths_count"] > 0
+        assert dirtiness["working_tree_dirty"] is True

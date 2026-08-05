@@ -411,6 +411,31 @@ def _tracked_diff_sha256() -> str:
     return hashlib.sha256(diff.encode("utf-8")).hexdigest()
 
 
+def _working_tree_dirtiness() -> dict[str, Any]:
+    """Distinguish tracked dirt from untracked paths for proof provenance.
+
+    ``working_tree_dirty`` is the full porcelain signal (tracked + untracked).
+    Explicit tracked/untracked fields avoid the ambiguity where only a tracked
+    hash looked clean while untracked proof helpers still existed.
+    """
+    porcelain = _run_git("status", "--porcelain")
+    lines = [line for line in porcelain.splitlines() if line.strip()]
+    untracked: list[str] = []
+    tracked_dirty = False
+    for line in lines:
+        # porcelain: "?? path" = untracked; otherwise XY path = tracked change
+        if line.startswith("?? ") or line.startswith("!! "):
+            untracked.append(line[3:].strip())
+        else:
+            tracked_dirty = True
+    return {
+        "working_tree_dirty": bool(lines),
+        "tracked_working_tree_dirty": tracked_dirty,
+        "untracked_paths_present": bool(untracked),
+        "untracked_paths_count": len(untracked),
+    }
+
+
 def _node_b_image_metadata() -> tuple[str, str]:
     image_ref = os.getenv("AIOS_NODE_B_IMAGE", "gmail-agent-nodeb-api").strip() or "gmail-agent-nodeb-api"
     try:
@@ -482,13 +507,17 @@ def begin_proof_manifest() -> dict[str, Any]:
     urls = resolve_bounded_runtime_urls()
     image_id, image_created = _node_b_image_metadata()
     gate_a = _parse_gate_a_result_from_env()
+    dirtiness = _working_tree_dirtiness()
     manifest: dict[str, Any] = {
         "manifest_schema_version": "1",
         "proof_id": proof_id,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "completed_at": "",
         "git_head_sha": _run_git("rev-parse", "HEAD"),
-        "working_tree_dirty": bool(_run_git("status", "--porcelain")),
+        "working_tree_dirty": dirtiness["working_tree_dirty"],
+        "tracked_working_tree_dirty": dirtiness["tracked_working_tree_dirty"],
+        "untracked_paths_present": dirtiness["untracked_paths_present"],
+        "untracked_paths_count": dirtiness["untracked_paths_count"],
         "tracked_diff_sha256": _tracked_diff_sha256(),
         "node_b_image_id": image_id,
         "node_b_image_created_at": image_created,
