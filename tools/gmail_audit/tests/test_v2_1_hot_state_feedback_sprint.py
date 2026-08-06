@@ -112,12 +112,16 @@ class HotStateContractTests(unittest.TestCase):
                 "updated_at": "2026-04-16T10:00:00+02:00",
             }
         )
-        store.append_fact_rows(
-            [
+        # Dual live values for the same key must bypass append_facts_with_supersession
+        # (FACT-01 / 4.2 write path settles successive updates). Concurrent disagreement
+        # is seeded the same way as AI-OS 4.2 conflict fixtures: replace_message_facts.
+        store.replace_message_facts(
+            message_id="msg_city_a",
+            rows=[
                 {
                     "fact_id": "f1",
                     "case_id": "c2",
-                    "message_id": "",
+                    "message_id": "msg_city_a",
                     "document_id": "",
                     "entity_scope": "case",
                     "fact_key": "city",
@@ -130,10 +134,15 @@ class HotStateContractTests(unittest.TestCase):
                     "status": "active",
                     "metadata": {},
                 },
+            ],
+        )
+        store.replace_message_facts(
+            message_id="msg_city_b",
+            rows=[
                 {
                     "fact_id": "f2",
                     "case_id": "c2",
-                    "message_id": "",
+                    "message_id": "msg_city_b",
                     "document_id": "",
                     "entity_scope": "case",
                     "fact_key": "city",
@@ -146,7 +155,7 @@ class HotStateContractTests(unittest.TestCase):
                     "status": "active",
                     "metadata": {},
                 },
-            ]
+            ],
         )
         mgr = CaseSnapshotManager(store=store)
         sig = build_canonical_signal(

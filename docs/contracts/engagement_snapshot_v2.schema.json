@@ -1083,6 +1083,11 @@
     "operational_status": {
       "$ref": "#/$defs/OperationalStatus"
     },
+    "lifecycle_state_since": {
+      "default": "",
+      "title": "Lifecycle State Since",
+      "type": "string"
+    },
     "hvac_profile": {
       "$ref": "#/$defs/HvacProfile"
     },
