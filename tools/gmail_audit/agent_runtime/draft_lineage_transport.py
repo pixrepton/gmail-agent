@@ -134,12 +134,22 @@ def materialize_transferred_draft_action(
     transport: dict[str, Any],
     *,
     identity_state: str = "identity_incomplete",
+    case_kind: str = "",
+    snapshot: Any = None,
 ) -> dict[str, Any]:
+    """Materialize a transferred draft ActionItem.
+
+    PF-01: re-run `evaluate_draft_sanity` before `enabled=True` even when Brain1
+    gated upstream (defense in depth).
+    """
+    from agent_runtime.draft_sanity import evaluate_draft_sanity
+
     validate_upstream_draft_transport(transport)
-    return {
+    body = str(transport.get("body") or "")
+    action = {
         "id": str(transport.get("action_id") or "draft_reply"),
         "enabled": True,
-        "payload_pl": str(transport.get("body") or ""),
+        "payload_pl": body,
         "disabled_reason_pl": None,
         "draft_id": str(transport.get("draft_id") or ""),
         "revision": int(transport.get("revision") or 1),
@@ -151,6 +161,17 @@ def materialize_transferred_draft_action(
         "parent_action_proposal_v2_id": "",
         "parent_decision_candidate_id": "",
     }
+    resolved_kind = str(case_kind or transport.get("case_kind") or "")
+    sanity = evaluate_draft_sanity(
+        body=body,
+        case_kind=resolved_kind,
+        snapshot=snapshot,
+    )
+    if not sanity.get("ok"):
+        reasons = ",".join(sanity.get("reason_codes") or [])
+        action["enabled"] = False
+        action["disabled_reason_pl"] = f"DRAFT_SANITY_FAILED: {reasons}"
+    return action
 
 
 def tool_result_from_upstream_transport(transport: dict[str, Any]) -> ToolResult:
@@ -163,6 +184,22 @@ def tool_result_from_upstream_transport(transport: dict[str, Any]) -> ToolResult
         origin_producer="reply_drafter" if origin == "brain1" else "generate_draft_reply",
         origin_created_at=str(transport.get("created_at") or ""),
     )
+    action = materialize_transferred_draft_action(transport)
+    if action.get("enabled") is False:
+        reason = str(action.get("disabled_reason_pl") or "DRAFT_SANITY_FAILED")
+        return ToolResult(
+            status="error",
+            turn_summary_pl=f"Draft sanity gate zablokował przeniesiony draft: {reason}",
+            snapshot_delta={
+                "actions": [action],
+                "hitl_gate": {
+                    "required": True,
+                    "reason": f"draft_sanity_failed:{reason[:120]}",
+                },
+                "operational_status": {"code": "pending_operator", "blocking": True},
+                "draft_lineage_provenance": provenance,
+            },
+        )
     return ToolResult(
         status="ok",
         turn_summary_pl=(
@@ -171,7 +208,7 @@ def tool_result_from_upstream_transport(transport: dict[str, Any]) -> ToolResult
             else "Draft utworzony przez Brain 2 (fallback)."
         ),
         snapshot_delta={
-            "actions": [materialize_transferred_draft_action(transport)],
+            "actions": [action],
             "hitl_gate": {"required": True, "reason": "draft_ready_for_approval"},
             "operational_status": {"code": "pending_operator"},
             "draft_lineage_provenance": provenance,

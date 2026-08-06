@@ -273,6 +273,7 @@ class AgentMcpService:
                     "operator_draft_pl is empty — refusing to approve an empty draft body",
                     engagement_id=eid,
                 )
+            case_kind = str(snapshot.case_kind or "")
             updated = False
             for idx, item in enumerate(actions_payload):
                 if str(item.get("id") or "") == aid:
@@ -282,6 +283,8 @@ class AgentMcpService:
                         case_id=str(snapshot.case_id or ""),
                         source_signal_id=str(snapshot.signal_id or ""),
                         action_id=aid,
+                        case_kind=case_kind,
+                        snapshot=snapshot,
                     )
                     updated = True
                     break
@@ -292,8 +295,22 @@ class AgentMcpService:
                         draft_text=draft_text,
                         case_id=str(snapshot.case_id or ""),
                         source_signal_id=str(snapshot.signal_id or ""),
+                        case_kind=case_kind,
+                        snapshot=snapshot,
                     )
                 )
+            # PF-01 fail-closed: do not approve a customer draft that fails sanity.
+            for item in actions_payload:
+                if str(item.get("id") or "") != aid:
+                    continue
+                if item.get("enabled") is False and str(
+                    item.get("disabled_reason_pl") or ""
+                ).startswith("DRAFT_SANITY_FAILED"):
+                    return _error(
+                        str(item.get("disabled_reason_pl") or "DRAFT_SANITY_FAILED"),
+                        engagement_id=eid,
+                    )
+                break
         elif not is_clarification and action is not None and not str(action.draft_id or ""):
             # Legacy action without identity: mint once at approve-as-is so the
             # approval record still points at a durable artifact revision.
@@ -306,7 +323,19 @@ class AgentMcpService:
                         case_id=str(snapshot.case_id or ""),
                         source_signal_id=str(snapshot.signal_id or ""),
                         action_id=aid,
+                        case_kind=str(snapshot.case_kind or ""),
+                        snapshot=snapshot,
                     )
+                    if actions_payload[idx].get("enabled") is False and str(
+                        actions_payload[idx].get("disabled_reason_pl") or ""
+                    ).startswith("DRAFT_SANITY_FAILED"):
+                        return _error(
+                            str(
+                                actions_payload[idx].get("disabled_reason_pl")
+                                or "DRAFT_SANITY_FAILED"
+                            ),
+                            engagement_id=eid,
+                        )
                     break
 
         clarification_answers = [

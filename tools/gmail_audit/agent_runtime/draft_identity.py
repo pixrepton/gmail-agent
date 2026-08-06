@@ -36,6 +36,9 @@ def apply_operator_draft_edit(
     case_id: str,
     source_signal_id: str,
     action_id: str,
+    case_kind: str = "",
+    snapshot: object | None = None,
+    intent: str = "",
 ) -> dict:
     """Apply an operator body onto an ActionItem-shaped dict with honest revisioning.
 
@@ -43,7 +46,10 @@ def apply_operator_draft_edit(
     - Content change bumps `revision` and replaces `body_hash`.
     - Identical content keeps revision/hash (idempotent re-approve of the same text).
     - Never fabricates parent lineage refs; preserves whatever was already present.
+    - PF-01: re-run `evaluate_draft_sanity` before `enabled=True` (fail-closed).
     """
+    from agent_runtime.draft_sanity import evaluate_draft_sanity
+
     out = dict(item)
     old_body = str(out.get("payload_pl") or "")
     old_hash = str(out.get("body_hash") or "") or compute_body_hash(old_body)
@@ -67,6 +73,7 @@ def apply_operator_draft_edit(
         revision = max(prev_revision, 1)
     out["payload_pl"] = draft_text
     out["enabled"] = True
+    out["disabled_reason_pl"] = None
     out["draft_id"] = draft_id
     out["revision"] = revision
     out["body_hash"] = new_hash
@@ -75,6 +82,17 @@ def apply_operator_draft_edit(
         out["source_signal_id"] = resolved_signal
     if not str(out.get("identity_state") or ""):
         out["identity_state"] = "identity_incomplete"
+
+    sanity = evaluate_draft_sanity(
+        body=draft_text,
+        case_kind=str(case_kind or ""),
+        intent=str(intent or ""),
+        snapshot=snapshot,
+    )
+    if not sanity.get("ok"):
+        reasons = ",".join(sanity.get("reason_codes") or [])
+        out["enabled"] = False
+        out["disabled_reason_pl"] = f"DRAFT_SANITY_FAILED: {reasons}"
     return out
 
 
@@ -84,10 +102,18 @@ def mint_gap_only_draft_action(
     draft_text: str,
     case_id: str,
     source_signal_id: str,
+    case_kind: str = "",
+    snapshot: object | None = None,
+    intent: str = "",
 ) -> dict:
-    """Identity for a brand-new gap-only draft created at HITL approve time."""
+    """Identity for a brand-new gap-only draft created at HITL approve time.
+
+    PF-01: run `evaluate_draft_sanity` before `enabled=True` (fail-closed).
+    """
+    from agent_runtime.draft_sanity import evaluate_draft_sanity
+
     body_hash = compute_body_hash(draft_text)
-    return {
+    action = {
         "id": action_id or "draft_reply",
         "enabled": True,
         "payload_pl": draft_text,
@@ -106,3 +132,14 @@ def mint_gap_only_draft_action(
         "parent_action_proposal_v2_id": "",
         "parent_decision_candidate_id": "",
     }
+    sanity = evaluate_draft_sanity(
+        body=draft_text,
+        case_kind=str(case_kind or ""),
+        intent=str(intent or ""),
+        snapshot=snapshot,
+    )
+    if not sanity.get("ok"):
+        reasons = ",".join(sanity.get("reason_codes") or [])
+        action["enabled"] = False
+        action["disabled_reason_pl"] = f"DRAFT_SANITY_FAILED: {reasons}"
+    return action

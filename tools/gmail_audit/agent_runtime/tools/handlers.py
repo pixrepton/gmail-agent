@@ -21,6 +21,7 @@ from agent_runtime.kalk_top_client import (
 )
 from agent_runtime.tool_context import ToolExecutionContext
 from agent_runtime.tool_result import ToolCallPlan, ToolResult
+from mailbox_memory.active_facts import fetch_current_facts_for_case
 
 _AREA_RE = re.compile(r"(\d{2,4})\s*m\s*[²2]", re.IGNORECASE)
 _CITY_HINT_RE = re.compile(r"\b(Radlin|Rybnik|Katowice|Gliwice)\b", re.IGNORECASE)
@@ -359,12 +360,10 @@ def _own_nip() -> str:
 
 def _fetch_invoice_fields(store: Any, case_id: str) -> dict[str, str]:
     """seller_nip / buyer_nip z faktów dokumentowych (promowanych przez document_field_extractor)."""
-    fetch = getattr(store, "fetch_facts_for_case", None)
-    if not callable(fetch):
-        return {}
     out: dict[str, str] = {}
     try:
-        for row in fetch(case_id) or []:
+        # 4.2b: superseded NIP must not decide invoice direction.
+        for row in fetch_current_facts_for_case(store, case_id):
             if not isinstance(row, dict):
                 continue
             key = str(row.get("fact_key") or "")
@@ -674,8 +673,10 @@ def check_cp2025_eligibility_tool(_plan: ToolCallPlan, ctx: ToolExecutionContext
 
 
 def call_kalk_top_quote(_plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolResult:
+    from agent_runtime.draft_sanity import evaluate_draft_sanity
     from agent_runtime.failure_taxonomy import (
         attach_attribution,
+        attribution,
         classify_tool_handler_error,
     )
 
@@ -711,6 +712,56 @@ def call_kalk_top_quote(_plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolR
     totals_obj = pricing.get("totals") if isinstance(pricing.get("totals"), dict) else {}
     if totals_obj:
         totals = json.dumps(totals_obj, ensure_ascii=False)[:400]
+    body = f"Oferta (skrót): {totals or 'zobacz kalk-top'}"
+
+    envelope = getattr(ctx.snapshot, "policy_action_envelope", None)
+    policy_allows = None
+    if envelope is not None and getattr(envelope, "freshness", "") == "current":
+        policy_allows = bool(getattr(envelope, "allowed_by_policy", True))
+
+    sanity = evaluate_draft_sanity(
+        body=body,
+        case_kind=str(ctx.snapshot.case_kind or ""),
+        intent="quote",
+        snapshot=ctx.snapshot,
+        policy_allows_draft=policy_allows,
+    )
+    if not sanity.get("ok"):
+        reasons = ",".join(sanity.get("reason_codes") or [])
+        return attach_attribution(
+            ToolResult(
+                status="error",
+                turn_summary_pl=(
+                    "Draft sanity gate zablokował treść oferty skierowaną do klienta: "
+                    + reasons
+                ),
+                snapshot_delta={
+                    "operational_status": {"code": "pending_operator", "blocking": True},
+                    "hitl_gate": {
+                        "required": True,
+                        "reason": "draft_sanity_failed:" + reasons[:120],
+                    },
+                    "actions": [
+                        {
+                            "id": "draft_reply",
+                            "enabled": False,
+                            "payload_pl": body,
+                            "disabled_reason_pl": f"DRAFT_SANITY_FAILED: {reasons}",
+                            "identity_state": "identity_incomplete",
+                        }
+                    ],
+                },
+            ),
+            attribution(
+                failure_class="DRAFT_SANITY_FAILED",
+                owner="quality",
+                stage="draft_sanity_gate",
+                retryable=True,
+                safe_next_step="request_operator_clarification",
+                detail=reasons,
+            ),
+        )
+
     return ToolResult(
         status="ok",
         turn_summary_pl="Wycena z kalk-top pobrana.",
@@ -720,7 +771,7 @@ def call_kalk_top_quote(_plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolR
                 {
                     "id": "draft_reply",
                     "enabled": True,
-                    "payload_pl": f"Oferta (skrót): {totals or 'zobacz kalk-top'}",
+                    "payload_pl": body,
                     "disabled_reason_pl": None,
                 }
             ],
