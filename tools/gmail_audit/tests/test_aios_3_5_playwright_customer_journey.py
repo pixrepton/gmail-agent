@@ -24,6 +24,7 @@ from aios_bounded_runtime_support import (  # noqa: E402
     playwright_login_daszek,
     record_journey_result,
     require_bounded_runtime,
+    traced_journey_page,
     wait_for_ready_for_manual_send,
 )
 from aios_canonical_runtime_ingress import (  # noqa: E402
@@ -58,35 +59,35 @@ def test_playwright_customer_email_journey_approval_bounded() -> None:
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
-        page = browser.new_page()
         try:
-            playwright_login_daszek(page, login=login, password=password, daszek_base=urls.daszek_base)
-            playwright_approve_hitl_without_send(
-                page,
-                engagement_id=ingress.engagement_id,
-                case_id=ingress.case_id,
-                draft_hint=ingress.draft_body,
-            )
+            with traced_journey_page(browser, journey_key="3.5") as page:
+                playwright_login_daszek(page, login=login, password=password, daszek_base=urls.daszek_base)
+                playwright_approve_hitl_without_send(
+                    page,
+                    engagement_id=ingress.engagement_id,
+                    case_id=ingress.case_id,
+                    draft_hint=ingress.draft_body,
+                )
 
-            final = wait_for_ready_for_manual_send(ingress.store, ingress.engagement_id)
-            assert final.communication_receipt.state == "ready_for_manual_send"
-            assert final.communication_receipt.gmail_message_id == ""
-            assert final.hitl_gate.required is False
+                final = wait_for_ready_for_manual_send(ingress.store, ingress.engagement_id)
+                assert final.communication_receipt.state == "ready_for_manual_send"
+                assert final.communication_receipt.gmail_message_id == ""
+                assert final.hitl_gate.required is False
 
-            manifest = get_active_manifest()
-            payload = ingress.manifest_payload()
-            payload.update(
-                {
-                    "status": "PASS",
-                    "correlation_id": ingress.message_id,
-                    "approval_receipt_id": ingress.draft_id,
-                    "communication_sent_count": 0,
-                    "feed_push_ok": bool(push.get("ok")),
-                }
-            )
-            record_journey_result(manifest, "3.5", payload)
-            manifest["live_send_invocations"] = 0
-            manifest["seed_method"] = ingress.seed_method
-            manifest["direct_database_seed_used"] = False
+                manifest = get_active_manifest()
+                payload = ingress.manifest_payload()
+                payload.update(
+                    {
+                        "status": "PASS",
+                        "correlation_id": ingress.message_id,
+                        "approval_receipt_id": ingress.draft_id,
+                        "communication_sent_count": 0,
+                        "feed_push_ok": bool(push.get("ok")),
+                    }
+                )
+                record_journey_result(manifest, "3.5", payload)
+                manifest["live_send_invocations"] = 0
+                manifest["seed_method"] = ingress.seed_method
+                manifest["direct_database_seed_used"] = False
         finally:
             browser.close()

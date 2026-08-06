@@ -31,6 +31,7 @@ from aios_bounded_runtime_support import (  # noqa: E402
     playwright_login_daszek,
     record_journey_result,
     require_bounded_runtime,
+    traced_journey_page,
     wait_for_ready_for_manual_send,
 )
 from aios_canonical_runtime_ingress import (  # noqa: E402
@@ -134,42 +135,42 @@ def test_playwright_complaint_journey_with_noise_control_bounded() -> None:
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
-        page = browser.new_page()
         try:
-            playwright_login_daszek(page, login=login, password=password, daszek_base=urls.daszek_base)
-            playwright_approve_hitl_without_send(
-                page,
-                engagement_id=complaint.engagement_id,
-                case_id=complaint.case_id,
-                draft_hint=complaint.draft_body,
-            )
+            with traced_journey_page(browser, journey_key="3.6_complaint") as page:
+                playwright_login_daszek(page, login=login, password=password, daszek_base=urls.daszek_base)
+                playwright_approve_hitl_without_send(
+                    page,
+                    engagement_id=complaint.engagement_id,
+                    case_id=complaint.case_id,
+                    draft_hint=complaint.draft_body,
+                )
 
-            final = wait_for_ready_for_manual_send(complaint.store, complaint.engagement_id)
-            assert final.communication_receipt.state == "ready_for_manual_send"
-            assert final.hitl_gate.required is False
+                final = wait_for_ready_for_manual_send(complaint.store, complaint.engagement_id)
+                assert final.communication_receipt.state == "ready_for_manual_send"
+                assert final.hitl_gate.required is False
 
-            manifest = get_active_manifest()
-            record_journey_result(
-                manifest,
-                "3.6_complaint",
-                {
-                    **complaint.manifest_payload(),
-                    "status": "PASS",
-                    "correlation_id": complaint.message_id,
-                },
-            )
-            record_journey_result(
-                manifest,
-                "3.6_noise_control",
-                {
-                    **noise,
-                    "status": "PASS",
-                    "correlation_id": noise["message_id"],
-                    "visible_on_x1": False,
-                },
-            )
-            manifest["live_send_invocations"] = 0
-            manifest["seed_method"] = "canonical_runtime_ingress"
-            manifest["direct_database_seed_used"] = False
+                manifest = get_active_manifest()
+                record_journey_result(
+                    manifest,
+                    "3.6_complaint",
+                    {
+                        **complaint.manifest_payload(),
+                        "status": "PASS",
+                        "correlation_id": complaint.message_id,
+                    },
+                )
+                record_journey_result(
+                    manifest,
+                    "3.6_noise_control",
+                    {
+                        **noise,
+                        "status": "PASS",
+                        "correlation_id": noise["message_id"],
+                        "visible_on_x1": False,
+                    },
+                )
+                manifest["live_send_invocations"] = 0
+                manifest["seed_method"] = "canonical_runtime_ingress"
+                manifest["direct_database_seed_used"] = False
         finally:
             browser.close()

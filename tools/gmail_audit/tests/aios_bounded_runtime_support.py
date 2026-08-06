@@ -6,20 +6,32 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import pytest
 import requests
 
 TOOL_DIR = Path(__file__).resolve().parent.parent
 GMAIL_AGENT_REPO_ROOT = TOOL_DIR.parent.parent
+WORKSPACE_ROOT = GMAIL_AGENT_REPO_ROOT.parent
 PLAYWRIGHT_ENV_PATH = TOOL_DIR / ".env.playwright.local"
 DEFAULT_NODE_B_URL = "http://127.0.0.1:8766"
 DEFAULT_DASZEK_URL = "http://127.0.0.1:8090/daszek/"
+DEFAULT_TRACKED_SUMMARY_PATH = WORKSPACE_ROOT / "knowledge" / "eval" / "PHASE3_RUNTIME_PROOF_SUMMARY.json"
+PROOF_SUMMARY_SCHEMA_VERSION = "phase3-runtime-proof-summary.v1"
+_BROWSER_JOURNEY_KEYS = frozenset({"3.5", "3.6_complaint", "x1_01"})
+_DIRTINESS_FIELDS = (
+    "working_tree_dirty",
+    "tracked_working_tree_dirty",
+    "untracked_paths_present",
+    "untracked_paths_count",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,6 +316,121 @@ def playwright_open_case_detail(page: Any, *, case_id: str) -> None:
     raise TimeoutError(f"Daszek card for case_id={case_id} not found on desk/cases after feed push")
 
 
+def playwright_apply_feed_visibility_override(
+    page: Any,
+    *,
+    engagement_id: str,
+    case_id: str,
+    mode: str,
+    reason: str = "x1-01-playwright",
+) -> dict[str, Any]:
+    """Daszek UI: reclassify card → POST feed-visibility/override → receipt.
+
+    Returns the Node B / proxy JSON body (requested vs effective fields).
+    Server-side CAS uses the current snapshot version when the UI omits
+    ``expected_version`` (proxy still forwards it when present).
+    """
+    from playwright.sync_api import expect
+
+    target_mode = str(mode or "").strip()
+    if target_mode not in {"hidden", "case_timeline_only", "main_feed"}:
+        raise ValueError(f"unsupported override mode: {target_mode!r}")
+
+    playwright_open_case_detail(page, case_id=case_id)
+    panel = page.locator("#detail-panel")
+    apply_btn = panel.locator(f'[data-feed-visibility-apply="{engagement_id}"]')
+    expect(apply_btn).to_be_visible(timeout=30_000)
+    expect(panel.locator("[data-feed-visibility-mode]")).to_be_visible(timeout=15_000)
+    apply_btn.scroll_into_view_if_needed()
+    playwright_dismiss_onboarding(page)
+    page.locator("#global-error").evaluate(
+        "el => { el.style.display = 'none'; el.textContent = ''; }"
+    )
+
+    with page.expect_response(
+        lambda response: (
+            "/feed-visibility/override" in response.url
+            and response.request.method == "POST"
+        ),
+        timeout=60_000,
+    ) as response_info:
+        # Atomic set+click in one evaluate: avoids stale/duplicate selects and
+        # mid-flight detail re-renders clearing the mode before submit.
+        page.evaluate(
+            """([eng, mode, reasonText]) => {
+                const btn = document.querySelector('[data-feed-visibility-apply=\"' + eng + '\"]');
+                if (!btn) throw new Error('apply button missing for ' + eng);
+                // app.js submit reads document.querySelector (first match) — set all.
+                document.querySelectorAll('[data-feed-visibility-mode]').forEach((modeEl) => {
+                    modeEl.value = mode;
+                    modeEl.dispatchEvent(new Event('change', { bubbles: true }));
+                });
+                document.querySelectorAll('[data-feed-visibility-reason]').forEach((reasonEl) => {
+                    if (reasonText) {
+                        reasonEl.value = String(reasonText).slice(0, 80);
+                        reasonEl.dispatchEvent(new Event('input', { bubbles: true }));
+                    }
+                });
+                const modeEl = document.querySelector('[data-feed-visibility-mode]');
+                if (!modeEl || modeEl.value !== mode) {
+                    throw new Error('mode select rejected value ' + mode);
+                }
+                btn.click();
+            }""",
+            [engagement_id, target_mode, str(reason or "").strip()],
+        )
+    response = response_info.value
+    # Client-only validation shows global-error without a fetch; after a response exists,
+    # prefer HTTP body over the toast (toast text is often generic WP proxy wording).
+    if response.status >= 400:
+        body = ""
+        try:
+            body = response.text()[:800]
+        except Exception:
+            body = "<unreadable>"
+        ui_err = ""
+        err = page.locator("#global-error")
+        if err.count() > 0 and err.first.is_visible():
+            ui_err = (err.first.inner_text() or "").strip()
+        raise AssertionError(
+            f"feed-visibility override HTTP {response.status}: {body}"
+            + (f" | ui={ui_err}" if ui_err else "")
+        )
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise AssertionError(f"feed-visibility override returned non-JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise AssertionError(f"feed-visibility override payload must be object, got {type(payload)!r}")
+    if payload.get("ok") is False:
+        raise AssertionError(f"feed-visibility override rejected: {payload}")
+
+    requested = payload.get("requested_override_mode")
+    effective = payload.get("effective_feed_visibility_mode")
+    if requested != target_mode:
+        raise AssertionError(
+            f"requested_override_mode mismatch: expected {target_mode!r}, got {requested!r}"
+        )
+    if not effective:
+        raise AssertionError(f"missing effective_feed_visibility_mode in receipt: {payload}")
+    # Compatibility alias must track effective, not requested.
+    alias = payload.get("feed_visibility_mode")
+    if alias is not None and alias != effective:
+        raise AssertionError(
+            f"feed_visibility_mode alias must equal effective ({effective!r}), got {alias!r}"
+        )
+
+    # Projection refresh: UI reloads detail and shows effective desk mode.
+    expect(panel).to_contain_text("Efektywny widok na biurku", timeout=30_000)
+    expect(panel).to_contain_text(str(effective), timeout=30_000)
+    error = page.locator("#global-error, #error-banner, .toast-error, [data-error]")
+    if error.count() > 0 and error.first.is_visible():
+        text = (error.first.inner_text() or "").strip()
+        if text:
+            raise AssertionError(f"Daszek showed error after feed-visibility override: {text}")
+    return payload
+
+
 def playwright_approve_hitl_without_send(
     page: Any,
     *,
@@ -552,20 +679,227 @@ def record_journey_result(manifest: dict[str, Any], journey_key: str, payload: d
     journeys[journey_key] = payload
 
 
+def record_browser_artifacts(
+    manifest: dict[str, Any],
+    *,
+    trace_path: Path | str | None = None,
+    screenshot_path: Path | str | None = None,
+) -> None:
+    """Append browser artifact paths onto the proof manifest (PH3-06)."""
+    if trace_path:
+        traces = manifest.setdefault("trace_paths", [])
+        if not isinstance(traces, list):
+            traces = []
+            manifest["trace_paths"] = traces
+        traces.append(str(trace_path))
+    if screenshot_path:
+        shots = manifest.setdefault("screenshot_paths", [])
+        if not isinstance(shots, list):
+            shots = []
+            manifest["screenshot_paths"] = shots
+        shots.append(str(screenshot_path))
+
+
+def _browser_artifacts_dir(manifest: dict[str, Any], journey_key: str) -> Path:
+    proof_id = str(manifest.get("proof_id") or "adhoc").strip() or "adhoc"
+    safe_key = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in journey_key) or "journey"
+    out = proof_artifacts_root() / "_browser" / proof_id / safe_key
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+@contextmanager
+def traced_journey_page(
+    browser: Any,
+    *,
+    journey_key: str,
+    manifest: dict[str, Any] | None = None,
+) -> Iterator[Any]:
+    """Open a Playwright page with tracing + end-of-journey screenshot (PH3-06)."""
+    active = manifest if manifest is not None else get_active_manifest()
+    art_dir = _browser_artifacts_dir(active, journey_key)
+    trace_path = art_dir / "trace.zip"
+    screenshot_path = art_dir / "screenshot.png"
+    context = browser.new_context()
+    context.tracing.start(screenshots=True, snapshots=True, sources=False)
+    page = context.new_page()
+    shot_path: Path | None = screenshot_path
+    trace_file: Path | None = trace_path
+    try:
+        yield page
+    finally:
+        try:
+            page.screenshot(path=str(screenshot_path), full_page=True)
+        except Exception:
+            shot_path = None
+        try:
+            context.tracing.stop(path=str(trace_path))
+        except Exception:
+            trace_file = None
+        try:
+            context.close()
+        except Exception:
+            pass
+        record_browser_artifacts(
+            active,
+            trace_path=trace_file if trace_file is not None and trace_file.is_file() else None,
+            screenshot_path=shot_path if shot_path is not None and shot_path.is_file() else None,
+        )
+
+
+def _default_test_command() -> str:
+    env_cmd = os.getenv("AIOS_PHASE3_TEST_COMMAND", "").strip()
+    if env_cmd:
+        return env_cmd
+    argv = [str(part) for part in sys.argv if str(part).strip()]
+    if argv:
+        return " ".join(argv)
+    return "python -m pytest tools/gmail_audit/tests -q"
+
+
+def _ensure_dirtiness_fields(manifest: dict[str, Any]) -> None:
+    missing = [field for field in _DIRTINESS_FIELDS if field not in manifest]
+    if not missing:
+        return
+    dirtiness = _working_tree_dirtiness()
+    for field in missing:
+        manifest[field] = dirtiness[field]
+
+
+def _has_browser_journeys(manifest: dict[str, Any]) -> bool:
+    journeys = manifest.get("journeys")
+    if not isinstance(journeys, dict):
+        return False
+    return bool(_BROWSER_JOURNEY_KEYS.intersection(journeys.keys()))
+
+
+def _validate_runtime_proof_manifest(manifest: dict[str, Any]) -> None:
+    """GOV-08: when runtime proof is required, refuse incomplete manifests."""
+    test_command = str(manifest.get("test_command") or "").strip()
+    if not test_command:
+        raise AssertionError("GOV-08: test_command must be non-empty when AIOS_RUNTIME_PROOF_REQUIRED=1")
+    missing = [field for field in _DIRTINESS_FIELDS if field not in manifest]
+    if missing:
+        raise AssertionError(f"GOV-08: missing dirtiness fields: {', '.join(missing)}")
+    if _has_browser_journeys(manifest):
+        traces = manifest.get("trace_paths")
+        shots = manifest.get("screenshot_paths")
+        if not isinstance(traces, list) or not traces:
+            raise AssertionError("GOV-08/PH3-06: browser journeys require non-empty trace_paths")
+        if not isinstance(shots, list) or not shots:
+            raise AssertionError("GOV-08/PH3-06: browser journeys require non-empty screenshot_paths")
+
+
+def tracked_proof_summary_path() -> Path:
+    custom = os.getenv("AIOS_PHASE3_SUMMARY_TRACKED_PATH", "").strip()
+    if custom:
+        return Path(custom)
+    return DEFAULT_TRACKED_SUMMARY_PATH
+
+
+def build_proof_manifest_summary(
+    manifest: dict[str, Any],
+    *,
+    full_manifest_path: Path | None = None,
+    full_manifest_sha256: str = "",
+) -> dict[str, Any]:
+    """Non-secret summary for GOV-07 (no passwords/tokens/cookies/PII bodies)."""
+    journeys = manifest.get("journeys") if isinstance(manifest.get("journeys"), dict) else {}
+    journey_verdicts: dict[str, str] = {}
+    for key, payload in journeys.items():
+        if isinstance(payload, dict):
+            journey_verdicts[str(key)] = str(payload.get("status") or "UNKNOWN")
+        else:
+            journey_verdicts[str(key)] = "UNKNOWN"
+    traces = manifest.get("trace_paths") if isinstance(manifest.get("trace_paths"), list) else []
+    shots = manifest.get("screenshot_paths") if isinstance(manifest.get("screenshot_paths"), list) else []
+    pytest_result = manifest.get("pytest_result") if isinstance(manifest.get("pytest_result"), dict) else {}
+    failed = int(pytest_result.get("failed", 0) or 0) if pytest_result else 0
+    if failed > 0:
+        status = "FAIL"
+    elif journey_verdicts and all(v == "PASS" for v in journey_verdicts.values()):
+        status = "PASS"
+    elif journey_verdicts:
+        status = "PARTIAL"
+    else:
+        status = "NO_JOURNEYS"
+    summary: dict[str, Any] = {
+        "manifest_version": PROOF_SUMMARY_SCHEMA_VERSION,
+        "status": status,
+        "proof_id": manifest.get("proof_id", ""),
+        "completed_at": manifest.get("completed_at", ""),
+        "git_head_sha": manifest.get("git_head_sha", ""),
+        "test_command": manifest.get("test_command", ""),
+        "full_manifest_sha256": full_manifest_sha256,
+        "journey_verdicts": journey_verdicts,
+        "counts": {
+            "journeys": len(journey_verdicts),
+            "trace_paths": len(traces),
+            "screenshot_paths": len(shots),
+            "live_send_invocations": int(manifest.get("live_send_invocations", 0) or 0),
+        },
+        "working_tree_dirty": bool(manifest.get("working_tree_dirty", False)),
+        "tracked_working_tree_dirty": bool(manifest.get("tracked_working_tree_dirty", False)),
+        "untracked_paths_present": bool(manifest.get("untracked_paths_present", False)),
+        "pytest_result": pytest_result or {"passed": 0, "skipped": 0, "failed": 0},
+    }
+    if full_manifest_path is not None:
+        summary["full_manifest_path"] = str(full_manifest_path)
+    gate_a = manifest.get("gate_a_result")
+    if isinstance(gate_a, dict):
+        summary["gate_a_result"] = gate_a
+    return summary
+
+
+def write_proof_manifest_summary(
+    summary: dict[str, Any],
+    *,
+    artifact_path: Path,
+    write_tracked: bool = False,
+) -> tuple[Path, Path | None]:
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(summary, indent=2, ensure_ascii=False) + "\n"
+    artifact_path.write_text(payload, encoding="utf-8")
+    tracked_path: Path | None = None
+    if write_tracked:
+        tracked_path = tracked_proof_summary_path()
+        tracked_path.parent.mkdir(parents=True, exist_ok=True)
+        tracked_path.write_text(payload, encoding="utf-8")
+        os.environ["AIOS_PHASE3_PROOF_SUMMARY_PATH"] = str(tracked_path)
+    return artifact_path, tracked_path
+
+
 def finalize_proof_manifest(manifest: dict[str, Any]) -> Path:
     manifest["completed_at"] = datetime.now(timezone.utc).isoformat()
+    if not str(manifest.get("test_command") or "").strip():
+        manifest["test_command"] = _default_test_command()
+    _ensure_dirtiness_fields(manifest)
     if "pytest_result" not in manifest:
         manifest["pytest_result"] = {"passed": 0, "skipped": 0, "failed": 0}
     if "gate_a_result" not in manifest:
         gate_a = _parse_gate_a_result_from_env()
         if gate_a is not None:
             manifest["gate_a_result"] = gate_a
+    if runtime_proof_required():
+        _validate_runtime_proof_manifest(manifest)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_dir = proof_artifacts_root() / stamp
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "proof-manifest.json"
-    out_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    raw = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+    out_path.write_text(raw, encoding="utf-8")
     os.environ["AIOS_PHASE3_PROOF_MANIFEST_PATH"] = str(out_path)
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    summary = build_proof_manifest_summary(
+        manifest,
+        full_manifest_path=out_path,
+        full_manifest_sha256=digest,
+    )
+    write_proof_manifest_summary(
+        summary,
+        artifact_path=out_dir / "proof-manifest.summary.json",
+        write_tracked=runtime_proof_required(),
+    )
     return out_path
 
 
@@ -573,10 +907,13 @@ __all__ = [
     "BoundedRuntimeUrls",
     "DEFAULT_DASZEK_URL",
     "DEFAULT_NODE_B_URL",
+    "DEFAULT_TRACKED_SUMMARY_PATH",
     "PLAYWRIGHT_ENV_PATH",
+    "PROOF_SUMMARY_SCHEMA_VERSION",
     "finalize_proof_manifest",
     "begin_proof_manifest",
     "bounded_runtime_preflight",
+    "build_proof_manifest_summary",
     "daszek_app_url",
     "enforce_runtime_dependency",
     "get_active_manifest",
@@ -586,9 +923,11 @@ __all__ = [
     "playwright_dismiss_onboarding",
     "playwright_login_daszek",
     "playwright_open_case_detail",
+    "playwright_apply_feed_visibility_override",
     "playwright_approve_hitl_without_send",
     "wait_for_ready_for_manual_send",
     "proof_artifacts_root",
+    "record_browser_artifacts",
     "record_journey_result",
     "record_gate_a_result",
     "record_pytest_session_result",
@@ -596,4 +935,7 @@ __all__ = [
     "resolve_bounded_runtime_urls",
     "runtime_health",
     "runtime_proof_required",
+    "traced_journey_page",
+    "tracked_proof_summary_path",
+    "write_proof_manifest_summary",
 ]
