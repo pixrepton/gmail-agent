@@ -692,6 +692,9 @@ def assemble_mailbox_pack_dict(store: MailboxMemoryStoreLike, case_id: str) -> d
 
     facts = store.fetch_facts_for_case(case_id)
     active_facts, conflicting_mailbox = split_conflicting_facts(facts)
+    from document_intelligence_runtime import superseded_facts_audit
+
+    superseded_mailbox = superseded_facts_audit(facts)
 
     enrichment = collect_drive_case_enrichment(store=store, case_id=case_id, query_text="", graph_store=None)
     drive_facts = list(enrichment.get("drive_facts") or [])
@@ -817,6 +820,8 @@ def assemble_mailbox_pack_dict(store: MailboxMemoryStoreLike, case_id: str) -> d
         "recent_events": sanitized_events,
         "active_facts": active_facts + drive_active,
         "conflicting_facts": conflicting_mailbox + conflicting_drive,
+        # 4.2: read-only superseded audit trail (projection only; mailbox store remains SoT).
+        "superseded_facts": superseded_mailbox,
         "latest_documents": stripped_docs,
         "drive_documents_summary": list(enrichment.get("drive_documents") or []),
         "completeness_gaps": list(enrichment.get("completeness_gaps") or []),

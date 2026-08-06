@@ -304,6 +304,95 @@ def document_fields_to_fact_rows(result: dict[str, Any], *, min_confidence: floa
     return rows
 
 
+def superseded_facts_audit(facts: list[dict[str, Any]], *, limit: int = 24) -> list[dict[str, Any]]:
+    """Read-only operator audit trail for superseded mailbox facts (not a second SoT)."""
+    rows = [dict(item) for item in facts if isinstance(item, dict) and str(item.get("status") or "") == "superseded"]
+    rows.sort(key=lambda item: str(item.get("observed_at") or ""), reverse=True)
+    out: list[dict[str, Any]] = []
+    for item in rows[: max(0, int(limit))]:
+        meta = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        out.append(
+            {
+                "fact_id": str(item.get("fact_id") or ""),
+                "case_id": str(item.get("case_id") or ""),
+                "document_id": str(item.get("document_id") or ""),
+                "entity_scope": str(item.get("entity_scope") or ""),
+                "fact_key": str(item.get("fact_key") or ""),
+                "normalized_value": str(item.get("normalized_value") or ""),
+                "raw_value": str(item.get("raw_value") or ""),
+                "observed_at": str(item.get("observed_at") or ""),
+                "source_type": str(item.get("source_type") or ""),
+                "source_ref": str(item.get("source_ref") or ""),
+                "status": "superseded",
+                "metadata": {
+                    "evidence_ref": meta.get("evidence_ref") if isinstance(meta.get("evidence_ref"), dict) else {},
+                    "superseded_at": meta.get("superseded_at"),
+                    "superseded_by_fact_id": meta.get("superseded_by_fact_id"),
+                },
+            }
+        )
+    return out
+
+
+def promote_document_fact_rows(store: Any, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Persist document-derived fact rows via supersession API; return write stats + projection."""
+    empty = {
+        "rows": [],
+        "write_stats": {"inserted": 0, "superseded": 0, "unchanged": 0},
+        "active_facts": [],
+        "conflicting_facts": [],
+        "superseded_facts": [],
+    }
+    prepared = [dict(item) for item in rows if isinstance(item, dict)]
+    if not prepared:
+        return empty
+
+    write_stats = {"inserted": 0, "superseded": 0, "unchanged": 0}
+    append_super = getattr(store, "append_facts_with_supersession", None)
+    if callable(append_super):
+        raw_stats = append_super(prepared) or {}
+        write_stats = {
+            "inserted": int(raw_stats.get("inserted") or 0),
+            "superseded": int(raw_stats.get("superseded") or 0),
+            "unchanged": int(raw_stats.get("unchanged") or 0),
+        }
+    elif hasattr(store, "append_fact_rows"):
+        store.append_fact_rows(prepared)
+        write_stats = {"inserted": len(prepared), "superseded": 0, "unchanged": 0}
+    else:
+        raise AttributeError("store lacks append_facts_with_supersession / append_fact_rows")
+
+    case_ids = {str(item.get("case_id") or "").strip() for item in prepared if str(item.get("case_id") or "").strip()}
+    case_id = next(iter(sorted(case_ids)), "")
+    all_facts: list[dict[str, Any]] = []
+    if case_id and hasattr(store, "fetch_facts_for_case"):
+        all_facts = list(store.fetch_facts_for_case(case_id) or [])
+
+    # Lazy import avoids circular import with mailbox_memory_runtime consumers.
+    from mailbox_memory_runtime import split_conflicting_facts
+
+    active_facts, conflicting_facts = split_conflicting_facts(all_facts)
+    return {
+        "rows": prepared,
+        "write_stats": write_stats,
+        "active_facts": active_facts,
+        "conflicting_facts": conflicting_facts,
+        "superseded_facts": superseded_facts_audit(all_facts),
+    }
+
+
+def promote_document_intelligence_facts(
+    store: Any,
+    result: dict[str, Any],
+    *,
+    min_confidence: float = 0.78,
+    fact_rows: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Extract (or accept) document fact rows and append them via supersession."""
+    rows = list(fact_rows) if fact_rows is not None else document_fields_to_fact_rows(result, min_confidence=min_confidence)
+    return promote_document_fact_rows(store, rows)
+
+
 def _evidence_source_ref(evidence_ref: dict[str, Any]) -> str:
     parts = [
         str(evidence_ref.get("source_id") or ""),
@@ -350,5 +439,8 @@ __all__ = [
     "detect_document_conflicts",
     "document_fields_to_fact_rows",
     "extract_fields_for_type",
+    "promote_document_fact_rows",
+    "promote_document_intelligence_facts",
     "stable_document_id",
+    "superseded_facts_audit",
 ]
