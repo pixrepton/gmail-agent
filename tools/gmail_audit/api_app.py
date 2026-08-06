@@ -73,7 +73,8 @@ def _positive_int(value: Any, default: int) -> int:
 
 #: projection keys that honestly answer "since when is this case in its CURRENT lifecycle state".
 #: `latest_signal_at` / `updated_at` are absent on purpose: the first measures mail traffic and the
-#: second is regenerated on every projection build, so neither measures time-in-state.
+#: second is regenerated on every projection/store write. FG-02: engagement store stamps
+#: `lifecycle_state_since` into snapshot payload only when `operational_status.code` changes.
 _LIFECYCLE_STATE_SINCE_KEYS = (
     "lifecycle_state_since",
     "lifecycle_state_updated_at",

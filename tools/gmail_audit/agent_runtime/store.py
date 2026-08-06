@@ -75,11 +75,9 @@ class OperatorEngagementStore(ABC):
         """Roadmap 3.1 (Follow-up Guardian): snapshots paired with their row `updated_at`.
 
         `updated_at` is not a field on `EngagementSnapshotV2` itself (see `_snapshot_from_row`);
-        it lives only on the storage row. The guardian needs it as the honest proxy for "how long
-        has this case sat with no new signal in its current `operational_status.code`" -- no other
-        `hours_in_state` source exists anywhere in this repo (confirmed: `lifecycle_state_since` /
-        `lifecycle_state_updated_at` are read by `api_app._hours_in_lifecycle_state` but never
-        written). Default empty; overridden by each concrete store.
+        it lives only on the storage row. FG-02: prefer snapshot `lifecycle_state_since` for
+        hours-in-state; fall back to this row `updated_at` only when since is missing (legacy).
+        Default empty; overridden by each concrete store.
         """
         _ = limit
         return []
@@ -225,8 +223,13 @@ class InMemoryOperatorEngagementStore(OperatorEngagementStore):
             reverse=True,
         )
         out: list[tuple[EngagementSnapshotV2, str]] = []
-        for row in rows[: max(1, int(limit))]:
+        for row in rows:
+            status = str(row.get("status") or "active").strip().lower()
+            if status in {"expired", "materialized"}:
+                continue
             out.append((_snapshot_from_row(row), str(row.get("updated_at") or "")))
+            if len(out) >= max(1, int(limit)):
+                break
         return out
 
     def list_staging_engagement_ids(self) -> list[str]:
@@ -263,8 +266,10 @@ class InMemoryOperatorEngagementStore(OperatorEngagementStore):
                 f"version conflict for {engagement_id!r}: "
                 f"expected={expected_version}, actual={current_version}"
             )
+        previous_payload = _row_snapshot_payload(row)
+        stamped = _apply_lifecycle_state_since(snapshot, previous_payload=previous_payload)
         new_version = int(expected_version) + 1
-        updated = snapshot.model_copy(update={"version": new_version})
+        updated = stamped.model_copy(update={"version": new_version})
         EngagementSnapshotV2.model_validate(updated.model_dump(mode="python"))
         row["version"] = new_version
         row["case_id"] = updated.case_id
@@ -281,15 +286,16 @@ class InMemoryOperatorEngagementStore(OperatorEngagementStore):
             raise AgentConcurrencyError(f"snapshot already exists for {eid!r}")
         if int(snapshot.version) != 1:
             raise ValueError("insert_snapshot requires version=1")
+        stamped = _apply_lifecycle_state_since(snapshot, previous_payload=None)
         self._rows[eid] = {
             "engagement_id": eid,
-            "case_id": snapshot.case_id,
+            "case_id": stamped.case_id,
             "version": 1,
-            "last_trace_id": snapshot.trace_id,
-            "snapshot_data": snapshot.model_dump(mode="python"),
+            "last_trace_id": stamped.trace_id,
+            "snapshot_data": stamped.model_dump(mode="python"),
             "updated_at": _utc_now_iso(),
         }
-        return snapshot
+        return stamped
 
     def init_snapshot_from_signal(
         self,
@@ -366,15 +372,29 @@ class PostgresOperatorEngagementStore(OperatorEngagementStore):
     def list_recent_snapshots_with_updated_at(
         self, *, limit: int = 50
     ) -> list[tuple[EngagementSnapshotV2, str]]:
-        rows = self._fetch_all(
-            """
-            SELECT engagement_id, case_id, version, snapshot_data, last_trace_id, updated_at
-            FROM operator_engagement_snapshots
-            ORDER BY updated_at DESC
-            LIMIT %(limit)s
-            """,
-            {"limit": max(1, int(limit))},
-        )
+        # Prefer active rows only when `status` exists (AGENT_RUNTIME_SCHEMA); fall back
+        # if older DBs lack the column — soft_delete already handles that path.
+        try:
+            rows = self._fetch_all(
+                """
+                SELECT engagement_id, case_id, version, snapshot_data, last_trace_id, updated_at
+                FROM operator_engagement_snapshots
+                WHERE COALESCE(status, 'active') NOT IN ('expired', 'materialized')
+                ORDER BY updated_at DESC
+                LIMIT %(limit)s
+                """,
+                {"limit": max(1, int(limit))},
+            )
+        except Exception:
+            rows = self._fetch_all(
+                """
+                SELECT engagement_id, case_id, version, snapshot_data, last_trace_id, updated_at
+                FROM operator_engagement_snapshots
+                ORDER BY updated_at DESC
+                LIMIT %(limit)s
+                """,
+                {"limit": max(1, int(limit))},
+            )
         return [
             (_snapshot_from_row(row), str(row.get("updated_at") or ""))
             for row in rows
@@ -425,26 +445,23 @@ class PostgresOperatorEngagementStore(OperatorEngagementStore):
         if not engagement_id:
             raise ValueError("engagement_id is required")
         new_version = int(expected_version) + 1
-        updated = snapshot.model_copy(update={"version": new_version})
-        EngagementSnapshotV2.model_validate(updated.model_dump(mode="python"))
-        payload = updated.model_dump(mode="python")
 
         # PR-8J: diff-based storage — oblicz różnicę względem poprzedniego snapshotu
         prev_row = self._fetch_one(
             "SELECT snapshot_data FROM operator_engagement_snapshots WHERE engagement_id = %(engagement_id)s",
             {"engagement_id": engagement_id},
         )
+        previous_payload = _row_snapshot_payload(prev_row)
+        stamped = _apply_lifecycle_state_since(snapshot, previous_payload=previous_payload)
+        updated = stamped.model_copy(update={"version": new_version})
+        EngagementSnapshotV2.model_validate(updated.model_dump(mode="python"))
+        payload = updated.model_dump(mode="python")
+
         snapshot_diff: str | None = None
-        if prev_row:
-            prev_data = prev_row.get("snapshot_data")
-            if isinstance(prev_data, str):
-                prev_data = json.loads(prev_data)
-            elif not isinstance(prev_data, dict):
-                prev_data = {}
-            if isinstance(prev_data, dict) and isinstance(payload, dict):
-                diff = _compute_diff(prev_data, payload)
-                if diff:
-                    snapshot_diff = json.dumps(diff, ensure_ascii=False, default=str)
+        if previous_payload is not None and isinstance(payload, dict):
+            diff = _compute_diff(dict(previous_payload), payload)
+            if diff:
+                snapshot_diff = json.dumps(diff, ensure_ascii=False, default=str)
 
         with self._connect() as conn:
             with conn.cursor() as cur:
@@ -484,7 +501,8 @@ class PostgresOperatorEngagementStore(OperatorEngagementStore):
             raise ValueError("engagement_id is required")
         if int(snapshot.version) != 1:
             raise ValueError("insert_snapshot requires version=1")
-        payload = snapshot.model_dump(mode="python")
+        stamped = _apply_lifecycle_state_since(snapshot, previous_payload=None)
+        payload = stamped.model_dump(mode="python")
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -499,15 +517,15 @@ class PostgresOperatorEngagementStore(OperatorEngagementStore):
                     """,
                     {
                         "engagement_id": eid,
-                        "case_id": snapshot.case_id,
+                        "case_id": stamped.case_id,
                         "snapshot_data": json.dumps(payload, ensure_ascii=False),
-                        "last_trace_id": snapshot.trace_id,
+                        "last_trace_id": stamped.trace_id,
                     },
                 )
                 if cur.rowcount != 1:
                     raise AgentConcurrencyError(f"snapshot already exists for {eid!r}")
             conn.commit()
-        return snapshot
+        return stamped
 
     def init_snapshot_from_signal(
         self,
@@ -551,6 +569,61 @@ class PostgresOperatorEngagementStore(OperatorEngagementStore):
 
             kwargs["row_factory"] = dict_row
         return psycopg.connect(self.database_url, **kwargs)
+
+
+def _operational_status_code_from_payload(payload: Mapping[str, Any] | None) -> str:
+    if not isinstance(payload, Mapping):
+        return ""
+    ops = payload.get("operational_status")
+    if isinstance(ops, Mapping):
+        return str(ops.get("code") or "").strip().lower()
+    return ""
+
+
+def _apply_lifecycle_state_since(
+    snapshot: EngagementSnapshotV2,
+    *,
+    previous_payload: Mapping[str, Any] | None,
+    now_iso: str | None = None,
+) -> EngagementSnapshotV2:
+    """Stamp or preserve `lifecycle_state_since` (FG-02).
+
+    - First insert (`previous_payload is None`): seed to now unless already set.
+    - Save when `operational_status.code` changes: bump to now.
+    - Save when code is unchanged: keep the previous durable since (ignore blank caller dumps
+      and unrelated mutations that would otherwise reset the stagnation clock via `updated_at`).
+    """
+    stamp = str(now_iso or "").strip() or _utc_now_iso()
+    if previous_payload is None:
+        existing = str(snapshot.lifecycle_state_since or "").strip()
+        return snapshot if existing else snapshot.model_copy(update={"lifecycle_state_since": stamp})
+
+    new_code = str(snapshot.operational_status.code or "").strip().lower()
+    prev_code = _operational_status_code_from_payload(previous_payload)
+    if new_code != prev_code:
+        return snapshot.model_copy(update={"lifecycle_state_since": stamp})
+
+    prev_since = str(previous_payload.get("lifecycle_state_since") or "").strip()
+    if prev_since:
+        return snapshot.model_copy(update={"lifecycle_state_since": prev_since})
+    # Legacy row never stamped: leave empty so readers fall back to row `updated_at`.
+    return snapshot.model_copy(update={"lifecycle_state_since": ""})
+
+
+def _row_snapshot_payload(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(row, Mapping):
+        return None
+    raw = row.get("snapshot_data")
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+    elif isinstance(raw, dict):
+        data = dict(raw)
+    else:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _compute_diff(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:

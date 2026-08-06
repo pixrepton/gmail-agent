@@ -11,7 +11,11 @@ Contract asserted here:
 * a case within its SLA budget, or already carrying an active guardian proposal, is left alone
   (no duplicate proposals, no false positives on healthy waiting);
 * a case whose `operational_status.code` has no lifecycle/SLA mapping is `not_evaluable`, never
-  guessed into `stagnating`.
+  guessed into `stagnating`;
+* FG-03: mailbox cases in closed set (`closed|done|archived|resolved|cancelled|merged`) never
+  receive a stagnation proposal even when the engagement snapshot looks stagnating.
+* FG-02: durable `lifecycle_state_since` is preferred over row `updated_at` for hours-in-state;
+  unrelated snapshot saves must not reset the stagnation clock.
 """
 from __future__ import annotations
 
@@ -108,7 +112,103 @@ def _seed(
         update={"operational_status": snapshot.operational_status.model_copy(update={"code": status_code})}
     )
     store.insert_snapshot(snapshot)
-    store._rows[engagement_id]["updated_at"] = _iso(hours_ago)
+    # Backdate both row clock and durable since (FG-02): insert stamps since=now.
+    aged = _iso(hours_ago)
+    store._rows[engagement_id]["updated_at"] = aged
+    payload = store._rows[engagement_id]["snapshot_data"]
+    assert isinstance(payload, dict)
+    payload["lifecycle_state_since"] = aged
+
+
+def test_save_snapshot_bumps_lifecycle_state_since_only_when_status_code_changes():
+    from llm_contracts.engagement_snapshot_v2 import ActionItem
+
+    store = InMemoryOperatorEngagementStore()
+    snapshot = build_initial_snapshot(
+        case_id="case_since", engagement_id="eng_since", trace_id="t_since"
+    )
+    store.insert_snapshot(snapshot)
+    first = store.load_snapshot("eng_since")
+    assert first is not None
+    # Freeze a clearly older since so a same-second NOW() stamp is distinguishable.
+    old_since = _iso(48.0)
+    store._rows["eng_since"]["snapshot_data"]["lifecycle_state_since"] = old_since
+    first = store.load_snapshot("eng_since")
+    assert first is not None
+    assert first.lifecycle_state_since == old_since
+
+    # Unrelated mutation (actions) must not reset since, even though updated_at moves.
+    with_actions = first.model_copy(
+        update={
+            "actions": [
+                ActionItem(
+                    id="noise",
+                    enabled=True,
+                    payload_pl="x",
+                    case_id="case_since",
+                )
+            ]
+        }
+    )
+    store.save_snapshot(with_actions, expected_version=first.version)
+    after_noise = store.load_snapshot("eng_since")
+    assert after_noise is not None
+    assert after_noise.lifecycle_state_since == old_since
+    assert store._rows["eng_since"]["updated_at"]
+
+    # Status code change must bump since away from the frozen value.
+    changed = after_noise.model_copy(
+        update={
+            "operational_status": after_noise.operational_status.model_copy(
+                update={"code": "enriching"}
+            )
+        }
+    )
+    store.save_snapshot(changed, expected_version=after_noise.version)
+    after_code = store.load_snapshot("eng_since")
+    assert after_code is not None
+    assert after_code.lifecycle_state_since != old_since
+    assert after_code.lifecycle_state_since
+
+
+def test_tick_stagnating_with_fresh_updated_at_when_lifecycle_state_since_is_old():
+    """FG-02: guardian prefers since over updated_at — fresh save must not clear stagnation."""
+    store = InMemoryOperatorEngagementStore()
+    _seed(
+        store,
+        engagement_id="eng_proxy",
+        case_id="case_proxy",
+        status_code="enriching",
+        hours_ago=60.0,
+    )
+
+    # Simulate an unrelated recent write that only bumps row updated_at.
+    store._rows["eng_proxy"]["updated_at"] = _iso(0.1)
+
+    result = run_follow_up_guardian_tick(store)
+
+    assert result["ok"] is True
+    assert "case_proxy" in result["proposed_case_ids"]
+    snap = store.load_snapshot("eng_proxy")
+    assert has_active_follow_up_proposal(snap) is True
+
+
+def test_hours_in_lifecycle_state_prefers_since_over_updated_at():
+    from follow_up_guardian import hours_in_lifecycle_state
+
+    store = InMemoryOperatorEngagementStore()
+    _seed(
+        store,
+        engagement_id="eng_hours",
+        case_id="case_hours",
+        status_code="enriching",
+        hours_ago=60.0,
+    )
+    snap = store.load_snapshot("eng_hours")
+    assert snap is not None
+    hours = hours_in_lifecycle_state(snap, _iso(0.5), now=datetime.now(timezone.utc))
+    assert hours is not None
+    assert 49.0 <= hours <= 61.0
 
 
 def test_tick_proposes_follow_up_for_newly_stagnating_case():
@@ -158,9 +258,70 @@ def test_tick_skips_staging_snapshots_without_case_id():
 
     staging = build_staging_snapshot(engagement_id="stg_1", trace_id="t1")
     store.insert_snapshot(staging)
-    store._rows["stg_1"]["updated_at"] = _iso(500.0)
+    aged = _iso(500.0)
+    store._rows["stg_1"]["updated_at"] = aged
+    payload = store._rows["stg_1"]["snapshot_data"]
+    assert isinstance(payload, dict)
+    payload["lifecycle_state_since"] = aged
 
     result = run_follow_up_guardian_tick(store)
 
     assert result["proposed_case_ids"] == []
     assert result["checked"] == 1
+
+
+# ── FG-03: closed / merged mailbox cases must not get stagnation proposals ────
+
+
+class _FakeMailboxStore:
+    """Minimal mailbox SoT stub: only `fetch_case` for guardian status resolution."""
+
+    def __init__(self, statuses: dict[str, str]):
+        self._statuses = {str(k): str(v) for k, v in statuses.items()}
+
+    def fetch_case(self, case_id: str) -> dict | None:
+        cid = str(case_id or "").strip()
+        if cid not in self._statuses:
+            return None
+        return {"case_id": cid, "status": self._statuses[cid]}
+
+
+@pytest.mark.parametrize("closed_status", ["closed", "merged", "cancelled", "done", "archived", "resolved"])
+def test_tick_skips_closed_or_merged_case_no_proposal(closed_status: str):
+    store = InMemoryOperatorEngagementStore()
+    _seed(
+        store,
+        engagement_id="eng_closed",
+        case_id="case_closed",
+        status_code="enriching",
+        hours_ago=60.0,
+    )
+    mailbox = _FakeMailboxStore({"case_closed": closed_status})
+
+    result = run_follow_up_guardian_tick(store, mailbox_store=mailbox)
+
+    assert result["proposed_count"] == 0
+    assert result["proposed_case_ids"] == []
+    assert result["skipped_closed"] == 1
+    snap = store.load_snapshot("eng_closed")
+    assert has_active_follow_up_proposal(snap) is False
+
+
+def test_tick_still_proposes_for_open_stagnating_case_with_mailbox_status():
+    store = InMemoryOperatorEngagementStore()
+    _seed(
+        store,
+        engagement_id="eng_open",
+        case_id="case_open",
+        status_code="enriching",
+        hours_ago=60.0,
+    )
+    mailbox = _FakeMailboxStore({"case_open": "active"})
+
+    result = run_follow_up_guardian_tick(store, mailbox_store=mailbox)
+
+    assert result["proposed_count"] == 1
+    assert "case_open" in result["proposed_case_ids"]
+    assert result.get("skipped_closed", 0) == 0
+    snap = store.load_snapshot("eng_open")
+    assert has_active_follow_up_proposal(snap) is True

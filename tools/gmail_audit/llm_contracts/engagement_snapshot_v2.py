@@ -363,6 +363,11 @@ class EngagementSnapshotV2(StrictModel):
     signal_id: str = ""
     trace_id: str = ""
     operational_status: OperationalStatus
+    #: FG-02: ISO timestamp of when `operational_status.code` last changed.
+    #: Empty on legacy rows; Follow-up Guardian / SLA projection prefer this over row `updated_at`.
+    #: Written only by the engagement store on status-code change (or first insert) — not by
+    #: unrelated saves (actions, feed, HITL, guardian proposal).
+    lifecycle_state_since: str = ""
     hvac_profile: HvacProfile = Field(default_factory=HvacProfile)
     gaps: list[GapItem] = Field(default_factory=list)
     agent_memory: AgentMemory = Field(default_factory=AgentMemory)

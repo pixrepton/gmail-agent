@@ -227,3 +227,20 @@ def test_api_app_hours_in_state_ignores_mail_traffic_timestamps():
     assert _hours_in_lifecycle_state({"updated_at": "2020-01-01T00:00:00Z"}) is None
     measured = _hours_in_lifecycle_state({"lifecycle_state_since": "2020-01-01T00:00:00+00:00"})
     assert measured is not None and measured > 0
+
+
+def test_store_writer_persists_lifecycle_state_since_readable_by_api_app():
+    """FG-02: store stamps since into payload; api_app reader measures it."""
+    from api_app import _hours_in_lifecycle_state
+    from agent_runtime.store import InMemoryOperatorEngagementStore, build_initial_snapshot
+
+    store = InMemoryOperatorEngagementStore()
+    snap = build_initial_snapshot(case_id="c1", engagement_id="e1", trace_id="t1")
+    store.insert_snapshot(snap)
+    loaded = store.load_snapshot("e1")
+    assert loaded is not None
+    payload = loaded.model_dump(mode="python")
+    hours = _hours_in_lifecycle_state(payload)
+    assert hours is not None
+    assert hours >= 0.0
+    assert str(payload.get("lifecycle_state_since") or "").strip()
