@@ -29,6 +29,7 @@ from mailbox_memory_runtime import (
     stable_id,
     summarize_document_text,
 )
+from mailbox_memory.active_facts import fetch_current_facts_for_case, is_live_fact
 from mailbox_memory_store import InMemoryMailboxMemoryStore, MailboxMemoryStore, PostgresMailboxMemoryStore
 
 
@@ -260,7 +261,7 @@ class DriveIngestRuntime:
             case_id=case_id,
             case_record=case,
             messages=self.store.fetch_messages_for_case(case_id, limit=10),
-            facts=self.store.fetch_facts_for_case(case_id),
+            facts=fetch_current_facts_for_case(self.store, case_id),
             documents=self.store.fetch_documents_for_case(case_id, limit=8),
             events=self.store.fetch_events_for_case(case_id, limit=20),
             next_action=self.store.fetch_next_action(case_id) or {},
@@ -1009,7 +1010,10 @@ class DriveIngestRuntime:
         if document_row:
             self.store.upsert_drive_document(document_row)
             try:
-                from document_intelligence_runtime import build_document_intelligence_result, document_fields_to_fact_rows
+                from document_intelligence_runtime import (
+                    build_document_intelligence_result,
+                    promote_document_intelligence_facts,
+                )
 
                 docintel = build_document_intelligence_result(
                     source_type="drive_file",
@@ -1023,11 +1027,9 @@ class DriveIngestRuntime:
                 )
                 docintel_row = docintel.to_dict()
                 self.store.upsert_document_intelligence_result(docintel_row)
-                promoted_fact_rows = (
-                    document_fields_to_fact_rows(docintel_row) if document_intelligence_promote_facts_enabled() else []
-                )
-                if promoted_fact_rows and hasattr(self.store, "append_fact_rows"):
-                    self.store.append_fact_rows(promoted_fact_rows)
+                if document_intelligence_promote_facts_enabled():
+                    # 4.2: document fields → mailbox_memory_facts via supersession (not raw insert).
+                    promote_document_intelligence_facts(self.store, docintel_row)
             except Exception as exc:  # noqa: BLE001
                 event_rows.append(
                     {
@@ -2070,6 +2072,8 @@ def looks_numeric(value: str) -> bool:
 
 def first_fact_value(facts: list[dict[str, Any]], fact_key: str) -> str:
     for fact in facts:
+        if not is_live_fact(fact):
+            continue
         if str(fact.get("fact_key") or "") == fact_key:
             value = str(fact.get("normalized_value") or "").strip()
             if value:
@@ -2081,6 +2085,8 @@ def collect_fact_values(facts: list[dict[str, Any]], fact_keys: set[str]) -> lis
     values = []
     seen = set()
     for fact in facts:
+        if not is_live_fact(fact):
+            continue
         fact_key = str(fact.get("fact_key") or "")
         value = str(fact.get("normalized_value") or "").strip()
         if fact_key in fact_keys and value and value not in seen:

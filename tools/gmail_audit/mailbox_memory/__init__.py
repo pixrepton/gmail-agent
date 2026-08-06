@@ -6,6 +6,7 @@ Module structure:
   inmemory.py   — InMemoryMailboxMemoryStore
   postgres.py   — PostgresMailboxMemoryStore
 """
+from .active_facts import fetch_current_facts_for_case, is_live_fact  # noqa: PLC0415, F401
 from .inmemory import InMemoryMailboxMemoryStore  # noqa: PLC0415, F401
 from .postgres import PostgresMailboxMemoryStore  # noqa: PLC0415, F401
 from .protocol import MailboxMemoryStore  # noqa: PLC0415, F401
@@ -26,4 +27,6 @@ __all__ = [
     "MAILBOX_MEMORY_SCHEMA_SQL",
     "MailboxMemoryStore",
     "PostgresMailboxMemoryStore",
+    "fetch_current_facts_for_case",
+    "is_live_fact",
 ]

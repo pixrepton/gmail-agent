@@ -38,6 +38,7 @@ from mailbox_memory_health import (
 )
 from mailbox_memory_models import CaseContextPack, MailboxMemoryIngestResult
 from correlation_registry.service import CorrelationRegistryService, build_correlation_registry_service
+from mailbox_memory.active_facts import fetch_current_facts_for_case
 from mailbox_memory_store import (
     InMemoryMailboxMemoryStore,
     MailboxMemoryStore,
@@ -524,7 +525,7 @@ class MailboxMemoryRuntime:
             case_id=case_id,
             case_record=self.store.fetch_case(case_id) or case_row,
             messages=self.store.fetch_messages_for_case(case_id, limit=10),
-            facts=self.store.fetch_facts_for_case(case_id),
+            facts=fetch_current_facts_for_case(self.store, case_id),
             documents=self.store.fetch_documents_for_case(case_id, limit=8),
             events=self.store.fetch_events_for_case(case_id, limit=20),
             next_action=self.store.fetch_next_action(case_id) or {},
@@ -666,7 +667,7 @@ class MailboxMemoryRuntime:
             case_id=case_id,
             case_record=case_record,
             messages=self.store.fetch_messages_for_case(case_id, limit=10),
-            facts=self.store.fetch_facts_for_case(case_id),
+            facts=fetch_current_facts_for_case(self.store, case_id),
             documents=self.store.fetch_documents_for_case(case_id, limit=8),
             events=self.store.fetch_events_for_case(case_id, limit=20),
             next_action=next_action,
@@ -889,7 +890,11 @@ class MailboxMemoryRuntime:
             }
             self.store.upsert_document(document_row)
             try:
-                from document_intelligence_runtime import build_document_intelligence_result, document_fields_to_fact_rows
+                from document_intelligence_runtime import (
+                    build_document_intelligence_result,
+                    document_fields_to_fact_rows,
+                    promote_document_fact_rows,
+                )
 
                 structured_fields = extract_structured_fields(
                     parse_result,
@@ -908,8 +913,10 @@ class MailboxMemoryRuntime:
                 )
                 docintel_row = docintel.to_dict()
                 self.store.upsert_document_intelligence_result(docintel_row)
+                # 4.2: document-promoted facts use supersession API (not replace_message_facts).
+                promote_rows: list[dict[str, Any]] = []
                 if structured_fields:
-                    structured_fact_rows = structured_fields_to_fact_rows(
+                    promote_rows = structured_fields_to_fact_rows(
                         structured_fields,
                         case_id=case_id,
                         document_id=document_row["document_id"],
@@ -917,9 +924,10 @@ class MailboxMemoryRuntime:
                         observed_at=occurred_at,
                         parser_id=parser_id,
                     )
-                    fact_rows.extend(structured_fact_rows)
                 elif document_intelligence_promote_facts_enabled():
-                    fact_rows.extend(document_fields_to_fact_rows(docintel_row))
+                    promote_rows = document_fields_to_fact_rows(docintel_row)
+                if promote_rows:
+                    promote_document_fact_rows(self.store, promote_rows)
             except Exception as exc:  # noqa: BLE001
                 events.append(
                     self._append_event(
@@ -1338,7 +1346,14 @@ def build_case_snapshot(
     completeness_gaps = list(drive_enrichment.get("completeness_gaps") or [])
     graph_hints = list(drive_enrichment.get("graph_hints") or [])
     reference_documents = list(drive_enrichment.get("reference_documents") or [])
-    combined_facts = list(facts) + drive_facts
+    # FACT-01: same live-fact predicate as split_conflicting_facts — drop superseded
+    # before ranking/conflict detection so ingest/finalize/drive paths cannot revive
+    # a settled row via confidence or invent false open_questions.
+    combined_facts = [
+        fact
+        for fact in list(facts) + drive_facts
+        if str(fact.get("status") or "active") != "superseded"
+    ]
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for fact in combined_facts:
         key = (str(fact.get("entity_scope") or "case"), str(fact.get("fact_key") or ""))
@@ -1534,10 +1549,25 @@ def build_current_case_context_snapshot(
             snapshot[target_name] = value
 
     snapshot["open_questions"] = _hot_state_open_questions(hot_state)
-    if isinstance(hot_state.get("key_facts"), list):
+    # FACT-01: live projection already filtered superseded before ranking. Do not let
+    # an older unfiltered hot-state ranking revive settled values
+    # (context_snapshot_source=case_snapshot_hot_state leftover from FACT-05).
+    live_key_facts = list(snapshot.get("key_facts") or [])
+    live_conflicts = list(snapshot.get("conflicting_facts") or [])
+    if isinstance(hot_state.get("key_facts"), list) and not live_key_facts:
         snapshot["key_facts"] = list(hot_state.get("key_facts") or [])
     if isinstance(hot_state.get("active_conflicts"), list):
-        snapshot["conflicting_facts"] = list(hot_state.get("active_conflicts") or [])
+        hot_conflicts = list(hot_state.get("active_conflicts") or [])
+        if not live_key_facts:
+            snapshot["conflicting_facts"] = hot_conflicts
+        else:
+            live_keys = {str(item.get("fact_key") or "") for item in live_key_facts}
+            extras = [
+                item
+                for item in hot_conflicts
+                if str(item.get("fact_key") or "") not in live_keys
+            ]
+            snapshot["conflicting_facts"] = live_conflicts + extras
     if isinstance(hot_state.get("documents_summary"), list):
         snapshot["latest_documents"] = list(hot_state.get("documents_summary") or [])
 
@@ -1576,7 +1606,8 @@ def build_case_context_pack(
     graph_store: Any | None = None,
     retrieval_runtime: Any | None = None,
 ) -> CaseContextPack:
-    facts = store.fetch_facts_for_case(case_id)
+    # 4.2b: current-pack semantics — store-level active fetch (not full audit trail).
+    facts = fetch_current_facts_for_case(store, case_id)
     active_facts, conflicting_facts = split_conflicting_facts(facts)
     documents = store.fetch_documents_for_case(case_id, limit=8)
     messages = store.fetch_messages_for_case(case_id, limit=10)
@@ -1589,20 +1620,49 @@ def build_case_context_pack(
         query_text=query_text,
         graph_store=graph_store,
     )
+    drive_documents = list(drive_enrichment.get("drive_documents") or [])
+    drive_facts = list(drive_enrichment.get("drive_facts") or [])
+    drive_active_facts, drive_conflicts = split_conflicting_facts(drive_facts)
+    # FACT-05: pack sections and the embedded snapshot must share one active-fact
+    # filter (split_conflicting_facts). Passing raw facts/drive_facts lets
+    # superseded rows re-enter build_case_snapshot key_facts / open_questions.
+    snapshot_drive_enrichment = dict(drive_enrichment)
+    snapshot_drive_enrichment["drive_facts"] = list(drive_active_facts)
     snapshot = build_current_case_context_snapshot(
         store=store,
         case_id=case_id,
         case_record=case_row,
         messages=messages,
-        facts=facts,
+        facts=active_facts,
         documents=documents,
         events=events,
         next_action=next_action,
-        drive_enrichment=drive_enrichment,
+        drive_enrichment=snapshot_drive_enrichment,
     )
-    drive_documents = list(drive_enrichment.get("drive_documents") or [])
-    drive_facts = list(drive_enrichment.get("drive_facts") or [])
-    drive_active_facts, drive_conflicts = split_conflicting_facts(drive_facts)
+    # Winners-only input drops same-scope live disagreements from build_case_snapshot.
+    # Align conflict surfaces with split_conflicting_facts; keep cross-scope "mixed"
+    # conflicts already derived from active winners. Hot-state overlay prefers live
+    # filtered key_facts/conflicts (FACT-01).
+    if str(snapshot.get("context_snapshot_source") or "") == "mailbox_memory_live_projection":
+        pack_conflicts = list(conflicting_facts) + list(drive_conflicts)
+        mixed_conflicts = [
+            item
+            for item in list(snapshot.get("conflicting_facts") or [])
+            if str(item.get("entity_scope") or "") == "mixed"
+        ]
+        aligned_conflicts = pack_conflicts + mixed_conflicts
+        snapshot["conflicting_facts"] = aligned_conflicts[:8]
+        conflict_questions = [
+            f"Konflikt danych dla {item.get('fact_key')}: {', '.join(item.get('values') or [])}."
+            for item in aligned_conflicts
+            if item.get("fact_key") and item.get("values")
+        ]
+        non_conflict_questions = [
+            str(q)
+            for q in list(snapshot.get("open_questions") or [])
+            if "Konflikt danych dla" not in str(q)
+        ]
+        snapshot["open_questions"] = _dedupe_texts([*conflict_questions, *non_conflict_questions])[:8]
     vector_scores: dict[str, float] | None = None
     semantic_rows: list[dict[str, Any]] = []
     rt = retrieval_runtime
@@ -1843,7 +1903,7 @@ def collect_drive_case_enrichment(
 
     hot_state, _hot_row = _fetch_current_hot_state(store=store, case_id=case_id)
     reference_key_facts = list(hot_state.get("key_facts") or [])
-    for fact in list(store.fetch_facts_for_case(case_id) or []):
+    for fact in fetch_current_facts_for_case(store, case_id):
         value = str(fact.get("normalized_value") or "").strip()
         if value:
             reference_key_facts.append({"value": value})

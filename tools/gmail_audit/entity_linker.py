@@ -16,6 +16,7 @@ from typing import Any
 
 from signal_contract import CanonicalSignal
 from case_family_boundary import filter_operational_feed_case_rows
+from mailbox_memory.active_facts import fetch_current_facts_for_case
 
 log = get_logger(__name__)
 
@@ -362,7 +363,7 @@ class EntityLinker:
             ckey = str(case_row.get("case_key") or "").strip()
             if not cid:
                 continue
-            facts = self._store.fetch_facts_for_case(cid)
+            facts = fetch_current_facts_for_case(self._store, cid)
             prof = _case_identity_profile(case_row, facts)
 
             for nip in hints.get("nip", []) or []:
@@ -436,7 +437,7 @@ class EntityLinker:
             ckey = str(case_row.get("case_key") or "").strip()
             if not cid:
                 continue
-            facts = self._store.fetch_facts_for_case(cid)
+            facts = fetch_current_facts_for_case(self._store, cid)
             prof = _case_identity_profile(case_row, facts)
             score, reasons = _score_fuzzy(merged_hints, prof)
             if score >= FUZZY_MIN_SCORE:

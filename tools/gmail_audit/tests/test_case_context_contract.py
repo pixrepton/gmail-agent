@@ -442,3 +442,81 @@ def test_signal_rule_id_present() -> None:
     for sig in all_signals:
         assert "rule_id" in sig, f"Signal missing rule_id: {sig.get('signal_id')}"
         assert str(sig["rule_id"]).strip(), f"Empty rule_id: {sig}"
+
+
+def test_normalize_facts_preserves_superseded_status() -> None:
+    """FACT-04: superseded must not be remapped to inferred (looks like current)."""
+    from case_context_contract import normalize_facts
+
+    rows = normalize_facts(
+        [
+            {
+                "fact_id": "f-old",
+                "fact_key": "heated_area_m2",
+                "value": "120",
+                "status": "superseded",
+                "confidence": 0.95,
+            },
+            {
+                "fact_id": "f-new",
+                "fact_key": "heated_area_m2",
+                "value": "150",
+                "status": "active",
+                "confidence": 0.9,
+            },
+        ],
+        case_id="case_fact04",
+    )
+    by_id = {row["fact_id"]: row for row in rows}
+    assert by_id["f-old"]["status"] == "superseded"
+    assert by_id["f-old"]["status"] != "inferred"
+    # active still maps to inferred (existing contract)
+    assert by_id["f-new"]["status"] == "inferred"
+
+
+def test_vnext_pack_does_not_present_superseded_as_current() -> None:
+    """FACT-04: active+superseded leak into pack → superseded is not current/inferred."""
+    pack = CaseContextPack(
+        case_id="case_fact04_pack",
+        snapshot={"status": "open", "summary_text": "Area updated."},
+        active_facts=[
+            {
+                "fact_id": "f-old",
+                "fact_key": "heated_area_m2",
+                "value": "120",
+                "status": "superseded",
+                "confidence": 0.95,
+                "source_ref": "gmail:msg-old",
+                "source_type": "gmail_message",
+            },
+            {
+                "fact_id": "f-new",
+                "fact_key": "heated_area_m2",
+                "value": "150",
+                "status": "active",
+                "confidence": 0.9,
+                "source_ref": "gmail:msg-new",
+                "source_type": "gmail_message",
+            },
+        ],
+    )
+    contract = build_case_context_pack_vnext(pack, generated_at="2026-08-06T00:00:00+00:00")
+    facts = contract["facts"]
+    superseded_rows = [f for f in facts if str(f.get("fact_id")) == "f-old"]
+    current_rows = [f for f in facts if str(f.get("fact_id")) == "f-new"]
+
+    assert len(current_rows) == 1
+    assert current_rows[0]["value"] == "150"
+    assert current_rows[0]["status"] in {"inferred", "confirmed", "active"}
+
+    # Superseded must not appear as a current/inferred current fact.
+    for row in superseded_rows:
+        assert row["status"] == "superseded"
+        assert row["status"] != "inferred"
+    # Prefer: pack current facts exclude superseded, or mark status explicitly.
+    current_like = [
+        f
+        for f in facts
+        if str(f.get("value")) == "120" and str(f.get("status")) in {"inferred", "confirmed", "active", ""}
+    ]
+    assert current_like == [], f"superseded value presented as current: {current_like}"

@@ -1163,6 +1163,17 @@ class PostgresMailboxMemoryStore:
             {"case_id": case_id},
         )
 
+    def fetch_active_facts_for_case(self, case_id: str) -> list[dict[str, Any]]:
+        return self._fetch_all(
+            """
+            SELECT * FROM mailbox_memory_facts
+            WHERE case_id = %(case_id)s
+              AND COALESCE(status, 'active') <> 'superseded'
+            ORDER BY fact_key ASC, confidence DESC, observed_at DESC NULLS LAST
+            """,
+            {"case_id": case_id},
+        )
+
     def fetch_documents_for_case(self, case_id: str, *, limit: int = 10) -> list[dict[str, Any]]:
         return self._fetch_all(
             """

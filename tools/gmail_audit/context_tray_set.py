@@ -176,8 +176,11 @@ def _candidate_moves(contract: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _facts_tray(contract: dict[str, Any]) -> list[dict[str, Any]]:
+    """Current-facts projection for UI — exclude superseded (FACT-04)."""
     rows: list[dict[str, Any]] = []
     for item in _list_of_dicts(contract.get("facts")):
+        if str(item.get("status") or "").strip() == "superseded":
+            continue
         row = dict(item)
         if "fact_key" not in row:
             row["fact_key"] = str(row.get("predicate") or row.get("key") or "").strip()

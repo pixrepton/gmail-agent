@@ -119,3 +119,40 @@ def test_candidate_moves_tray_polish_label_for_proposed_next_actions() -> None:
     assert len(moves) == 1
     assert moves[0]["summary"] == "Poproś o brakujące dane"
     assert moves[0]["title"] == "Poproś o brakujące dane"
+
+
+def test_facts_tray_excludes_superseded_from_current_projection() -> None:
+    """FACT-04: UI tray must not treat superseded rows as current facts."""
+    pack = CaseContextPack(
+        case_id="case_tray_fact04",
+        snapshot={"status": "open", "summary_text": "Area updated."},
+        active_facts=[
+            {
+                "fact_id": "f-old",
+                "fact_key": "heated_area_m2",
+                "value": "120",
+                "status": "superseded",
+                "confidence": 0.95,
+            },
+            {
+                "fact_id": "f-new",
+                "fact_key": "heated_area_m2",
+                "value": "150",
+                "status": "active",
+                "confidence": 0.9,
+            },
+        ],
+    )
+    trays = build_context_tray_set(pack, generated_at="2026-08-06T00:00:00Z")
+    tray_ids = {str(row.get("fact_id") or "") for row in trays["facts_tray"]}
+    tray_values = {str(row.get("value")) for row in trays["facts_tray"]}
+    assert "f-new" in tray_ids
+    assert "150" in tray_values
+    assert "f-old" not in tray_ids
+    assert "120" not in tray_values
+    for row in trays["facts_tray"]:
+        assert str(row.get("status") or "") != "superseded"
+        assert not (
+            str(row.get("value")) == "120"
+            and str(row.get("status") or "") in {"inferred", "confirmed", "active", ""}
+        )

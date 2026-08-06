@@ -609,7 +609,9 @@ def build_case_context_pack_vnext(
 
 
 def normalize_facts(facts: Any, *, case_id: str) -> list[dict[str, Any]]:
-    allowed_status = {"confirmed", "inferred", "disputed", "stale", "rejected", "unproven"}
+    # Include superseded explicitly: unknown statuses fall through to inferred, which
+    # would make a settled prior fact look current in the vNext contract (FACT-04).
+    allowed_status = {"confirmed", "inferred", "disputed", "stale", "rejected", "unproven", "superseded"}
     out: list[dict[str, Any]] = []
     for item in _list_of_dicts(facts):
         predicate = str(item.get("predicate") or item.get("fact_key") or item.get("key") or "").strip()

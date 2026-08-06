@@ -14,6 +14,7 @@ from case_routing import enrich_case_row_before_upsert
 from case_snapshot_manager import CaseSnapshotManager
 from entity_linker import EntityLinker, apply_entity_link
 from mailbox_memory_store import InMemoryMailboxMemoryStore, MailboxMemoryStore
+from mailbox_memory.active_facts import fetch_current_facts_for_case
 from projection_refresh_rules import ProjectionRefreshDecision, decide_projection_refresh
 from signal_contract import CanonicalSignal
 from signal_journal import SignalJournal
@@ -1353,7 +1354,7 @@ def _reconcile_drive_legacy_prepare_case_state(
         case_id=case_id,
         case_record=case_record,
         messages=store.fetch_messages_for_case(case_id, limit=10),
-        facts=store.fetch_facts_for_case(case_id),
+        facts=fetch_current_facts_for_case(store, case_id),
         documents=store.fetch_documents_for_case(case_id, limit=8),
         events=store.fetch_events_for_case(case_id, limit=20),
         next_action=store.fetch_next_action(case_id) or {},

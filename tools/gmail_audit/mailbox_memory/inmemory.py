@@ -134,24 +134,7 @@ class InMemoryMailboxMemoryStore:
         self.facts[message_id] = [dict(item) for item in rows]
 
     def append_fact_rows(self, rows: list[dict[str, Any]]) -> None:
-        if not rows:
-            return
-        bucket_key = f"append::{str(rows[0].get('case_id') or '')}:{str(rows[0].get('source_ref') or '')}"
-        current = list(self.facts.get(bucket_key) or [])
-        seen_fact_ids = {
-            str(item.get("fact_id") or "")
-            for items in self.facts.values()
-            for item in items
-            if str(item.get("fact_id") or "")
-        }
-        for row in rows:
-            fact_id = str(row.get("fact_id") or "").strip()
-            if fact_id and fact_id in seen_fact_ids:
-                continue
-            current.append(dict(row))
-            if fact_id:
-                seen_fact_ids.add(fact_id)
-        self.facts[bucket_key] = current
+        self.append_facts_with_supersession(rows)
 
     def append_facts_with_supersession(self, rows: list[dict[str, Any]]) -> dict[str, int]:
         stats = {"inserted": 0, "superseded": 0, "unchanged": 0}
@@ -492,6 +475,14 @@ class InMemoryMailboxMemoryStore:
                 if str(item.get("case_id") or "") == case_id:
                     rows.append(dict(item))
         rows.sort(key=lambda item: (str(item.get("fact_key") or ""), -float(item.get("confidence") or 0.0)))
+        return rows
+
+    def fetch_active_facts_for_case(self, case_id: str) -> list[dict[str, Any]]:
+        rows = [
+            item
+            for item in self.fetch_facts_for_case(case_id)
+            if str(item.get("status") or "active") != "superseded"
+        ]
         return rows
 
     def fetch_documents_for_case(self, case_id: str, *, limit: int = 10) -> list[dict[str, Any]]:

@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import re
 from typing import Any, Protocol
 
+from mailbox_memory.active_facts import fetch_current_facts_for_case, is_live_fact
 from mailbox_memory_store import MailboxMemoryStore
 
 
@@ -342,10 +343,13 @@ def build_case_projection_payload(*, store: MailboxMemoryStore, case_id: str) ->
     snapshot_row = store.fetch_snapshot(case_id) or {}
     snapshot = snapshot_row.get("snapshot_json") if isinstance(snapshot_row.get("snapshot_json"), dict) else snapshot_row
     snapshot = snapshot if isinstance(snapshot, dict) else {}
-    case_facts = list(store.fetch_facts_for_case(case_id) or [])
+    # Active-fact contract (FACT-02 / 4.2b): project live rows via store active fetch.
+    case_facts = list(fetch_current_facts_for_case(store, case_id))
     mailbox_documents = list(store.fetch_documents_for_case(case_id, limit=50) or [])
     drive_documents = list(getattr(store, "fetch_drive_documents_for_case")(case_id, limit=50) or [])
-    drive_facts = list(getattr(store, "fetch_drive_facts_for_case")(case_id) or [])
+    drive_facts = [
+        fact for fact in list(getattr(store, "fetch_drive_facts_for_case")(case_id) or []) if is_live_fact(fact)
+    ]
     messages = list(store.fetch_messages_for_case(case_id, limit=50) or [])
     payload = Neo4jProjectionPayload(case_id=case_id)
     nodes: list[dict[str, Any]] = []
@@ -1389,9 +1393,16 @@ def _facts_by_document(
     return grouped
 
 
+def _is_live_fact(fact: dict[str, Any]) -> bool:
+    """Match mailbox_memory_runtime.split_conflicting_facts live-row predicate."""
+    return is_live_fact(fact)
+
+
 def _document_has_location(facts: list[dict[str, Any]]) -> bool:
     location_keys = {"installation_address", "investment_address", "city"}
-    return any(str(item.get("fact_key") or "") in location_keys for item in facts)
+    return any(
+        _is_live_fact(item) and str(item.get("fact_key") or "") in location_keys for item in facts
+    )
 
 
 def _pick_case_location(
@@ -1423,7 +1434,9 @@ def _best_fact_value(facts: list[dict[str, Any]], fact_key: str) -> str:
         (
             fact
             for fact in facts
-            if str(fact.get("fact_key") or "") == fact_key and str(fact.get("normalized_value") or "").strip()
+            if _is_live_fact(fact)
+            and str(fact.get("fact_key") or "") == fact_key
+            and str(fact.get("normalized_value") or "").strip()
         ),
         key=lambda item: (-float(item.get("confidence") or 0.0), str(item.get("observed_at") or "")),
     )

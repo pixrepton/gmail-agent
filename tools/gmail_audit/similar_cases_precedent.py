@@ -6,15 +6,22 @@ from typing import Any
 from _protocols import DatabaseConnection
 
 from evidence_ref import normalize_evidence_ref
+from mailbox_memory.active_facts import fetch_current_facts_for_case
 
 
 def _active_fact_keys(facts: list[dict[str, Any]]) -> set[str]:
+    """Return fact keys that still count as live for precedent overlap.
+
+    Aligns with RP-29 / split_conflicting_facts on ``superseded``: a replaced
+    value must not inflate similar-case overlap. ``rejected`` / ``stale`` stay
+    excluded as before. Missing status remains live (default / older producers).
+    """
     keys: set[str] = set()
     for row in facts:
         if not isinstance(row, dict):
             continue
         status = str(row.get("status") or "confirmed").strip().lower()
-        if status in {"rejected", "stale"}:
+        if status in {"rejected", "stale", "superseded"}:
             continue
         key = str(row.get("fact_key") or row.get("predicate") or "").strip()
         if key:
@@ -43,17 +50,17 @@ def fetch_similar_case_precedent_refs(
         return []
 
     fetch_case = getattr(store, "fetch_case", None)
-    fetch_facts = getattr(store, "fetch_facts_for_case", None)
-    fetch_resolved = getattr(store, "fetch_resolved_cases_by_family_and_fact_keys", None)
-    if not callable(fetch_case) or not callable(fetch_facts):
+    if not callable(fetch_case):
         return []
 
     case_row = fetch_case(cid) or {}
     case_family = str(case_row.get("case_family") or "unknown").strip() or "unknown"
-    active_keys = _active_fact_keys(list(fetch_facts(cid) or []))
+    # 4.2b: current-key overlap must not see superseded rows from the audit trail.
+    active_keys = _active_fact_keys(fetch_current_facts_for_case(store, cid))
     if not active_keys or case_family == "unknown":
         return []
 
+    fetch_resolved = getattr(store, "fetch_resolved_cases_by_family_and_fact_keys", None)
     candidates: list[dict[str, Any]] = []
     if callable(fetch_resolved):
         candidates = list(

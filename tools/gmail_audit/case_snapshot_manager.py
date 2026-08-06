@@ -12,6 +12,7 @@ from case_snapshot_hot_state_contract import (
     CASE_SNAPSHOT_HOT_STATE_SCHEMA_VERSION,
     validate_case_snapshot_hot_state,
 )
+from mailbox_memory.active_facts import fetch_current_facts_for_case
 from signal_contract import CanonicalSignal
 from signal_journal import SignalJournal
 from _protocols import CaseSnapshotStore
@@ -128,7 +129,8 @@ def _build_case_snapshot_hot_state(
     prior_versions: list[dict[str, Any]],
     trace_id: str,
 ) -> dict[str, Any]:
-    facts = list(store.fetch_facts_for_case(case_id) or [])
+    # 4.2b: prefer store-level active fetch (FACT-01 filter remains as defense in depth).
+    facts = list(fetch_current_facts_for_case(store, case_id))
     case_record = dict(store.fetch_case(case_id) or {})
     last_facts_simple = _select_last_facts(facts)
     conflicts_map = _fact_conflicts(facts)
@@ -300,7 +302,12 @@ def _participants_from_case(case_record: dict[str, Any], facts: list[dict[str, A
 
 
 def _key_facts_evidence_backed(facts: list[dict[str, Any]], *, signal: CanonicalSignal) -> list[dict[str, Any]]:
-    rows = [dict(item) for item in facts]
+    # FACT-01: defensive live-fact filter (same predicate as split_conflicting_facts).
+    rows = [
+        dict(item)
+        for item in facts
+        if str(item.get("status") or "active") != "superseded"
+    ]
     rows.sort(
         key=lambda item: (
             -float(item.get("confidence") or 0.0),
@@ -529,7 +536,12 @@ def _build_signal_fact_rows(signal: CanonicalSignal) -> list[dict[str, Any]]:
 
 
 def _select_last_facts(facts: list[dict[str, Any]], *, limit: int = 6) -> list[dict[str, Any]]:
-    rows = [dict(item) for item in facts]
+    # FACT-01: defensive live-fact filter (same predicate as split_conflicting_facts).
+    rows = [
+        dict(item)
+        for item in facts
+        if str(item.get("status") or "active") != "superseded"
+    ]
     rows.sort(
         key=lambda item: (
             str(item.get("observed_at") or ""),
@@ -570,6 +582,9 @@ def _build_open_loops(
 def _fact_conflicts(facts: list[dict[str, Any]]) -> dict[str, set[str]]:
     grouped: dict[str, set[str]] = {}
     for fact in facts:
+        # FACT-01: superseded is settled history, not a live disagreement.
+        if str(fact.get("status") or "active") == "superseded":
+            continue
         entity_scope = str(fact.get("entity_scope") or "").strip()
         if entity_scope not in {"case", "customer", "location", "asset"}:
             continue
@@ -659,17 +674,61 @@ class _EphemeralSnapshotStore:
         self.snapshot_versions: dict[str, list[dict[str, Any]]] = {}
 
     def append_fact_rows(self, rows: list[dict[str, Any]]) -> None:
-        seen = {str(item.get("fact_id") or "") for item in self.fact_rows}
+        # Parity with InMemory/Postgres: rebuild must supersede same
+        # (case_id, entity_scope, fact_key), e.g. latest_signal_kind.
+        self.append_facts_with_supersession(rows)
+
+    def append_facts_with_supersession(self, rows: list[dict[str, Any]]) -> dict[str, int]:
+        """Mirror InMemoryMailboxMemoryStore.append_facts_with_supersession on a flat list."""
+        stats = {"inserted": 0, "superseded": 0, "unchanged": 0}
+        if not rows:
+            return stats
         for row in rows:
-            fact_id = str(row.get("fact_id") or "").strip()
-            if fact_id and fact_id in seen:
+            payload = dict(row)
+            case_id = str(payload.get("case_id") or "").strip()
+            entity_scope = str(payload.get("entity_scope") or "case").strip() or "case"
+            fact_key = str(payload.get("fact_key") or "").strip()
+            new_value = str(payload.get("normalized_value") or "").strip()
+            if not case_id or not fact_key:
                 continue
-            self.fact_rows.append(dict(row))
-            if fact_id:
-                seen.add(fact_id)
+            skip_insert = False
+            updated_items: list[dict[str, Any]] = []
+            for item in self.fact_rows:
+                if (
+                    str(item.get("case_id") or "") == case_id
+                    and str(item.get("entity_scope") or "case") == entity_scope
+                    and str(item.get("fact_key") or "") == fact_key
+                    and str(item.get("status") or "active") == "active"
+                ):
+                    old_value = str(item.get("normalized_value") or "").strip()
+                    if old_value == new_value:
+                        stats["unchanged"] += 1
+                        skip_insert = True
+                        updated_items.append(item)
+                        continue
+                    meta = dict(item.get("metadata") or {})
+                    meta["superseded_at"] = payload.get("observed_at")
+                    meta["superseded_by_fact_id"] = str(payload.get("fact_id") or "")
+                    updated_items.append({**item, "status": "superseded", "metadata": meta})
+                    stats["superseded"] += 1
+                else:
+                    updated_items.append(item)
+            self.fact_rows = updated_items
+            if skip_insert:
+                continue
+            self.fact_rows.append(payload)
+            stats["inserted"] += 1
+        return stats
 
     def fetch_facts_for_case(self, case_id: str) -> list[dict[str, Any]]:
         return [dict(item) for item in self.fact_rows if str(item.get("case_id") or "") == case_id]
+
+    def fetch_active_facts_for_case(self, case_id: str) -> list[dict[str, Any]]:
+        return [
+            item
+            for item in self.fetch_facts_for_case(case_id)
+            if str(item.get("status") or "active") != "superseded"
+        ]
 
     def fetch_case(self, case_id: str) -> dict[str, Any] | None:
         return None
