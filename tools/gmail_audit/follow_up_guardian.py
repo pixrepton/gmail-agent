@@ -49,7 +49,12 @@ from typing import Any
 from agent_runtime.draft_identity import compute_draft_id
 from agent_runtime.snapshot_delta import apply_snapshot_delta
 from agent_runtime.store import AgentConcurrencyError, OperatorEngagementStore
-from llm_contracts.case_lifecycle import OPERATIONAL_TO_LIFECYCLE, map_operational_to_lifecycle
+from llm_contracts.case_lifecycle import (
+    OPERATIONAL_TO_LIFECYCLE,
+    SLA_HOURS,
+    map_case_status_to_lifecycle,
+    map_operational_to_lifecycle,
+)
 from llm_contracts.engagement_snapshot_v2 import EngagementSnapshotV2
 from log_config import get_logger
 from stagnation_sot import STATUS_STAGNATING, evaluate_waiting_vs_stagnation
@@ -165,18 +170,32 @@ def evaluate_follow_up_candidate(
     *,
     operational_status_code: str,
     hours_since_update: float | None,
+    case_status: str = "",
 ) -> dict[str, Any] | None:
     """Pure decision: does this case's CURRENT state warrant a follow-up proposal right now?
 
-    Returns the `stagnation_sot` verdict dict when `status == stagnating`, else `None`. Delegates
-    the actual waiting-vs-stagnation judgement entirely to `stagnation_sot` (roadmap 2.1) -- this
-    function only maps `operational_status.code` to a lifecycle state, per this module's stated
-    scope boundary.
+    Returns the `stagnation_sot` verdict dict when `status == stagnating`, else `None`.
+
+    FG-01 Option B (case-status-primary): when mailbox `case_status` maps to a lifecycle
+    state with an SLA budget, prefer that over the collapsed operational→lifecycle map.
     """
     code = str(operational_status_code or "").strip().lower()
-    if code not in _EVALUABLE_STATUS_CODES:
+    status = str(case_status or "").strip().lower()
+
+    lifecycle_state = None
+    if status:
+        # Prefer mailbox/pipeline status mapping when it yields a budgeted state.
+        mapped = map_case_status_to_lifecycle(status, dialect="mailbox")
+        if mapped in SLA_HOURS:
+            lifecycle_state = mapped
+    if lifecycle_state is None:
+        if code not in _EVALUABLE_STATUS_CODES and not status:
+            return None
+        lifecycle_state = map_operational_to_lifecycle(code, case_status=status)
+
+    if lifecycle_state not in SLA_HOURS:
         return None
-    lifecycle_state = map_operational_to_lifecycle(code)
+
     verdict = evaluate_waiting_vs_stagnation(
         lifecycle_state=lifecycle_state,
         hours_in_state=hours_since_update,
@@ -197,7 +216,13 @@ def build_follow_up_action_item(
     `source_signal_id=""` is deliberate and safe: `feed_visibility._has_pending_operator_work`
     only checks `enabled`, never `source_signal_id`, so a system-authored (non-mail) proposal
     surfaces on X1 exactly like a mail-triggered one.
+
+    PF-01: run `evaluate_draft_sanity` before `enabled=True` (fail-closed). This payload is an
+    operator-facing prompt (not customer email body); the gate is defense-in-depth for the
+    exhaustive `enabled=True` inventory, not a claim that Guardian drafts were leaking to clients.
     """
+    from agent_runtime.draft_sanity import evaluate_draft_sanity
+
     label = _PL_LABEL_BY_CODE.get(str(operational_status_code or "").strip().lower(), "Sprawa bez ruchu operatora")
     sla_hours = verdict.get("sla_hours")
     hours = verdict.get("hours_in_state")
@@ -205,7 +230,7 @@ def build_follow_up_action_item(
     if isinstance(sla_hours, (int, float)) and isinstance(hours, (int, float)):
         detail = f" ({int(hours)}h w stanie, budżet {int(sla_hours)}h)"
     payload_pl = f"{label}{detail}. Zaproponuj follow-up do klienta."
-    return {
+    action = {
         "id": FOLLOW_UP_ACTION_ID,
         "enabled": True,
         "payload_pl": payload_pl,
@@ -222,6 +247,12 @@ def build_follow_up_action_item(
         "case_id": case_id,
         "identity_state": "identity_incomplete",
     }
+    sanity = evaluate_draft_sanity(body=payload_pl, case_kind="follow_up", intent="follow_up")
+    if not sanity.get("ok"):
+        reasons = ",".join(sanity.get("reason_codes") or [])
+        action["enabled"] = False
+        action["disabled_reason_pl"] = f"DRAFT_SANITY_FAILED: {reasons}"
+    return action
 
 
 def _emit_follow_up_event(*, db_url: str, case_id: str, engagement_id: str, verdict: dict[str, Any]) -> None:
@@ -279,7 +310,8 @@ def run_follow_up_guardian_tick(
         case_id = str(snapshot.case_id or "").strip()
         if not case_id:
             continue  # staging snapshot, not a real case yet
-        if is_closed_case_status(resolve_mailbox_case_status(mailbox_store, case_id)):
+        mailbox_status = resolve_mailbox_case_status(mailbox_store, case_id)
+        if is_closed_case_status(mailbox_status):
             skipped_closed += 1
             continue
         if has_active_follow_up_proposal(snapshot):
@@ -290,6 +322,7 @@ def run_follow_up_guardian_tick(
         verdict = evaluate_follow_up_candidate(
             operational_status_code=snapshot.operational_status.code,
             hours_since_update=hours,
+            case_status=str(mailbox_status or ""),
         )
         if verdict is None:
             skipped_not_stagnating += 1

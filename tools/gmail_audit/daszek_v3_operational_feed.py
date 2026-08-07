@@ -700,6 +700,13 @@ def assemble_mailbox_pack_dict(store: MailboxMemoryStoreLike, case_id: str) -> d
     drive_facts = list(enrichment.get("drive_facts") or [])
     drive_active, conflicting_drive = split_conflicting_facts(drive_facts)
 
+    from install_prep_projection import project_install_prep
+
+    install_prep = project_install_prep(
+        active_facts=list(active_facts) + list(drive_active),
+        case_id=case_id,
+    )
+
     documents = store.fetch_documents_for_case(case_id, limit=8)
     stripped_docs: list[dict[str, Any]] = []
     for d in documents:
@@ -822,6 +829,8 @@ def assemble_mailbox_pack_dict(store: MailboxMemoryStoreLike, case_id: str) -> d
         "conflicting_facts": conflicting_mailbox + conflicting_drive,
         # 4.2: read-only superseded audit trail (projection only; mailbox store remains SoT).
         "superseded_facts": superseded_mailbox,
+        # 4.4: install-prep readiness from active facts only (not a second SoT).
+        "install_prep": install_prep,
         "latest_documents": stripped_docs,
         "drive_documents_summary": list(enrichment.get("drive_documents") or []),
         "completeness_gaps": list(enrichment.get("completeness_gaps") or []),

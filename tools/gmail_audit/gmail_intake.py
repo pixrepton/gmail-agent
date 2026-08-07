@@ -362,6 +362,18 @@ def main() -> int:
                 high_count = result.get("violations", {}).get("high", [])
                 print(f"[SLA Watcher] Critical: {len(critical_count)}, High: {len(high_count)}", file=sys.stderr)
             return 0
+        if args.command == "follow-up-guardian":
+            from follow_up_guardian import follow_up_guardian_oneshot
+            from config import load_settings
+            settings = load_settings(require_groq=False, require_google=False)
+            result = follow_up_guardian_oneshot(settings, limit=int(getattr(args, "limit", 200) or 200))
+            print(result)
+            print(
+                f"[Follow-up Guardian] ok={result.get('ok')} checked={result.get('checked')} "
+                f"proposed={result.get('proposed_count')}",
+                file=sys.stderr,
+            )
+            return 0 if bool(result.get("ok")) else 1
         if args.command == "os-events-cleanup":
             from event_spine.query import cleanup_old_events
             from config import load_settings

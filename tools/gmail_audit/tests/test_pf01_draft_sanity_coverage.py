@@ -191,3 +191,35 @@ def test_hitl_mint_gap_only_clean_body_enabled() -> None:
     )
     assert action.get("enabled") is True
     assert action.get("disabled_reason_pl") is None
+
+
+def test_follow_up_guardian_clean_payload_enabled() -> None:
+    from follow_up_guardian import build_follow_up_action_item, evaluate_follow_up_candidate
+
+    verdict = evaluate_follow_up_candidate(
+        operational_status_code="enriching", hours_since_update=60.0
+    )
+    assert verdict is not None
+    item = build_follow_up_action_item(
+        case_id="case_pf01_fu",
+        operational_status_code="enriching",
+        verdict=verdict,
+    )
+    assert item.get("enabled") is True
+    assert item.get("disabled_reason_pl") is None
+
+
+def test_follow_up_guardian_placeholder_payload_not_enabled(monkeypatch) -> None:
+    from follow_up_guardian import build_follow_up_action_item
+
+    monkeypatch.setattr(
+        "agent_runtime.draft_sanity.evaluate_draft_sanity",
+        lambda **_kwargs: {"ok": False, "reason_codes": ["placeholder_or_internal_token"]},
+    )
+    item = build_follow_up_action_item(
+        case_id="case_pf01_fu_bad",
+        operational_status_code="enriching",
+        verdict={"sla_hours": 48, "hours_in_state": 60},
+    )
+    assert item.get("enabled") is False
+    assert "DRAFT_SANITY_FAILED" in str(item.get("disabled_reason_pl") or "")

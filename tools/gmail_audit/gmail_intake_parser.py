@@ -628,6 +628,13 @@ def _build_helper_parsers(subparsers: argparse._SubParsersAction) -> None:
     sla_watcher_parser.add_argument("--oneshot", action="store_true", help="Run once and report.")
     sla_watcher_parser.add_argument("--loop", action="store_true", help="Run continuous loop (15 min interval).")
     sla_watcher_parser.add_argument("--verbose", action="store_true", help="Show details.")
+    # Follow-up Guardian CLI (FG-04 live tick entrypoint)
+    follow_up_parser = subparsers.add_parser(
+        "follow-up-guardian",
+        help="Propose follow-ups for SLA-stagnating cases (roadmap 3.1 / FG-04 oneshot).",
+    )
+    follow_up_parser.add_argument("--oneshot", action="store_true", help="Run once and report.")
+    follow_up_parser.add_argument("--limit", type=int, default=200, help="Max recent snapshots to scan.")
     # Event Spine cleanup CLI
     os_cleanup = subparsers.add_parser(
         "os-events-cleanup",

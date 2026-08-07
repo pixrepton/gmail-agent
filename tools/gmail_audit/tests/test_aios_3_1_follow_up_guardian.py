@@ -325,3 +325,40 @@ def test_tick_still_proposes_for_open_stagnating_case_with_mailbox_status():
     assert result.get("skipped_closed", 0) == 0
     snap = store.load_snapshot("eng_open")
     assert has_active_follow_up_proposal(snap) is True
+
+
+def test_fg01_option_b_waiting_case_status_uses_waiting_client_sla():
+    """FG-01 Option B: mailbox `waiting` maps to WAITING_CLIENT (168h), not QUALIFICATION (48h)."""
+    within_waiting_sla = evaluate_follow_up_candidate(
+        operational_status_code="pending_operator",
+        hours_since_update=60.0,
+        case_status="waiting",
+    )
+    assert within_waiting_sla is None
+
+    past_waiting_sla = evaluate_follow_up_candidate(
+        operational_status_code="pending_operator",
+        hours_since_update=200.0,
+        case_status="waiting",
+    )
+    assert past_waiting_sla is not None
+    assert past_waiting_sla["status"] == "stagnating"
+    assert past_waiting_sla["sla_hours"] == 168
+    assert past_waiting_sla["lifecycle_state"] == "waiting_for_client"
+
+
+def test_fg01_option_b_tick_joins_mailbox_waiting_status():
+    store = InMemoryOperatorEngagementStore()
+    _seed(
+        store,
+        engagement_id="eng_wait",
+        case_id="case_wait",
+        status_code="pending_operator",
+        hours_ago=60.0,
+    )
+    mailbox = _FakeMailboxStore({"case_wait": "waiting"})
+
+    # 60h is past QUALIFICATION(48h) but within WAITING_CLIENT(168h) → no proposal.
+    result = run_follow_up_guardian_tick(store, mailbox_store=mailbox)
+    assert result["proposed_count"] == 0
+    assert result["skipped_not_stagnating"] >= 1
