@@ -56,19 +56,21 @@ class _QueueStore:
         return updated
 
 
-def test_classify_completed_as_won_not_fictional_won_status() -> None:
-    assert classify_case_outcome(status="completed") == "won"
+def test_classify_completed_without_outcome_is_open() -> None:
+    assert classify_case_outcome(status="completed") == "open"
+    assert classify_case_outcome(status="completed", resolution_outcome="won") == "won"
     assert classify_case_outcome(status="won") == "open"
     assert classify_case_outcome(status="lost") == "lost"
 
 
-def test_get_win_rate_uses_lifecycle_completed() -> None:
+def test_get_win_rate_requires_explicit_resolution_outcome() -> None:
     store = _QueueStore(
         [
             (
                 {},
                 [
                     ("completed", "won"),
+                    ("completed", ""),
                     ("lost", ""),
                     ("active", ""),
                 ],
@@ -80,6 +82,7 @@ def test_get_win_rate_uses_lifecycle_completed() -> None:
     assert result["win_rate"]["won"] == 1
     assert result["win_rate"]["lost"] == 1
     assert result["win_rate"]["rate_pct"] == 50.0
+    assert result["win_rate"]["status_basis"] == "resolution_outcome_won_vs_lost"
 
 
 def test_record_business_outcome_persists_metadata() -> None:

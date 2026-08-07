@@ -13,6 +13,38 @@ from typing import Any, Callable
 logger = get_logger(__name__)
 
 
+def _outcome_guard_for_terminal_status(
+    mailbox_store: Any,
+    *,
+    case_id: str,
+    new_status: str,
+) -> dict[str, str] | None:
+    """Fail-closed when closing lifecycle without explicit business outcome (AI-OS 5.1)."""
+    try:
+        from business_outcome import outcome_required_for_terminal_status, read_resolution_outcome
+    except ImportError:
+        return None
+    if not outcome_required_for_terminal_status(new_status):
+        return None
+    case_row: dict[str, Any] = {}
+    if mailbox_store is not None:
+        getter = getattr(mailbox_store, "fetch_case", None)
+        if callable(getter):
+            fetched = getter(case_id)
+            if isinstance(fetched, dict):
+                case_row = fetched
+    if read_resolution_outcome(case_row):
+        return None
+    return {
+        "status": "error",
+        "summary": (
+            f"Zamknięcie sprawy {case_id} wymaga jawnego wyniku biznesowego "
+            f"(won/lost/cancelled). Użyj business-outcome przed statusem {new_status}."
+        ),
+        "error_code": "outcome_required",
+    }
+
+
 from case_engagement_bridge import resolve_engagement_id as _bridge_resolve_engagement_id
 
 
@@ -207,6 +239,10 @@ def execute_update_case_status(
     new_status = str(args.get("status") or args.get("new_status") or "").strip()
     if not case_id or not new_status:
         return {"status": "error", "summary": "Brak case_id lub status."}
+
+    guard = _outcome_guard_for_terminal_status(mailbox_store, case_id=case_id, new_status=new_status)
+    if guard is not None:
+        return guard
 
     # Lifecycle validation — map status to lifecycle state
     try:
@@ -443,6 +479,10 @@ def execute_archive_case(
     case_id = str(args.get("case_id") or args.get("target") or "").strip()
     if not case_id:
         return {"status": "error", "summary": "Brak case_id."}
+
+    guard = _outcome_guard_for_terminal_status(mailbox_store, case_id=case_id, new_status="archived")
+    if guard is not None:
+        return guard
 
     # Lifecycle validation
     try:

@@ -908,10 +908,96 @@ def _evaluate_cost_gate(signal: CanonicalSignal, intake: dict[str, Any]) -> dict
     return {"skip": False, "reason": "justified"}
 
 
+def _cieplo_readiness_from_signal(signal: CanonicalSignal, intake: dict[str, Any]) -> dict[str, Any]:
+    """Extract typed document readiness from Cieplo os-event / intake payload (AI-OS 4.3)."""
+    message = intake.get("message") if isinstance(intake.get("message"), dict) else {}
+    payload = signal.payload if isinstance(signal.payload, dict) else {}
+    nested = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+    os_extra = (
+        payload.get("payload_extra")
+        or payload.get("os_event_payload")
+        or nested.get("payload_extra")
+        or message.get("payload_extra")
+        or {}
+    )
+    if not isinstance(os_extra, dict):
+        os_extra = {}
+    event_type = str(
+        payload.get("event_type")
+        or message.get("event_type")
+        or nested.get("event_type")
+        or ""
+    ).strip().lower()
+    workflow_state = str(
+        payload.get("workflow_state")
+        or message.get("workflow_state")
+        or nested.get("workflow_state")
+        or ""
+    ).strip().upper()
+    readiness_status = str(
+        os_extra.get("document_readiness_status")
+        or os_extra.get("readiness_status")
+        or payload.get("document_readiness_status")
+        or ""
+    ).strip().upper()
+    actual_format = str(
+        os_extra.get("actual_format")
+        or os_extra.get("document_actual_format")
+        or payload.get("actual_format")
+        or ""
+    ).strip().lower()
+    artifact_verified = os_extra.get("artifact_verified")
+    if artifact_verified is None:
+        artifact_verified = os_extra.get("artifactVerified")
+    if artifact_verified is None:
+        artifact_verified = payload.get("artifact_verified")
+    return {
+        "event_type": event_type,
+        "workflow_state": workflow_state,
+        "readiness_status": readiness_status,
+        "actual_format": actual_format,
+        "artifact_verified": artifact_verified,
+    }
+
+
+def _cieplo_pipeline_verified_complete(readiness: dict[str, Any]) -> bool:
+    """True only when Cieplo explicitly reports verified PDF completion (not keyword heuristics)."""
+    event_type = str(readiness.get("event_type") or "").lower()
+    workflow_state = str(readiness.get("workflow_state") or "").upper()
+    if event_type == "cieplo.workflow.document_degraded":
+        return False
+    if workflow_state == "DOCUMENT_READY_DEGRADED":
+        return False
+    if event_type == "cieplo.workflow.done":
+        status = str(readiness.get("readiness_status") or "").upper()
+        actual = str(readiness.get("actual_format") or "").lower()
+        verified = readiness.get("artifact_verified")
+        if verified is not True:
+            return False
+        return status in {"READY"} and actual == "pdf"
+    if event_type == "cieplo.workflow.pdf_ready":
+        status = str(readiness.get("readiness_status") or "").upper()
+        actual = str(readiness.get("actual_format") or "").lower()
+        verified = readiness.get("artifact_verified")
+        if verified is not True:
+            return False
+        return status == "READY" and actual == "pdf"
+    if workflow_state == "DONE":
+        status = str(readiness.get("readiness_status") or "").upper()
+        actual = str(readiness.get("actual_format") or "").lower()
+        if status == "DEGRADED" or actual == "docx":
+            return False
+        if readiness.get("artifact_verified") is False:
+            return False
+        return status in {"", "READY"} and actual in {"", "pdf"}
+    return False
+
+
 def _check_cieplo_dedup(signal: CanonicalSignal, intake: dict[str, Any]) -> dict[str, Any]:
     """Dedup check: skip TUM for cieplo-orchestrator signals with completed pipeline.
 
-    Prevents duplicate processing when Cieplo already completed the workflow.
+    AI-OS 4.3: requires explicit readiness fields — keyword ``pdf_ready`` in subject/body
+    is NOT sufficient (DOCX fallback must not look like verified PDF).
     """
     source_repo = str(
         intake.get("message", {}).get("source_repo")
@@ -921,21 +1007,11 @@ def _check_cieplo_dedup(signal: CanonicalSignal, intake: dict[str, Any]) -> dict
     if source_repo != "cieplo-orchestrator":
         return {"skip": False, "reason": "not_cieplo"}
 
-    # Check if lead has completed pipeline via subject/body indicators
-    subject = str(intake.get("message", {}).get("subject") or "").lower()
-    has_completed_indicators = any(
-        kw in subject for kw in ["pdf gotowy", "pdf_ready", "completed", "zakończono"]
-    )
-    body = str(intake.get("message", {}).get("body_text") or "").lower()
-    if not has_completed_indicators:
-        has_completed_indicators = any(
-            kw in body for kw in ["pdf gotowy", "pdf_ready", "completed", "zakończono", "status: done"]
-        )
-
-    if has_completed_indicators:
+    readiness = _cieplo_readiness_from_signal(signal, intake)
+    if _cieplo_pipeline_verified_complete(readiness):
         return {"skip": True, "reason": "cieplo_already_completed"}
 
-    return {"skip": False, "reason": "cieplo_in_progress"}
+    return {"skip": False, "reason": "cieplo_in_progress_or_unverified"}
 
 
 def run_agent_reconcile_staging(

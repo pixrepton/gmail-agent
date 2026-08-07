@@ -386,7 +386,7 @@ def get_win_rate(store: Any, settings: Any) -> dict[str, Any]:
             "lost": lost,
             "in_progress": in_progress,
             "rate_pct": rate,
-            "status_basis": "lifecycle_completed_vs_lost",
+            "status_basis": "resolution_outcome_won_vs_lost",
             "trend": None,
         }
     except Exception as exc:

@@ -313,9 +313,6 @@ class OpenAIToolPlanner:
             if body.strip() and "allowlist" not in title.lower()
         )
         goal = _GOAL_BY_KIND.get(snapshot.case_kind, _GOAL_BY_KIND["niezaklasyfikowane"])
-        instruction_prefix = ""
-        if snapshot.user_instruction:
-            instruction_prefix = f"Instrukcja operatora: {snapshot.user_instruction}\n\n"
         unavailable_block = ""
         if unavailable_notes:
             unavailable_block = (
@@ -367,7 +364,7 @@ class OpenAIToolPlanner:
             followup_instruction = "NIE wywołuj extract_facts_from_text — sprawa już istnieje. "
 
         system = (
-            f"{instruction_prefix}{sections}\n\n"
+            f"{sections}\n\n"
             f"Narzedzia dostepne w tej turze: {', '.join(available_tools)}.\n"
             f"{unavailable_block}"
             f"Zakazane akcje: {', '.join(constitution.forbidden_actions)}.\n"
@@ -403,7 +400,7 @@ class OpenAIToolPlanner:
         )
         if constitution.company_context:
             system += f"\n\nKontekst firmy:\n{constitution.company_context[:8000]}"
-        return [
+        messages: list[dict[str, Any]] = [
             {"role": "system", "content": system},
             {
                 "role": "user",
@@ -414,6 +411,18 @@ class OpenAIToolPlanner:
                 ),
             },
         ]
+        if snapshot.user_instruction:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "<operator_instruction>\n"
+                        f"{snapshot.user_instruction}\n"
+                        "</operator_instruction>"
+                    ),
+                }
+            )
+        return messages
 
     def _parse_tool_call(self, response: Any) -> ToolCallPlan:
         choice = response.choices[0]

@@ -13,7 +13,7 @@ VALID_OUTCOMES = frozenset({"won", "lost", "cancelled", "unknown"})
 
 WON_CASE_STATUSES = frozenset({"completed", "closed", "resolved", "archived"})
 LOST_CASE_STATUSES = frozenset({"lost", "cancelled"})
-WON_OUTCOME_VALUES = frozenset({"won", "completed", "accepted"})
+WON_OUTCOME_VALUES = frozenset({"won"})
 LOST_OUTCOME_VALUES = frozenset({"lost", "cancelled", "rejected"})
 
 
@@ -29,18 +29,25 @@ def read_resolution_outcome(case_row: dict[str, Any]) -> str:
 
 
 def classify_case_outcome(*, status: str, resolution_outcome: str = "") -> str:
-    """Return won|lost|open using lifecycle status + optional metadata outcome."""
+    """Return won|lost|open — explicit ``resolution_outcome`` required for won (AI-OS 5.1).
+
+    ``status=completed`` alone is NOT a business win; ``communication_sent`` is unrelated.
+    """
     outcome = str(resolution_outcome or "").strip().lower()
     status_l = str(status or "").strip().lower()
     if outcome in WON_OUTCOME_VALUES:
         return "won"
     if outcome in LOST_OUTCOME_VALUES:
         return "lost"
-    if status_l in LOST_CASE_STATUSES:
+    if status_l in LOST_CASE_STATUSES and not outcome:
         return "lost"
-    if status_l in WON_CASE_STATUSES:
-        return "won"
     return "open"
+
+
+def outcome_required_for_terminal_status(status: str) -> bool:
+    """Lifecycle closes that require explicit business outcome before persisting."""
+    status_l = str(status or "").strip().lower()
+    return status_l in WON_CASE_STATUSES or status_l in LOST_CASE_STATUSES
 
 
 def record_business_outcome(
@@ -98,5 +105,6 @@ __all__ = [
     "LOST_OUTCOME_VALUES",
     "read_resolution_outcome",
     "classify_case_outcome",
+    "outcome_required_for_terminal_status",
     "record_business_outcome",
 ]

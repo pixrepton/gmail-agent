@@ -276,101 +276,17 @@ def _run_agent_chat(
     settings: Any,
     operator_scope: Any = None,
 ) -> dict[str, Any]:
-    """Core agent chat logic — build signal, run reconcile, extract proposals.
+    """Core agent chat logic — OperatorCommand spine with journal + receipt."""
+    from agent_runtime.operator_command_spine import run_operator_command_spine
 
-    Used by both sync /agent-chat and streaming /agent-chat/stream.
-    """
-    from signal_contract import build_canonical_signal
-    from datetime import datetime, timezone
-
-    now = datetime.now(timezone.utc).isoformat()
-
-    signal = build_canonical_signal(
-        signal_kind="operator_command",
-        source_kind="operator_command",
-        source_ref={"session_id": session_id, "case_id": case_id} if case_id else {"session_id": session_id},
-        observed_at=now,
-        signal_summary_pl=user_input[:120],
-        payload={
-            "user_input": user_input,
-            "session_id": session_id,
-            "case_id": case_id,
-            "operator_memory_context": opmem_context.get("prompt", ""),
-        },
+    return run_operator_command_spine(
+        user_input=user_input,
+        session_id=session_id,
+        case_id=case_id,
+        opmem_context=opmem_context,
+        settings=settings,
+        operator_scope=operator_scope,
     )
-
-    try:
-        from agent_runtime.agent_reconcile import (
-            build_operator_engagement_store,
-            run_agent_reconcile_staging,
-        )
-        from signal_reconciler import SignalRuntimeContext
-
-        runtime_ctx = SignalRuntimeContext(
-            settings=settings,
-            journal=None,
-            store=None,
-            graph_store=None,
-            run_state={},
-            mode="prep",
-            verbose=False,
-            persist_entity_links=False,
-        )
-        if operator_scope is not None:
-            runtime_ctx.operator_scope = operator_scope
-
-        operator_store = build_operator_engagement_store(settings)
-        _ = operator_store  # unused but required for side effects
-        synthetic_intake = {
-            "message": {
-                "message_id": signal.signal_id,
-                "subject": "Polecenie operatora",
-                "body_text": user_input,
-            },
-            "staging": True,
-        }
-        snapshot_eng, run_result, resolution, warnings = run_agent_reconcile_staging(
-            signal,
-            runtime_context=runtime_ctx,
-            dry_run=False,
-            intake_output=synthetic_intake,
-        )
-    except Exception as exc:
-        logger.error("_run_agent_chat: agent reconcile failed: %s", exc)
-        return {
-            "signal_id": getattr(signal, "signal_id", ""),
-            "engagement_id": "",
-            "warnings": [str(exc)],
-            "turns": [{"role": "assistant", "content": f"Blad: {exc}"}],
-            "proposals": [],
-            "snapshot_eng": None,
-        }
-
-    proposals = []
-    if snapshot_eng and snapshot_eng.agent_memory:
-        proposals = [
-            {
-                "proposal_id": p.proposal_id,
-                "proposal_type": p.proposal_type,
-                "status": p.status,
-                "payload": p.payload_json,
-            }
-            for p in snapshot_eng.agent_memory.materialize_proposals
-        ]
-
-    turns = [
-        {"role": "assistant", "content": f"{p.get('proposal_type', 'action')}: {p.get('status', 'done')}"}
-        for p in proposals
-    ] or [{"role": "assistant", "content": "Przyjalem polecenie."}]
-
-    return {
-        "signal_id": signal.signal_id,
-        "engagement_id": resolution.engagement_id if resolution else "",
-        "warnings": warnings,
-        "turns": turns,
-        "proposals": proposals,
-        "snapshot_eng": snapshot_eng,
-    }
 
 
 def _require_tasks_mutation_scope(
@@ -1637,6 +1553,65 @@ def create_app(
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
+    @app.post("/cases/{case_id}/business-outcome")
+    def record_case_business_outcome(
+        case_id: str,
+        payload: dict[str, Any] = Body(default_factory=dict),
+        principal=Depends(_require_mutation_principal),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Record explicit business outcome (won/lost/cancelled/unknown) — AI-OS 5.1."""
+        _ = principal
+        outcome = str(payload.get("outcome") or "").strip()
+        note = str(payload.get("note") or "").strip()
+        source = str(payload.get("source") or "operator").strip()
+        settings = load_settings(require_groq=False, require_google=False)
+        db_url = str(getattr(settings, "mailbox_memory_database_url", "") or "").strip()
+        if not db_url:
+            raise HTTPException(status_code=503, detail="Database not configured.")
+        from mailbox_memory_store import PostgresMailboxMemoryStore
+        from business_outcome import record_business_outcome
+
+        store = PostgresMailboxMemoryStore(db_url)
+        result = record_business_outcome(
+            store,
+            case_id=case_id,
+            outcome=outcome,
+            note=note,
+            source=source,
+        )
+        if not result.get("ok"):
+            err = str(result.get("error") or "record_failed")
+            if err == "case_not_found":
+                raise HTTPException(status_code=404, detail=err)
+            if err.startswith("invalid_outcome"):
+                raise HTTPException(status_code=400, detail=err)
+            raise HTTPException(status_code=409, detail=err)
+        return {"ok": True, **result}
+
+    @app.get("/system/correction-ledger")
+    def system_correction_ledger(
+        case_id: str = Query(default=""),
+        engagement_id: str = Query(default=""),
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> dict[str, Any]:
+        """Append-only correction trail (AI-OS 5.2)."""
+        conn = _learning_db_conn()
+        if conn is None:
+            raise HTTPException(status_code=503, detail="Database not configured.")
+        try:
+            from correction_ledger import fetch_correction_ledger
+
+            with conn:
+                items = fetch_correction_ledger(
+                    conn,
+                    case_id=case_id,
+                    engagement_id=engagement_id,
+                    limit=limit,
+                )
+            return {"ok": True, "items": items}
+        finally:
+            conn.close()
+
     # TODO: external contract — learning loop operator action recording
     @app.post("/cases/{case_id}/operator-action")
     def record_case_operator_action(
@@ -1973,6 +1948,8 @@ def create_app(
 
         return {
             "ok": True,
+            "command_id": result.get("command_id", ""),
+            "receipt": result.get("receipt", {}),
             "signal_id": result.get("signal_id", ""),
             "session_id": session_id,
             "user_input": user_input,
@@ -1981,6 +1958,91 @@ def create_app(
             "agent_turns": len(result.get("turns", [])),
             "proposals": proposals,
             "hitl_required": _chat_hitl,
+        }
+
+    # ── Agent Chat Async (AI-OS 6.2) ───────────────────────────────────────
+
+    @app.post("/agent-chat/async", status_code=202)
+    def agent_chat_async(
+        payload: dict[str, Any] = Body(default_factory=dict),
+        principal=Depends(_require_mutation_principal),  # noqa: B008
+        _rl: None = Depends(_rate_limit_agent_chat),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Enqueue async agent chat — poll GET /agent-chat/jobs/{job_id}."""
+        _ = principal
+        user_input = _sanitize_user_input(str(payload.get("user_input") or "").strip())
+        session_id = str(payload.get("session_id") or "").strip() or f"sess_{uuid4().hex[:12]}"
+        case_id = str(payload.get("case_id") or "").strip()
+        if not user_input:
+            raise HTTPException(status_code=400, detail="user_input is required")
+
+        settings = load_settings(require_groq=False, require_google=False)
+        db_url = str(getattr(settings, "mailbox_memory_database_url", "") or "").strip()
+        if not db_url:
+            raise HTTPException(status_code=503, detail="Database not configured.")
+
+        from agent_runtime.operator_command import OperatorCommand
+        from agent_runtime.agent_chat_jobs import enqueue_agent_chat_job, ensure_agent_chat_jobs_table
+
+        command = OperatorCommand(
+            user_input=user_input,
+            session_id=session_id,
+            case_id=case_id,
+            operator_id=str(getattr(principal, "operator_id", "") or "default"),
+        )
+        import psycopg
+
+        conn = psycopg.connect(db_url)
+        try:
+            ensure_agent_chat_jobs_table(conn)
+            job_id = enqueue_agent_chat_job(
+                conn,
+                command_id=command.command_id,
+                session_id=session_id,
+                case_id=case_id,
+                request={
+                    "user_input": user_input,
+                    "session_id": session_id,
+                    "case_id": case_id,
+                    "command_id": command.command_id,
+                },
+            )
+        finally:
+            conn.close()
+
+        return {
+            "ok": True,
+            "job_id": job_id,
+            "command_id": command.command_id,
+            "session_id": session_id,
+            "status": "queued",
+        }
+
+    @app.get("/agent-chat/jobs/{job_id}")
+    def agent_chat_job_status(job_id: str) -> dict[str, Any]:
+        settings = load_settings(require_groq=False, require_google=False)
+        db_url = str(getattr(settings, "mailbox_memory_database_url", "") or "").strip()
+        if not db_url:
+            raise HTTPException(status_code=503, detail="Database not configured.")
+        from agent_runtime.agent_chat_jobs import fetch_agent_chat_job, ensure_agent_chat_jobs_table
+        import psycopg
+
+        conn = psycopg.connect(db_url)
+        try:
+            ensure_agent_chat_jobs_table(conn)
+            job = fetch_agent_chat_job(conn, job_id)
+        finally:
+            conn.close()
+        if not job:
+            raise HTTPException(status_code=404, detail="job_not_found")
+        return {
+            "ok": True,
+            "job_id": job.get("job_id"),
+            "command_id": job.get("command_id"),
+            "status": job.get("status"),
+            "receipt": job.get("receipt_json") or {},
+            "result": job.get("result_json") or {},
+            "error_message": job.get("error_message") or "",
         }
 
     # ── Agent Chat Streaming (SSE) ──────────────────────────────────────────

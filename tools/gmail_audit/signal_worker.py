@@ -626,6 +626,12 @@ def run_signal_loop(
             result.iterations += 1
             # Faza 0b: heartbeat worker przy każdej iteracji
             _write_worker_heartbeat()
+            try:
+                from agent_runtime.agent_chat_worker import process_agent_chat_jobs_tick
+
+                process_agent_chat_jobs_tick(effective_settings, max_jobs=1)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("agent_chat_jobs_tick skipped: %s", exc)
             result.heartbeat_at = datetime.now().astimezone().isoformat()
             if loop_mode != "continuous_poll":
                 if int(timebox_seconds or 0) > 0 and (time.monotonic() - started_monotonic) >= float(timebox_seconds):
