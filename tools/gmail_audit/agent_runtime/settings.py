@@ -257,12 +257,22 @@ def build_agent_planner_endpoints(settings: AgentRuntimeSettings) -> list[Planne
 
     groq_url = _env_first("AGENT_GROQ_BASE_URL") or "https://api.groq.com/openai/v1"
     groq_model = _env_first("AGENT_GROQ_MODEL", "GROQ_MODEL") or model
+    # GROQ-KEY-DEAD-01: AGENT_GROQ_API_KEY is optional secondary. Skip when
+    # AGENT_GROQ_API_KEY_DISABLED=1 (dead key still present in env files) so the
+    # live GROQ_API_KEY / GROQ_API_KEYS pool is used without 401 noise.
+    _agent_groq_disabled = (os.getenv("AGENT_GROQ_API_KEY_DISABLED") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    _agent_groq_key = "" if _agent_groq_disabled else os.getenv("AGENT_GROQ_API_KEY", "")
     for index, groq_key in enumerate(
         parse_api_key_pool(
             os.getenv("GROQ_API_KEYS", ""),
             os.getenv("GROQ_API_KEY", ""),
             os.getenv("GROQ_API_VL", ""),
-            os.getenv("AGENT_GROQ_API_KEY", ""),
+            _agent_groq_key,
         ),
         start=1,
     ):

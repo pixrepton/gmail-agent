@@ -55,6 +55,9 @@ DEFAULT_DASZEK_OPERATIONAL_FEED_PUSH_MIN_INTERVAL_SEC = 60
 DEFAULT_DASZEK_OPERATIONAL_FEED_CASE_LIMIT = 50
 DEFAULT_DASZEK_OPERATIONAL_FEED_TASK_LIMIT = 80
 DEFAULT_GMAIL_HISTORY_POLL_INTERVAL_SEC = 120
+# SPINE-WORKER-TICK-01: drain agent_chat_jobs more often than Gmail history poll.
+DEFAULT_AGENT_CHAT_JOBS_TICK_INTERVAL_SEC = 15
+DEFAULT_AGENT_CHAT_JOBS_MAX_PER_TICK = 5
 DEFAULT_DRIVE_CHANGES_POLL_INTERVAL_SEC = 180
 DEFAULT_GMAIL_AGENT_OTEL_ENABLED = False
 DEFAULT_GMAIL_AGENT_OTEL_LOCAL_MIRROR_ENABLED = True
@@ -318,6 +321,8 @@ class Settings:
     action_proposal_v2_enabled: bool = False
     decision_pipeline_dry_run_only: bool = True
     gmail_history_poll_interval_sec: int = DEFAULT_GMAIL_HISTORY_POLL_INTERVAL_SEC
+    agent_chat_jobs_tick_interval_sec: int = DEFAULT_AGENT_CHAT_JOBS_TICK_INTERVAL_SEC
+    agent_chat_jobs_max_per_tick: int = DEFAULT_AGENT_CHAT_JOBS_MAX_PER_TICK
     drive_changes_poll_interval_sec: int = DEFAULT_DRIVE_CHANGES_POLL_INTERVAL_SEC
     http_timeout: int = DEFAULT_HTTP_TIMEOUT
     http_max_retries: int = DEFAULT_HTTP_MAX_RETRIES
@@ -1097,6 +1102,22 @@ def load_settings(*, require_groq: bool = True, require_google: bool = True) -> 
         or str(DEFAULT_GMAIL_HISTORY_POLL_INTERVAL_SEC),
         field_name="GMAIL_HISTORY_POLL_INTERVAL_SEC",
     )
+    agent_chat_jobs_tick_interval_sec = _parse_positive_int(
+        os.getenv(
+            "AGENT_CHAT_JOBS_TICK_INTERVAL_SEC",
+            str(DEFAULT_AGENT_CHAT_JOBS_TICK_INTERVAL_SEC),
+        ).strip()
+        or str(DEFAULT_AGENT_CHAT_JOBS_TICK_INTERVAL_SEC),
+        field_name="AGENT_CHAT_JOBS_TICK_INTERVAL_SEC",
+    )
+    agent_chat_jobs_max_per_tick = _parse_positive_int(
+        os.getenv(
+            "AGENT_CHAT_JOBS_MAX_PER_TICK",
+            str(DEFAULT_AGENT_CHAT_JOBS_MAX_PER_TICK),
+        ).strip()
+        or str(DEFAULT_AGENT_CHAT_JOBS_MAX_PER_TICK),
+        field_name="AGENT_CHAT_JOBS_MAX_PER_TICK",
+    )
     drive_changes_poll_interval_sec = _parse_positive_int(
         os.getenv("DRIVE_CHANGES_POLL_INTERVAL_SEC", str(DEFAULT_DRIVE_CHANGES_POLL_INTERVAL_SEC)).strip()
         or str(DEFAULT_DRIVE_CHANGES_POLL_INTERVAL_SEC),
@@ -1390,6 +1411,8 @@ def load_settings(*, require_groq: bool = True, require_google: bool = True) -> 
         action_proposal_v2_enabled=action_proposal_v2_enabled,
         decision_pipeline_dry_run_only=decision_pipeline_dry_run_only,
         gmail_history_poll_interval_sec=gmail_history_poll_interval_sec,
+        agent_chat_jobs_tick_interval_sec=agent_chat_jobs_tick_interval_sec,
+        agent_chat_jobs_max_per_tick=agent_chat_jobs_max_per_tick,
         drive_changes_poll_interval_sec=drive_changes_poll_interval_sec,
         http_timeout=http_timeout,
         http_max_retries=http_max_retries,

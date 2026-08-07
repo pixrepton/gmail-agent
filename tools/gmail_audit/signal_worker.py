@@ -629,7 +629,8 @@ def run_signal_loop(
             try:
                 from agent_runtime.agent_chat_worker import process_agent_chat_jobs_tick
 
-                process_agent_chat_jobs_tick(effective_settings, max_jobs=1)
+                max_jobs = int(getattr(effective_settings, "agent_chat_jobs_max_per_tick", 5) or 5)
+                process_agent_chat_jobs_tick(effective_settings, max_jobs=max(1, max_jobs))
             except Exception as exc:  # noqa: BLE001
                 logger.debug("agent_chat_jobs_tick skipped: %s", exc)
             result.heartbeat_at = datetime.now().astimezone().isoformat()
@@ -1021,8 +1022,11 @@ def run_signal_loop(
                 mailbox_runtime=mailbox_runtime,
                 iteration=result.iterations,
             )
-            # Sleep z możliwością przerwania przez SIGTERM (graceful shutdown)
-            if _sleep_with_abort(_poll_sleep_seconds(effective_settings, scheduler=_scheduler)):
+            # SPINE-WORKER-TICK-01: chunk idle sleep so agent_chat_jobs drain between Gmail polls.
+            if _idle_sleep_with_agent_chat_drain(
+                effective_settings,
+                scheduler=_scheduler,
+            ):
                 result.stop_reason = "sigterm"
                 break
     except (KeyboardInterrupt, SystemExit):
@@ -1125,14 +1129,52 @@ def _resolve_worker_settings(settings: Settings, *, dry_run: bool) -> Settings:
 
 
 def _poll_sleep_seconds(settings: Settings, scheduler: PredictiveScheduler | None = None) -> int:
-    if scheduler:
+    if scheduler is not None:
         return scheduler.get_sleep_seconds()
-    candidates = []
+    candidates: list[int] = []
     if bool(settings.gmail_change_detection_enabled):
         candidates.append(int(settings.gmail_history_poll_interval_sec))
     if bool(settings.drive_change_detection_enabled):
         candidates.append(int(settings.drive_changes_poll_interval_sec))
     return max(1, min(candidates or [30]))
+
+
+def _idle_sleep_with_agent_chat_drain(
+    settings: Settings,
+    *,
+    scheduler: PredictiveScheduler | None = None,
+) -> bool:
+    """Sleep for the Gmail/Drive poll interval, draining chat jobs in shorter chunks.
+
+    Returns True when SIGTERM aborted the sleep (caller should stop the worker).
+    """
+    total = float(_poll_sleep_seconds(settings, scheduler=scheduler))
+    try:
+        tick = float(getattr(settings, "agent_chat_jobs_tick_interval_sec", 15) or 15)
+    except Exception:  # noqa: BLE001
+        tick = 15.0
+    tick = max(1.0, tick)
+    try:
+        max_jobs = int(getattr(settings, "agent_chat_jobs_max_per_tick", 5) or 5)
+    except Exception:  # noqa: BLE001
+        max_jobs = 5
+    max_jobs = max(1, max_jobs)
+
+    remaining = total
+    while remaining > 0:
+        chunk = min(remaining, tick)
+        if _sleep_with_abort(chunk):
+            return True
+        remaining -= chunk
+        if remaining <= 0:
+            break
+        try:
+            from agent_runtime.agent_chat_worker import process_agent_chat_jobs_tick
+
+            process_agent_chat_jobs_tick(settings, max_jobs=max_jobs)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("agent_chat_jobs_mid_idle_tick skipped: %s", exc)
+    return False
 
 
 def _record_drive_result(*, run_state: dict[str, Any], processed: dict[str, Any]) -> None:
