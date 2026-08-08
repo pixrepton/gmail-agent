@@ -13,6 +13,53 @@ from signal_contract import build_canonical_signal
 logger = logging.getLogger(__name__)
 
 
+def _snapshot_from_reconcile_result(reconcile_result: Any) -> Any | None:
+    stage_outputs = getattr(reconcile_result, "stage_outputs", None)
+    if not isinstance(stage_outputs, dict):
+        return None
+    raw_snapshot = stage_outputs.get("agent_engagement_snapshot")
+    if raw_snapshot is None:
+        return None
+    try:
+        from llm_contracts.engagement_snapshot_v2 import EngagementSnapshotV2
+
+        if isinstance(raw_snapshot, EngagementSnapshotV2):
+            return raw_snapshot
+        if isinstance(raw_snapshot, dict):
+            return EngagementSnapshotV2.model_validate(raw_snapshot)
+    except Exception as exc:  # noqa: BLE001 - receipt mapping must not hide reconcile success
+        logger.warning("operator_command_spine: snapshot hydration failed: %s", exc)
+    return None
+
+
+def _proposal_payloads(snapshot_eng: Any | None) -> list[dict[str, Any]]:
+    if not snapshot_eng or not getattr(snapshot_eng, "agent_memory", None):
+        return []
+    return [
+        {
+            "proposal_id": p.proposal_id,
+            "proposal_type": p.proposal_type,
+            "status": p.status,
+            "payload": p.payload_json,
+        }
+        for p in snapshot_eng.agent_memory.materialize_proposals
+    ]
+
+
+def _engagement_id_from_reconcile_result(reconcile_result: Any, snapshot_eng: Any | None) -> str:
+    if snapshot_eng is not None:
+        engagement_id = str(getattr(snapshot_eng, "engagement_id", "") or "").strip()
+        if engagement_id:
+            return engagement_id
+    for attr in ("mailbox_memory_result", "rebuild_result", "preview"):
+        payload = getattr(reconcile_result, attr, None)
+        if isinstance(payload, dict):
+            engagement_id = str(payload.get("engagement_id") or "").strip()
+            if engagement_id:
+                return engagement_id
+    return ""
+
+
 def run_operator_command_spine(
     *,
     user_input: str,
@@ -69,11 +116,10 @@ def run_operator_command_spine(
         logger.warning("operator_command_spine: journal append skipped: %s", exc)
 
     try:
-        from agent_runtime.agent_reconcile import (
-            build_operator_engagement_store,
-            run_agent_reconcile_staging,
-        )
-        from signal_reconciler import SignalRuntimeContext
+        from signal_reconciler import ReconcileResult, SignalRuntimeContext, reconcile_signal
+
+        if journal is None:
+            raise RuntimeError("signal journal unavailable for operator_command")
 
         runtime_ctx = SignalRuntimeContext(
             settings=settings,
@@ -89,22 +135,16 @@ def run_operator_command_spine(
         if operator_scope is not None:
             runtime_ctx.operator_scope = operator_scope
 
-        operator_store = build_operator_engagement_store(settings)
-        _ = operator_store
-        synthetic_intake = {
-            "message": {
-                "message_id": signal.signal_id,
-                "subject": "Polecenie operatora",
-                "body_text": user_input,
-            },
-            "staging": True,
-        }
-        snapshot_eng, run_result, resolution, warnings = run_agent_reconcile_staging(
-            signal,
-            runtime_context=runtime_ctx,
-            dry_run=False,
-            intake_output=synthetic_intake,
-        )
+        if journal_duplicate:
+            reconcile_result = ReconcileResult(
+                signal_id=signal.signal_id,
+                source_kind=signal.source_kind,
+                signal_kind=signal.signal_kind,
+                processing_state="skipped_duplicate",
+                warnings=["signal_journal_duplicate_skipped_reconcile"],
+            )
+        else:
+            reconcile_result = reconcile_signal(signal, runtime_context=runtime_ctx, dry_run=False)
     except Exception as exc:
         logger.error("operator_command_spine: reconcile failed: %s", exc)
         receipt = build_command_receipt(
@@ -127,17 +167,10 @@ def run_operator_command_spine(
             "journal_duplicate": journal_duplicate,
         }
 
-    proposals = []
-    if snapshot_eng and snapshot_eng.agent_memory:
-        proposals = [
-            {
-                "proposal_id": p.proposal_id,
-                "proposal_type": p.proposal_type,
-                "status": p.status,
-                "payload": p.payload_json,
-            }
-            for p in snapshot_eng.agent_memory.materialize_proposals
-        ]
+    snapshot_eng = _snapshot_from_reconcile_result(reconcile_result)
+    proposals = _proposal_payloads(snapshot_eng)
+    engagement_id = _engagement_id_from_reconcile_result(reconcile_result, snapshot_eng)
+    warnings = list(getattr(reconcile_result, "warnings", []) or [])
 
     hitl_required = bool(snapshot_eng and snapshot_eng.hitl_gate and snapshot_eng.hitl_gate.required)
     proposal_ids = [str(p.get("proposal_id") or "") for p in proposals if p.get("proposal_id")]
@@ -146,11 +179,11 @@ def run_operator_command_spine(
         command_id=command.command_id,
         signal_id=signal.signal_id,
         status=receipt_status,
-        engagement_id=resolution.engagement_id if resolution else "",
+        engagement_id=engagement_id,
         proposal_ids=proposal_ids,
         hitl_required=hitl_required,
         journal_inserted=journal_inserted,
-        warnings=list(warnings or []),
+        warnings=warnings,
     )
 
     turns = [
@@ -168,7 +201,7 @@ def run_operator_command_spine(
     return {
         "command_id": command.command_id,
         "signal_id": signal.signal_id,
-        "engagement_id": resolution.engagement_id if resolution else "",
+        "engagement_id": engagement_id,
         "warnings": warnings,
         "turns": turns,
         "proposals": proposals,
