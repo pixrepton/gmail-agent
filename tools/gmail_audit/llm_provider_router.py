@@ -138,6 +138,30 @@ def _exhausted_chain_message(providers: list[LLMProvider], attempts: list[dict[s
     return "All LLM providers exhausted: " + "; ".join(parts) + "."
 
 
+def _is_empty_message_content_error(message: str, details: dict[str, Any]) -> bool:
+    """Detect empty assistant text on structured/text paths (retryable DELIVERY).
+
+    Matches OpenAI-compatible ``message.content`` failures and Responses-API empty
+    assistant text. Does not treat malformed JSON as empty content.
+    """
+    if str(details.get("error_class") or "").strip().lower() == "empty_content":
+        return True
+    text = message.lower()
+    if "message.content" in text and (
+        "empty" in text or "none" in text or "null" in text or "whitespace" in text
+    ):
+        return True
+    if "empty content" in text:
+        return True
+    if "empty" in text and "content" in text and (
+        "message" in text or "assistant" in text or "response" in text
+    ):
+        return True
+    if "does not contain final assistant text" in text:
+        return True
+    return False
+
+
 def classify_provider_error(exc: Exception) -> ProviderErrorInfo:
     details = dict(getattr(exc, "details", {}) or {})
     status_code = details.get("status_code")
@@ -167,6 +191,10 @@ def classify_provider_error(exc: Exception) -> ProviderErrorInfo:
         return ProviderErrorInfo("auth", False)
     if "missing" in message and ("api_key" in message or "base_url" in message or "configured" in message):
         return ProviderErrorInfo("config", False)
+    # Empty provider text is a transient/delivery failure, never a domain CAPABILITY result.
+    # Must run before the generic contract default so router/fallback can continue the chain.
+    if _is_empty_message_content_error(message, details):
+        return ProviderErrorInfo("empty_content", True)
     return ProviderErrorInfo("contract", False)
 
 

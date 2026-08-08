@@ -350,7 +350,11 @@ def deepseek_error_allows_fallback(exc: Exception) -> bool:
         return False
     if "401" in text or "403" in text or "invalid api key" in text or "unauthorized" in text or "forbidden" in text:
         return True
-    if "empty content" in text or "json" in text and "parse" in text:
+    # Empty assistant text / empty message.content is delivery, not a permanent adapter bug.
+    # Match both spaced and backtick forms ("empty content" vs "empty `message.content`").
+    if info.error_class == "empty_content":
+        return True
+    if "json" in text and "parse" in text:
         return True
     return False
 
@@ -697,19 +701,34 @@ def format_connector_tool_error(raw_text: str, *, tool_name: str) -> str:
     return f"{prefix} {message}"
 
 
+def _raise_empty_assistant_text(response_json: dict[str, Any], *, surface: str) -> None:
+    """Raise a typed empty-content failure for Responses-shaped provider payloads."""
+    output_types = summarize_output_types(response_json)
+    raise GroqClientError(
+        f"{surface} response does not contain final assistant text. "
+        f"Detected output types: {output_types or 'none'}.",
+        details={
+            "error_class": "empty_content",
+            "output_types": output_types,
+            "has_reasoning_content": False,
+        },
+    )
+
+
+def _ensure_nonempty_assistant_text(response_json: dict[str, Any], *, surface: str) -> str:
+    text = extract_response_text(response_json)
+    if not text.strip():
+        _raise_empty_assistant_text(response_json, surface=surface)
+    return text
+
+
 def _build_result(
     response_json: dict[str, Any],
     *,
     verbose: bool,
     request_meta: dict[str, Any] | None = None,
 ) -> GroqResult:
-    text = extract_response_text(response_json)
-    if not text.strip():
-        output_types = summarize_output_types(response_json)
-        raise GroqClientError(
-            "Groq response does not contain final assistant text. "
-            f"Detected output types: {output_types or 'none'}."
-        )
+    text = _ensure_nonempty_assistant_text(response_json, surface="Groq")
 
     if verbose:
         output_types = summarize_output_types(response_json)
@@ -899,6 +918,9 @@ def _structured_providers(
                         mode=mode,
                         api_key=_groq_key,
                     )
+                    # Fail inside the provider call so empty Responses text is retryable
+                    # via LLMRouter instead of escaping as a post-router contract error.
+                    _ensure_nonempty_assistant_text(response_json, surface="Groq")
                     request_meta["llm_backend"] = "groq"
                     request_meta["llm_api_key_slot"] = _key_index + 1
                     if alt_meta:
@@ -1125,7 +1147,19 @@ def _synthetic_responses_shape_from_chat_text(content: str) -> dict[str, Any]:
     }
 
 
-def _extract_openai_chat_message_text(response_json: dict[str, Any]) -> str:
+def _extract_openai_chat_message_text(
+    response_json: dict[str, Any],
+    *,
+    require_text_content: bool = True,
+) -> str:
+    """Extract business text from an OpenAI-compatible chat completion.
+
+    Structured/text paths (``require_text_content=True``) treat None / empty /
+    whitespace-only ``message.content`` as an invalid provider response. Planner /
+    tool paths may pass ``require_text_content=False`` when ``tool_calls`` are the
+    expected output. ``reasoning_content`` is diagnostic only and is never copied
+    into the returned business text.
+    """
     choices = response_json.get("choices")
     if not isinstance(choices, list) or not choices:
         raise GroqClientError("OpenAI-compatible response missing `choices`.")
@@ -1136,9 +1170,28 @@ def _extract_openai_chat_message_text(response_json: dict[str, Any]) -> str:
     if not isinstance(msg, dict):
         raise GroqClientError("OpenAI-compatible response missing `message`.")
     content = msg.get("content")
+    tool_calls = msg.get("tool_calls")
+    has_tool_calls = isinstance(tool_calls, list) and len(tool_calls) > 0
+    reasoning = msg.get("reasoning_content")
+    has_reasoning_content = isinstance(reasoning, str) and bool(reasoning.strip())
+    finish_reason = first.get("finish_reason")
+    empty_details: dict[str, Any] = {
+        "error_class": "empty_content",
+        "finish_reason": finish_reason,
+        "has_tool_calls": has_tool_calls,
+        "has_reasoning_content": has_reasoning_content,
+        "content_type": type(content).__name__ if content is not None else "NoneType",
+        "content_len": len(content) if isinstance(content, str) else 0,
+    }
     if isinstance(content, str) and content.strip():
         return content.strip()
-    raise GroqClientError("OpenAI-compatible response has empty `message.content`.")
+    if not require_text_content and has_tool_calls:
+        return ""
+    # Never promote reasoning_content to business output.
+    raise GroqClientError(
+        "OpenAI-compatible response has empty `message.content`.",
+        details=empty_details,
+    )
 
 
 def _openai_chat_completions_url(base_url: str | None) -> str:
