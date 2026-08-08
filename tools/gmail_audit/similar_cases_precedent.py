@@ -245,6 +245,7 @@ def _fetch_resolved_via_sql(
         WHERE c.case_family = %(case_family)s
           AND c.status = 'resolved'
           AND c.case_id <> %(exclude_case_id)s
+          AND COALESCE(f.status, 'active') <> 'superseded'
           AND f.fact_key = ANY(%(fact_keys)s::text[])
         GROUP BY c.case_id, c.case_family, c.subject, c.status, c.metadata
         ORDER BY overlap_count DESC, c.updated_at DESC

@@ -464,7 +464,10 @@ class PostgresMailboxMemoryStore:
                             skip_insert = True
                             break
                         supersede_meta = dict(old_meta)
-                        supersede_meta["superseded_at"] = row.get("observed_at")
+                        superseded_at = row.get("observed_at")
+                        if hasattr(superseded_at, "isoformat"):
+                            superseded_at = superseded_at.isoformat()
+                        supersede_meta["superseded_at"] = superseded_at
                         supersede_meta["superseded_by_fact_id"] = str(row.get("fact_id") or "")
                         cur.execute(
                             """
@@ -472,7 +475,7 @@ class PostgresMailboxMemoryStore:
                             SET status = 'superseded', metadata = %(metadata)s::jsonb
                             WHERE fact_id = %(fact_id)s
                             """,
-                            {"fact_id": fact_id, "metadata": supersede_meta},
+                            {"fact_id": fact_id, "metadata": _json_dump(supersede_meta)},
                         )
                         stats["superseded"] += 1
                     if skip_insert:
@@ -674,6 +677,7 @@ class PostgresMailboxMemoryStore:
             WHERE c.case_family = %(case_family)s
               AND c.status = 'resolved'
               AND c.case_id <> %(exclude_case_id)s
+              AND COALESCE(f.status, 'active') <> 'superseded'
               AND f.fact_key = ANY(%(fact_keys)s::text[])
             GROUP BY c.case_id, c.case_family, c.subject, c.status, c.metadata
             ORDER BY overlap_count DESC, c.updated_at DESC

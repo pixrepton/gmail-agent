@@ -24,6 +24,7 @@ class PatternDiscovery:
                 SELECT f.case_id, f.fact_key, f.normalized_value
                 FROM mailbox_memory_facts f
                 WHERE f.source_type = 'llm'
+                  AND COALESCE(f.status, 'active') <> 'superseded'
                   AND NOT EXISTS (
                       SELECT 1 FROM mailbox_memory_facts f2
                       WHERE f2.case_id = f.case_id

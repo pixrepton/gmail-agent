@@ -109,8 +109,10 @@ def scheduled_visit_fact_has_calendar_event(row: dict[str, Any]) -> bool:
 
 
 def _has_customer_proposed_date_fact(facts: list[dict[str, Any]] | None) -> bool:
+    from mailbox_memory.active_facts import is_live_fact
+
     for item in facts or []:
-        if not isinstance(item, dict):
+        if not isinstance(item, dict) or not is_live_fact(item):
             continue
         key = str(item.get("field_type") or item.get("fact_key") or item.get("predicate") or "").strip().lower()
         if key in {"date", "service_date", "proposed_date", "proposed_visit"}:

@@ -17,6 +17,7 @@ from calendar_models import (
 from calendar_signal_adapter import build_calendar_raw_observation, build_calendar_signal
 from config import Settings
 from log_config import get_logger
+from mailbox_memory.active_facts import fetch_current_facts_for_case
 
 log = get_logger(__name__)
 
@@ -110,7 +111,7 @@ class CalendarRuntime:
     def context_for_case(self, case_id: str) -> dict[str, Any]:
         all_events = self.store.fetch_calendar_events_for_case(case_id, limit=10)
         events = active_calendar_events(all_events)
-        facts = self.store.fetch_facts_for_case(case_id) if hasattr(self.store, "fetch_facts_for_case") else []
+        facts = fetch_current_facts_for_case(self.store, case_id)
         risk = infer_calendar_risk(events=all_events, facts=facts)
         next_event = events[0] if events else {}
         return {

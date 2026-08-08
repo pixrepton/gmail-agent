@@ -261,6 +261,7 @@ class InMemoryMailboxMemoryStore:
                 str(f.get("fact_key") or "").strip()
                 for f in self.facts.get(case_id, [])
                 if str(f.get("fact_key") or "").strip()
+                and str(f.get("status") or "active") != "superseded"
             }
             overlap = len(case_keys & keys)
             if overlap <= 0:
