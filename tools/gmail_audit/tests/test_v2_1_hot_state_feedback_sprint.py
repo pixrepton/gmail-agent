@@ -114,49 +114,43 @@ class HotStateContractTests(unittest.TestCase):
         )
         # Dual live values for the same key must bypass append_facts_with_supersession
         # (FACT-01 / 4.2 write path settles successive updates). Concurrent disagreement
-        # is seeded the same way as AI-OS 4.2 conflict fixtures: replace_message_facts.
-        store.replace_message_facts(
-            message_id="msg_city_a",
-            rows=[
-                {
-                    "fact_id": "f1",
-                    "case_id": "c2",
-                    "message_id": "msg_city_a",
-                    "document_id": "",
-                    "entity_scope": "case",
-                    "fact_key": "city",
-                    "normalized_value": "A",
-                    "raw_value": "A",
-                    "confidence": 0.9,
-                    "observed_at": "2026-04-16T10:00:00+02:00",
-                    "source_type": "test",
-                    "source_ref": "r1",
-                    "status": "active",
-                    "metadata": {},
-                },
-            ],
-        )
-        store.replace_message_facts(
-            message_id="msg_city_b",
-            rows=[
-                {
-                    "fact_id": "f2",
-                    "case_id": "c2",
-                    "message_id": "msg_city_b",
-                    "document_id": "",
-                    "entity_scope": "case",
-                    "fact_key": "city",
-                    "normalized_value": "B",
-                    "raw_value": "B",
-                    "confidence": 0.85,
-                    "observed_at": "2026-04-16T10:00:01+02:00",
-                    "source_type": "test",
-                    "source_ref": "r2",
-                    "status": "active",
-                    "metadata": {},
-                },
-            ],
-        )
+        # is seeded via direct facts buckets (production replace_message_facts supersedes).
+        store.facts["msg_city_a"] = [
+            {
+                "fact_id": "f1",
+                "case_id": "c2",
+                "message_id": "msg_city_a",
+                "document_id": "",
+                "entity_scope": "case",
+                "fact_key": "city",
+                "normalized_value": "A",
+                "raw_value": "A",
+                "confidence": 0.9,
+                "observed_at": "2026-04-16T10:00:00+02:00",
+                "source_type": "test",
+                "source_ref": "r1",
+                "status": "active",
+                "metadata": {},
+            },
+        ]
+        store.facts["msg_city_b"] = [
+            {
+                "fact_id": "f2",
+                "case_id": "c2",
+                "message_id": "msg_city_b",
+                "document_id": "",
+                "entity_scope": "case",
+                "fact_key": "city",
+                "normalized_value": "B",
+                "raw_value": "B",
+                "confidence": 0.85,
+                "observed_at": "2026-04-16T10:00:01+02:00",
+                "source_type": "test",
+                "source_ref": "r2",
+                "status": "active",
+                "metadata": {},
+            },
+        ]
         mgr = CaseSnapshotManager(store=store)
         sig = build_canonical_signal(
             signal_kind="drive_document_added",

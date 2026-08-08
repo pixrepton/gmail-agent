@@ -103,52 +103,61 @@ def test_document_value_change_supersedes_prior_active() -> None:
     assert pack_amounts[0]["normalized_value"] == "1500,00"
 
 
+def _seed_concurrent_active_disagreement(store: InMemoryMailboxMemoryStore, rows_by_message: dict[str, list[dict]]) -> None:
+    """Test-only fixture: dual-active disagreement without canonical write supersession.
+
+    Production ``replace_message_facts`` now enforces supersession. Conflict UI tests still
+    need a way to seed concurrent live values for the same logical identity.
+    """
+    for message_id, rows in rows_by_message.items():
+        store.facts[str(message_id)] = [dict(item) for item in rows]
+
+
 def test_conflict_and_superseded_audit_surface_in_operational_feed() -> None:
     store = InMemoryMailboxMemoryStore()
     store.upsert_case({"case_id": "case_42_conflict", "status": "open", "subject": "Konflikt"})
 
-    # Same (entity_scope, fact_key) dual actives via replace_message_facts (no supersession).
-    store.replace_message_facts(
-        message_id="msg_a",
-        rows=[
-            {
-                "fact_id": "fact_a",
-                "case_id": "case_42_conflict",
-                "message_id": "msg_a",
-                "document_id": "doc_a",
-                "entity_scope": "document",
-                "fact_key": "device_model",
-                "normalized_value": "model-a",
-                "raw_value": "MODEL-A",
-                "confidence": 0.9,
-                "observed_at": "2026-08-05T10:00:00Z",
-                "source_type": "document_intelligence",
-                "source_ref": "document_intelligence:doc_a",
-                "status": "active",
-                "metadata": {"evidence_ref": {"source_id": "doc_a", "excerpt": "MODEL-A"}},
-            }
-        ],
-    )
-    store.replace_message_facts(
-        message_id="msg_b",
-        rows=[
-            {
-                "fact_id": "fact_b",
-                "case_id": "case_42_conflict",
-                "message_id": "msg_b",
-                "document_id": "doc_b",
-                "entity_scope": "document",
-                "fact_key": "device_model",
-                "normalized_value": "model-b",
-                "raw_value": "MODEL-B",
-                "confidence": 0.85,
-                "observed_at": "2026-08-05T11:00:00Z",
-                "source_type": "document_intelligence",
-                "source_ref": "document_intelligence:doc_b",
-                "status": "active",
-                "metadata": {"evidence_ref": {"source_id": "doc_b", "excerpt": "MODEL-B"}},
-            }
-        ],
+    # Same (entity_scope, fact_key) dual actives via test-only seed (bypasses supersession).
+    _seed_concurrent_active_disagreement(
+        store,
+        {
+            "msg_a": [
+                {
+                    "fact_id": "fact_a",
+                    "case_id": "case_42_conflict",
+                    "message_id": "msg_a",
+                    "document_id": "doc_a",
+                    "entity_scope": "document",
+                    "fact_key": "device_model",
+                    "normalized_value": "model-a",
+                    "raw_value": "MODEL-A",
+                    "confidence": 0.9,
+                    "observed_at": "2026-08-05T10:00:00Z",
+                    "source_type": "document_intelligence",
+                    "source_ref": "document_intelligence:doc_a",
+                    "status": "active",
+                    "metadata": {"evidence_ref": {"source_id": "doc_a", "excerpt": "MODEL-A"}},
+                }
+            ],
+            "msg_b": [
+                {
+                    "fact_id": "fact_b",
+                    "case_id": "case_42_conflict",
+                    "message_id": "msg_b",
+                    "document_id": "doc_b",
+                    "entity_scope": "document",
+                    "fact_key": "device_model",
+                    "normalized_value": "model-b",
+                    "raw_value": "MODEL-B",
+                    "confidence": 0.85,
+                    "observed_at": "2026-08-05T11:00:00Z",
+                    "source_type": "document_intelligence",
+                    "source_ref": "document_intelligence:doc_b",
+                    "status": "active",
+                    "metadata": {"evidence_ref": {"source_id": "doc_b", "excerpt": "MODEL-B"}},
+                }
+            ],
+        },
     )
 
     active, conflicts = split_conflicting_facts(store.fetch_facts_for_case("case_42_conflict"))

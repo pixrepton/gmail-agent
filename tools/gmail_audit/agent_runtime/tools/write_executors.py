@@ -165,13 +165,12 @@ def execute_merge_cases(
         if mailbox_store is not None:
             fetch = getattr(mailbox_store, "fetch_case", None)
             if callable(fetch):
-                case_a_data = fetch(source) or {}
-                case_b_data = fetch(target) or {}
-            else:
-                fetch_facts = getattr(mailbox_store, "fetch_facts_for_case", None)
-                if callable(fetch_facts):
-                    case_a_data["facts"] = fetch_facts(source) or []
-                    case_b_data["facts"] = fetch_facts(target) or []
+                case_a_data = dict(fetch(source) or {})
+                case_b_data = dict(fetch(target) or {})
+            fetch_facts = getattr(mailbox_store, "fetch_facts_for_case", None)
+            if callable(fetch_facts):
+                case_a_data["facts"] = list(fetch_facts(source) or [])
+                case_b_data["facts"] = list(fetch_facts(target) or [])
 
         # 2. Wołaj merge_data
         case_a_data["case_id"] = source
@@ -185,10 +184,21 @@ def execute_merge_cases(
             upsert = getattr(mailbox_store, "upsert_case", None)
             if callable(upsert):
                 upsert({"case_id": target, "merged_data": merged_data})
-            append = getattr(mailbox_store, "append_fact_rows", None)
-            if callable(append) and merged_data.get("facts"):
-                append(merged_data["facts"])
-            merged_count = result.get("merged_facts", 0)
+            reassign = getattr(mailbox_store, "reassign_case_facts", None)
+            if callable(reassign):
+                reassign_stats = reassign(source_case_id=source, target_case_id=target) or {}
+                merged_count = int(reassign_stats.get("moved") or 0)
+            else:
+                append = getattr(mailbox_store, "append_fact_rows", None)
+                if callable(append) and merged_data.get("facts"):
+                    rewritten = []
+                    for fact in list(merged_data.get("facts") or []):
+                        row = dict(fact)
+                        row["case_id"] = target
+                        row["status"] = str(row.get("status") or "active")
+                        rewritten.append(row)
+                    append(rewritten)
+                merged_count = result.get("merged_facts", 0)
 
         # 4. Link w correlation_registry
         if correlation_store is not None:

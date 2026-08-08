@@ -131,7 +131,171 @@ class InMemoryMailboxMemoryStore:
             self.events.append(dict(row))
 
     def replace_message_facts(self, *, message_id: str, rows: list[dict[str, Any]]) -> None:
-        self.facts[message_id] = [dict(item) for item in rows]
+        """Replace one message's extract snapshot, then apply canonical supersession.
+
+        Cross-message actives for the same logical identity are superseded.
+        Distinct values *within* the same source snapshot remain dual-active
+        (legal conflict). Separately promoted ``structured_document_parse`` rows for
+        the same message_id are preserved and may legally conflict with extract rows.
+        Snapshot retire + write are atomic for InMemory.
+        """
+        mid = str(message_id or "").strip()
+        snapshot = {key: [dict(item) for item in items] for key, items in self.facts.items()}
+        try:
+            for bucket_key, items in list(self.facts.items()):
+                kept = [
+                    item
+                    for item in items
+                    if not (
+                        str(item.get("message_id") or "") == mid
+                        and str(item.get("source_type") or "") != "structured_document_parse"
+                    )
+                ]
+                if kept:
+                    self.facts[bucket_key] = kept
+                else:
+                    self.facts.pop(bucket_key, None)
+            # Legacy bucket keyed by message_id holds extract snapshot only.
+            if mid in self.facts:
+                kept_mid = [
+                    item
+                    for item in self.facts[mid]
+                    if str(item.get("source_type") or "") == "structured_document_parse"
+                ]
+                if kept_mid:
+                    self.facts[mid] = kept_mid
+                else:
+                    self.facts.pop(mid, None)
+            if rows:
+                self._apply_replaced_message_fact_rows(mid, [dict(item) for item in rows])
+        except Exception:
+            self.facts = snapshot
+            raise
+
+    def _apply_replaced_message_fact_rows(self, message_id: str, rows: list[dict[str, Any]]) -> None:
+        mid = str(message_id or "").strip()
+        groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        for row in rows:
+            payload = dict(row)
+            payload.setdefault("status", "active")
+            case_id = str(payload.get("case_id") or "").strip()
+            entity_scope = str(payload.get("entity_scope") or "case").strip() or "case"
+            fact_key = str(payload.get("fact_key") or "").strip()
+            if not case_id or not fact_key:
+                continue
+            groups.setdefault((case_id, entity_scope, fact_key), []).append(payload)
+
+        for (case_id, entity_scope, fact_key), group_rows in groups.items():
+            distinct_values = {
+                str(item.get("normalized_value") or "").strip() for item in group_rows
+            }
+            winner_id = str(group_rows[0].get("fact_id") or "")
+            observed_at = group_rows[0].get("observed_at")
+            # Retire other-message actives with different values. Same-message siblings
+            # (e.g. structured_document_parse) remain as legal conflicts.
+            for bucket_key, items in list(self.facts.items()):
+                updated: list[dict[str, Any]] = []
+                for item in items:
+                    if (
+                        str(item.get("case_id") or "") == case_id
+                        and str(item.get("entity_scope") or "case") == entity_scope
+                        and str(item.get("fact_key") or "") == fact_key
+                        and str(item.get("status") or "active") == "active"
+                        and str(item.get("message_id") or "") != mid
+                        and (
+                            len(distinct_values) != 1
+                            or str(item.get("normalized_value") or "").strip() not in distinct_values
+                        )
+                    ):
+                        meta = dict(item.get("metadata") or {})
+                        meta["superseded_at"] = observed_at
+                        meta["superseded_by_fact_id"] = winner_id
+                        meta["supersede_reason"] = "replace_message_facts"
+                        updated.append({**item, "status": "superseded", "metadata": meta})
+                    else:
+                        updated.append(item)
+                self.facts[bucket_key] = updated
+            for payload in group_rows:
+                # Idempotent: skip insert when an active same-message/same-value already exists.
+                new_value = str(payload.get("normalized_value") or "").strip()
+                already = False
+                for items in self.facts.values():
+                    for item in items:
+                        if (
+                            str(item.get("case_id") or "") == case_id
+                            and str(item.get("entity_scope") or "case") == entity_scope
+                            and str(item.get("fact_key") or "") == fact_key
+                            and str(item.get("status") or "active") == "active"
+                            and str(item.get("normalized_value") or "").strip() == new_value
+                            and str(item.get("message_id") or "") == mid
+                            and str(item.get("fact_id") or "") == str(payload.get("fact_id") or "")
+                        ):
+                            already = True
+                            break
+                    if already:
+                        break
+                if already:
+                    continue
+                bucket_key = mid or f"append::{case_id}:{str(payload.get('source_ref') or '')}"
+                current = list(self.facts.get(bucket_key) or [])
+                current.append(payload)
+                self.facts[bucket_key] = current
+
+    def reassign_case_facts(self, *, source_case_id: str, target_case_id: str) -> dict[str, int]:
+        """Move facts from source case to target and reconcile dual-active identities."""
+        source = str(source_case_id or "").strip()
+        target = str(target_case_id or "").strip()
+        moved = 0
+        if not source or not target or source == target:
+            return {"moved": 0, "reconciled": 0}
+        for bucket_key, items in list(self.facts.items()):
+            updated: list[dict[str, Any]] = []
+            for item in items:
+                row = dict(item)
+                if str(row.get("case_id") or "") == source:
+                    row["case_id"] = target
+                    moved += 1
+                updated.append(row)
+            self.facts[bucket_key] = updated
+        reconciled = self.reconcile_active_fact_identities(target)
+        return {"moved": moved, "reconciled": reconciled}
+
+    def reconcile_active_fact_identities(self, case_id: str) -> int:
+        """Keep newest active row per (entity_scope, fact_key); supersede the rest."""
+        cid = str(case_id or "").strip()
+        if not cid:
+            return 0
+        groups: dict[tuple[str, str], list[tuple[str, int, dict[str, Any]]]] = {}
+        for bucket_key, items in self.facts.items():
+            for idx, item in enumerate(items):
+                if str(item.get("case_id") or "") != cid:
+                    continue
+                if str(item.get("status") or "active") == "superseded":
+                    continue
+                entity_scope = str(item.get("entity_scope") or "case").strip() or "case"
+                fact_key = str(item.get("fact_key") or "").strip()
+                if not fact_key:
+                    continue
+                groups.setdefault((entity_scope, fact_key), []).append((bucket_key, idx, item))
+        reconciled = 0
+        for _identity, entries in groups.items():
+            if len(entries) < 2:
+                continue
+            entries_sorted = sorted(
+                entries,
+                key=lambda entry: str(entry[2].get("observed_at") or ""),
+                reverse=True,
+            )
+            winner = entries_sorted[0]
+            winner_id = str(winner[2].get("fact_id") or "")
+            for bucket_key, idx, item in entries_sorted[1:]:
+                meta = dict(item.get("metadata") or {})
+                meta["superseded_at"] = winner[2].get("observed_at")
+                meta["superseded_by_fact_id"] = winner_id
+                meta["supersede_reason"] = "reconcile_active_fact_identities"
+                self.facts[bucket_key][idx] = {**item, "status": "superseded", "metadata": meta}
+                reconciled += 1
+        return reconciled
 
     def append_fact_rows(self, rows: list[dict[str, Any]]) -> None:
         self.append_facts_with_supersession(rows)
