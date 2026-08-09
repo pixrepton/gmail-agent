@@ -512,6 +512,228 @@ def build_business_reasoning_payload(
     }
 
 
+_REPLY_DRAFT_CRITICAL_FACT_KEYS = frozenset(
+    {
+        "budget_pln_estimated",
+        "budget_pln_range",
+        "current_heating_source",
+        "thermal_demand_kw",
+        "heated_area_m2",
+        "building_type",
+        "city",
+        "raw_geographic_signal",
+        "postal_code",
+        "installation_address",
+        "customer_phone",
+        "customer_email",
+        "device_model",
+        "device_brand",
+        "fault_code",
+        "error_code",
+        "service_issue",
+        "symptom",
+        "reported_problem",
+        "scheduled_visit",
+        "proposed_visit",
+        "case_deadline",
+        "offer_status",
+        "quote_status",
+        "price_gross_pln",
+        "amount_total",
+    }
+)
+_REPLY_DRAFT_FACT_FIELDS = (
+    "fact_key",
+    "normalized_value",
+    "value",
+    "status",
+    "confidence",
+    "source_ref",
+    "source_type",
+    "observed_at",
+    "metadata",
+)
+_REPLY_DRAFT_CONTEXT_QUALITY_KEYS = (
+    "confidence",
+    "ready_for_action",
+    "action_readiness",
+    "reasons",
+    "missing_info",
+    "known_facts_summary",
+)
+_REPLY_DRAFT_METADATA_FIELDS = (
+    "calendar_event_id",
+    "proposed_visit_id",
+    "source_message_id",
+    "source_ref",
+)
+_REPLY_DRAFT_TELEMETRY_KEYS = frozenset(
+    {
+        "assembled_context",
+        "execution_metadata",
+        "input_variants",
+        "prompt_input",
+        "raw_output_text",
+        "request_meta",
+        "response_text",
+        "stage_call",
+        "task_prompt",
+    }
+)
+
+
+def _compact_reply_draft_value(value: Any, *, max_chars: int = 220) -> Any:
+    if isinstance(value, str):
+        return _compact_inline_text(value, max_chars)
+    if isinstance(value, dict):
+        return {str(key): _compact_reply_draft_value(item, max_chars=max_chars) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_compact_reply_draft_value(item, max_chars=max_chars) for item in value[:8]]
+    return sanitize_prompt_input(value)
+
+
+def _compact_reply_draft_fact(row: dict[str, Any]) -> dict[str, Any]:
+    compacted: dict[str, Any] = {}
+    for key in _REPLY_DRAFT_FACT_FIELDS:
+        if key not in row:
+            continue
+        value = row.get(key)
+        if key == "metadata" and isinstance(value, dict):
+            metadata = {
+                field: _compact_reply_draft_value(value.get(field), max_chars=160)
+                for field in _REPLY_DRAFT_METADATA_FIELDS
+                if value.get(field) not in (None, "")
+            }
+            if metadata:
+                compacted[key] = metadata
+            continue
+        compacted[key] = _compact_reply_draft_value(value, max_chars=220)
+    return compacted
+
+
+def _select_reply_draft_facts(value: Any, *, limit: int) -> tuple[list[dict[str, Any]], int]:
+    if not isinstance(value, list):
+        return [], 0
+    rows = [item for item in value if isinstance(item, dict)]
+    critical_rows = [
+        item
+        for item in rows
+        if str(item.get("fact_key") or "") in _REPLY_DRAFT_CRITICAL_FACT_KEYS
+    ]
+    short_other_rows = [
+        item
+        for item in rows
+        if str(item.get("fact_key") or "") not in _REPLY_DRAFT_CRITICAL_FACT_KEYS
+        and len(json.dumps(item, ensure_ascii=False, default=str)) <= 500
+    ]
+    ordered = sorted(critical_rows, key=lambda item: str(item.get("fact_key") or "")) + sorted(
+        short_other_rows,
+        key=lambda item: str(item.get("fact_key") or ""),
+    )
+    selected = [_compact_reply_draft_fact(item) for item in ordered[:limit]]
+    return selected, max(0, len(rows) - len(selected))
+
+
+def _build_reply_draft_context_projection(context_bundle: dict[str, Any]) -> dict[str, Any]:
+    """Project full CaseContextPack into the response-relevant drafter prompt slice."""
+    bundle = context_bundle if isinstance(context_bundle, dict) else {}
+    projection: dict[str, Any] = {}
+    for key in ("case_id", "engagement_id", "thread_context_quality"):
+        if bundle.get(key) not in (None, ""):
+            projection[key] = _compact_reply_draft_value(bundle.get(key), max_chars=180)
+
+    pack = bundle.get("case_context_pack")
+    if isinstance(pack, dict):
+        pack_projection: dict[str, Any] = {}
+        for key in ("case_id", "case_key", "engagement_id", "pack_build", "generated_at"):
+            if pack.get(key) not in (None, ""):
+                pack_projection[key] = _compact_reply_draft_value(pack.get(key), max_chars=180)
+
+        active_facts, omitted_active = _select_reply_draft_facts(pack.get("active_facts"), limit=18)
+        conflicting_facts, omitted_conflicts = _select_reply_draft_facts(pack.get("conflicting_facts"), limit=6)
+        if active_facts:
+            pack_projection["active_facts"] = active_facts
+        if conflicting_facts:
+            pack_projection["conflicting_facts"] = conflicting_facts
+
+        context_quality = pack.get("context_quality")
+        if isinstance(context_quality, dict):
+            quality_projection = {
+                key: _compact_reply_draft_value(context_quality.get(key), max_chars=220)
+                for key in _REPLY_DRAFT_CONTEXT_QUALITY_KEYS
+                if context_quality.get(key) not in (None, "", [])
+            }
+            if quality_projection:
+                pack_projection["context_quality"] = quality_projection
+
+        snapshot = pack.get("snapshot")
+        if isinstance(snapshot, dict):
+            snapshot_projection: dict[str, Any] = {}
+            open_questions = snapshot.get("open_questions")
+            if isinstance(open_questions, list) and open_questions:
+                snapshot_projection["open_questions"] = [
+                    _compact_reply_draft_value(item, max_chars=220) for item in open_questions[:8]
+                ]
+            next_action = snapshot.get("next_action")
+            if next_action not in (None, "", {}):
+                snapshot_projection["next_action"] = _compact_reply_draft_value(next_action, max_chars=220)
+            if snapshot_projection:
+                pack_projection["snapshot"] = snapshot_projection
+
+        calendar = pack.get("calendar")
+        if isinstance(calendar, dict):
+            calendar_projection = {
+                key: _compact_reply_draft_value(calendar.get(key), max_chars=220)
+                for key in ("calendar_risk", "proposed_visit", "scheduled_visit")
+                if calendar.get(key) not in (None, "", {})
+            }
+            if calendar_projection:
+                pack_projection["calendar"] = calendar_projection
+
+        pack_projection["projection_metadata"] = {
+            "projection": "reply_draft_response_relevant",
+            "active_facts_omitted": omitted_active,
+            "conflicting_facts_omitted": omitted_conflicts,
+            "relevant_chunks_omitted": len(pack.get("relevant_chunks") or [])
+            if isinstance(pack.get("relevant_chunks"), list)
+            else 0,
+            "raw_context_messages_omitted": len(bundle.get("context_messages") or [])
+            if isinstance(bundle.get("context_messages"), list)
+            else 0,
+        }
+        projection["case_context_pack"] = pack_projection
+
+    projection["projection_metadata"] = {
+        "projection": "reply_draft_response_relevant",
+        "full_context_source_of_truth": "case_context_pack",
+    }
+    return sanitize_prompt_input(projection)
+
+
+def _build_reply_draft_stage_projection(value: dict[str, Any] | None) -> dict[str, Any]:
+    """Drop upstream LLM telemetry; keep only business/customer-facing state."""
+    payload = value if isinstance(value, dict) else {}
+    projection: dict[str, Any] = {}
+    for key, item in payload.items():
+        key_text = str(key)
+        if key_text in _REPLY_DRAFT_TELEMETRY_KEYS:
+            continue
+        if key_text in {"validation", "validation_trace"}:
+            continue
+        if isinstance(item, dict):
+            projection[key_text] = _build_reply_draft_stage_projection(item)
+        elif isinstance(item, list):
+            projection[key_text] = [
+                _build_reply_draft_stage_projection(child)
+                if isinstance(child, dict)
+                else _compact_reply_draft_value(child, max_chars=220)
+                for child in item[:12]
+            ]
+        else:
+            projection[key_text] = _compact_reply_draft_value(item, max_chars=260)
+    return sanitize_prompt_input(projection)
+
+
 def build_reply_draft_payload(
     snapshot: dict[str, Any],
     intake_result: dict[str, Any],
@@ -527,10 +749,10 @@ def build_reply_draft_payload(
             "subject": str(snapshot.get("source_message", {}).get("subject") or ""),
             "body_excerpt": str(snapshot.get("source_message", {}).get("body") or "")[:900],
         },
-        "intake_result": sanitize_prompt_input(intake_result),
-        "business_reasoning_result": sanitize_prompt_input(business_result),
+        "intake_result": _build_reply_draft_stage_projection(intake_result),
+        "business_reasoning_result": _build_reply_draft_stage_projection(business_result),
         "business_context": sanitize_prompt_input(business_context_bundle),
-        "context_bundle": sanitize_prompt_input(context_bundle or {}),
+        "context_bundle": _build_reply_draft_context_projection(context_bundle or {}),
         "hard_evidence": evidence["hard_evidence"],
         "soft_evidence": evidence["soft_evidence"],
         "uncertain_links": evidence["uncertain_links"],

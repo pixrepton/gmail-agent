@@ -105,16 +105,28 @@ def apply_facts_to_snapshot_and_store(
 def generate_draft_reply(plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolResult:
     from agent_runtime.draft_sanity import evaluate_draft_sanity
     from agent_runtime.failure_taxonomy import attach_attribution, attribution
+    from agent_runtime.known_fact_guard import is_service_case_kind
 
     profile = ctx.snapshot.hvac_profile
     intent = str(plan.arguments.get("intent") or "quote").strip()
     area = profile.heated_area_m2 or "?"
     city = profile.location.city or "Państwa lokalizacji"
     if intent == "missing_info":
-        body = (
-            f"Dzień dobry,\n\nprosimy o uzupełnienie danych technicznych (metraż, OZC) "
-            f"dla instalacji w {city}.\n\nZespół TOP-INSTAL"
-        )
+        if is_service_case_kind(str(ctx.snapshot.case_kind or "")):
+            body = (
+                "Dzień dobry,\n\n"
+                "dziękujemy za zgłoszenie. Żeby bezpiecznie zweryfikować kolejny krok, "
+                "prosimy o przesłanie modelu urządzenia, opisu objawu lub kodu błędu "
+                "oraz zdjęcia komunikatu, jeśli jest dostępne.\n\n"
+                "Po otrzymaniu danych sprawa zostanie zweryfikowana i przekażemy ją "
+                "do dalszej obsługi.\n\n"
+                "Zespół TOP-INSTAL"
+            )
+        else:
+            body = (
+                f"Dzień dobry,\n\nprosimy o uzupełnienie danych technicznych (metraż, OZC) "
+                f"dla instalacji w {city}.\n\nZespół TOP-INSTAL"
+            )
     else:
         body = (
             f"Dzień dobry,\n\ndziękujemy za zapytanie dotyczące pompy ciepła "

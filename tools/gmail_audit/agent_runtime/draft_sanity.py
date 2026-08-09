@@ -27,6 +27,22 @@ _PROMISE_RE = re.compile(
     r"cena ostateczna wynosi)\b",
     re.IGNORECASE,
 )
+_SERVICE_CLARIFICATION_RE = re.compile(
+    r"\b(model\w*|urz[aą]dzeni\w*|objaw\w*|kod\w*\s+b[łl]?[ęe]d\w*|komunikat\w*|zdj[eę]ci\w*|"
+    r"opis\s+awarii|opis\s+usterki)\b",
+    re.IGNORECASE,
+)
+_UNSUPPORTED_SERVICE_PROMISE_RE = re.compile(
+    r"\b(technik|serwisant).{0,80}\b(przyjedzie|b[eę]dzie|wyjedzie)\b|"
+    r"\b(um[oó]wimy\s+wizyt[eę]|ustalimy\s+termin\s+wizyty|"
+    r"termin\s+zosta[łl]\s+ustalony|zadzwoni(?:my)?\s+jutro)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_DIAGNOSIS_CERTAINTY_RE = re.compile(
+    r"\b(to\s+na\s+pewno|na\s+pewno.{0,60}(uszkod|awari|czujnik)|"
+    r"uszkodzony\s+czujnik)\b",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def evaluate_draft_sanity(
@@ -51,6 +67,10 @@ def evaluate_draft_sanity(
     if service and _SALES_ASK_RE.search(text):
         # Service cases must not request sales sizing data unless genuinely needed.
         reasons.append("service_draft_asks_sales_fields")
+    if service and _UNSUPPORTED_SERVICE_PROMISE_RE.search(text):
+        reasons.append("unsupported_service_promise")
+    if service and _DIAGNOSIS_CERTAINTY_RE.search(text):
+        reasons.append("unsupported_diagnosis_claim")
 
     known = known_facts_from_snapshot(snapshot) if snapshot is not None else {}
     if known.get("heated_area_m2") is not None and re.search(
@@ -67,8 +87,8 @@ def evaluate_draft_sanity(
     ):
         reasons.append("asks_known_location")
 
-    if intent == "missing_info" and service:
-        reasons.append("service_missing_info_intent")
+    if intent == "missing_info" and service and not _SERVICE_CLARIFICATION_RE.search(text):
+        reasons.append("service_missing_info_without_service_scope")
 
     if policy_allows_draft is False:
         reasons.append("policy_disallows_draft")

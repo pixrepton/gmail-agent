@@ -263,7 +263,7 @@ def test_draft_sanity_allows_sales_quote() -> None:
     assert result.snapshot_delta.get("actions", [{}])[0].get("enabled") is True
 
 
-def test_draft_sanity_blocks_service_handler() -> None:
+def test_draft_sanity_allows_bounded_service_handler() -> None:
     snap = build_initial_snapshot(case_id="c1", engagement_id="e1", trace_id="t1")
     snap = snap.model_copy(update={"case_kind": "awaria_naprawa"})
     ctx = ToolExecutionContext.from_snapshot(snap, settings=_settings())
@@ -274,8 +274,15 @@ def test_draft_sanity_blocks_service_handler() -> None:
         ),
         ctx,
     )
-    assert result.status == "error"
-    assert result.failure_class == "DRAFT_SANITY_FAILED"
+    assert result.status == "ok"
+    action = result.snapshot_delta.get("actions", [{}])[0]
+    body = str(action.get("payload_pl") or "").lower()
+    assert action.get("enabled") is True
+    assert "model" in body
+    assert "objaw" in body or "kod" in body
+    assert "technik przyjedzie" not in body
+    assert "umowimy" not in body
+    assert "ozc" not in body
 
 
 def test_config_missing_not_planner_failure() -> None:

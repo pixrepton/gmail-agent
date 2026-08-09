@@ -47,6 +47,15 @@ class ContextBudgetLimits:
         defaults = cls()
         if stage == "business_reasoning":
             defaults = cls(max_chunks=3, max_chunk_chars=600, max_context_tokens=4200)
+        elif stage == "reply_drafter":
+            defaults = cls(
+                max_company_chars=2200,
+                max_chunks=1,
+                max_chunk_chars=450,
+                max_facts=16,
+                max_fact_value_chars=140,
+                max_context_tokens=2600,
+            )
         return cls(
             max_company_chars=_env_int(f"{stage_prefix}MAX_COMPANY_CHARS", defaults.max_company_chars),
             max_chunks=_env_int(f"{stage_prefix}MAX_CHUNKS", defaults.max_chunks),

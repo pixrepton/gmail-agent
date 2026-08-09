@@ -8,9 +8,13 @@ Identity is out of scope. This slice proves:
 
 from __future__ import annotations
 
+import json
 import unittest
 from types import SimpleNamespace
 
+from agent_runtime.draft_sanity import evaluate_draft_sanity
+from context_assembler import ContextBudgetLimits
+from intake_payload import build_reply_draft_payload
 from reply_drafter import gate_reply_draft_commitments, gate_reply_draft_content_sanity
 
 
@@ -112,6 +116,108 @@ class Brain1ContentSanityFloor(unittest.TestCase):
             self.assertIn("draft_sanity:asks_known_heated_area_m2", result["do_not_send_reasons"])
         else:
             self.skipTest("known_facts_from_snapshot stub shape unsupported; contract covered by Model A tests")
+
+
+class ServiceBoundedReplySanity(unittest.TestCase):
+    def test_service_missing_info_bounded_clarification_passes(self) -> None:
+        verdict = evaluate_draft_sanity(
+            body=(
+                "Dzien dobry, dziekujemy za zgloszenie. Prosimy o model urzadzenia, "
+                "opis objawu lub kod bledu oraz zdjecie komunikatu, jesli jest dostepne."
+            ),
+            case_kind="awaria_naprawa",
+            intent="missing_info",
+        )
+
+        self.assertEqual(verdict, {"ok": True, "reason_codes": []})
+
+    def test_service_missing_info_without_service_scope_fails_closed(self) -> None:
+        verdict = evaluate_draft_sanity(
+            body="Dzien dobry, prosimy o doprecyzowanie sprawy.",
+            case_kind="awaria_naprawa",
+            intent="missing_info",
+        )
+
+        self.assertFalse(verdict["ok"])
+        self.assertIn("service_missing_info_without_service_scope", verdict["reason_codes"])
+
+    def test_service_unsupported_visit_or_diagnosis_stays_blocked(self) -> None:
+        verdict = evaluate_draft_sanity(
+            body="Technik przyjedzie jutro. To na pewno uszkodzony czujnik.",
+            case_kind="serwis",
+            intent="missing_info",
+        )
+
+        self.assertFalse(verdict["ok"])
+        self.assertIn("unsupported_service_promise", verdict["reason_codes"])
+        self.assertIn("unsupported_diagnosis_claim", verdict["reason_codes"])
+
+
+class ReplyDraftContextProjection(unittest.TestCase):
+    def test_reply_drafter_gets_bounded_projection_with_critical_facts(self) -> None:
+        large_text = "RAW_CONTEXT " * 900
+        context_bundle = {
+            "case_id": "case-new-01",
+            "engagement_id": "eng-new-01",
+            "context_messages": [{"body": large_text} for _ in range(4)],
+            "case_context_pack": {
+                "case_id": "case-new-01",
+                "engagement_id": "eng-new-01",
+                "active_facts": [],
+                "relevant_chunks": [{"chunk_text": large_text} for _ in range(12)],
+                "context_quality": {"action_readiness": "reply_ready", "confidence": 0.9},
+                "snapshot": {"open_questions": ["model urzadzenia", "kod bledu"]},
+            },
+        }
+        active_facts = [
+            {"fact_key": "budget_pln_estimated", "normalized_value": "40000-50000"},
+            {
+                "fact_key": "scheduled_visit",
+                "normalized_value": "2026-08-12",
+                "metadata": {"calendar_event_id": "evt-1", "raw": large_text},
+            },
+            {"fact_key": "device_model", "normalized_value": "Panasonic Aquarea"},
+        ]
+        active_facts.extend(
+            {"fact_key": f"irrelevant_{idx}", "normalized_value": large_text} for idx in range(30)
+        )
+        context_bundle["case_context_pack"]["active_facts"] = active_facts
+
+        payload = build_reply_draft_payload(
+            {"source_message": {"sender": "a@example.com", "subject": "S", "body": "B"}},
+            {
+                "decision": {"action": "reply"},
+                "execution_metadata": {"prompt_input": {"raw": large_text}},
+                "input_variants": [{"task_prompt": large_text}],
+            },
+            {
+                "recommended_reply_goal": "safe clarification",
+                "execution_metadata": {"assembled_context": {"company_context": large_text}},
+            },
+            {},
+            context_bundle,
+        )
+
+        encoded = json.dumps(payload, ensure_ascii=False)
+        self.assertLess(len(encoded), 6000)
+        self.assertIn("budget_pln_estimated", encoded)
+        self.assertIn("40000-50000", encoded)
+        self.assertIn("scheduled_visit", encoded)
+        self.assertIn("evt-1", encoded)
+        self.assertIn("device_model", encoded)
+        self.assertNotIn("RAW_CONTEXT RAW_CONTEXT RAW_CONTEXT", encoded)
+        self.assertNotIn("prompt_input", encoded)
+        self.assertNotIn("assembled_context", encoded)
+        metadata = payload["context_bundle"]["case_context_pack"]["projection_metadata"]
+        self.assertGreater(metadata["relevant_chunks_omitted"], 0)
+        self.assertGreater(metadata["raw_context_messages_omitted"], 0)
+
+    def test_reply_drafter_has_stage_specific_context_budget(self) -> None:
+        limits = ContextBudgetLimits.from_env(stage_name="reply_drafter")
+
+        self.assertLess(limits.max_context_tokens, ContextBudgetLimits().max_context_tokens)
+        self.assertLessEqual(limits.max_chunks, 1)
+        self.assertLessEqual(limits.max_company_chars, 2200)
 
 
 class CommitmentThenSanityPipeline(unittest.TestCase):
