@@ -82,6 +82,14 @@ def _business_priority(*, priority: str, urgency: str, review_required: bool) ->
     return "medium"
 
 
+def _hard_intake_review_required(intake_result: dict[str, Any]) -> bool:
+    review_obj_present = isinstance(intake_result.get("review"), dict)
+    if not review_obj_present:
+        return bool(intake_result.get("review_required"))
+    review = intake_result.get("review") if review_obj_present else {}
+    return bool(review.get("required")) and bool(review.get("flags") or [])
+
+
 def build_case_understanding_snapshot(
     *,
     snapshot: dict[str, Any],
@@ -98,7 +106,7 @@ def build_case_understanding_snapshot(
     priority = _business_priority(
         priority=str(intake_result.get("priority") or "low"),
         urgency=str(business_result.get("urgency") or "normal"),
-        review_required=bool(intake_result.get("review_required") or (intake_result.get("review") or {}).get("required")),
+        review_required=_hard_intake_review_required(intake_result),
     )
     case_id = _resolve_case_id(intake_result=intake_result, case_link_result=case_link_result)
     state_detected = str(case_assessment.get("state_detected") or "none")
@@ -114,7 +122,7 @@ def build_case_understanding_snapshot(
         blockers.append("Brak krytycznych informacji do dalszego ruchu.")
     if bool(case_link_result.get("decision") in {"weak_link", "competing_links"}):
         blockers.append("Powiązanie sprawy wymaga potwierdzenia.")
-    if bool(intake_result.get("review_required") or (intake_result.get("review") or {}).get("required")):
+    if _hard_intake_review_required(intake_result):
         blockers.append("Temat wymaga recznej oceny przed bezpiecznym ruchem.")
 
     if bool(context_quality.get("has_blocking_conflicts")):
@@ -171,7 +179,7 @@ def build_case_understanding_snapshot(
         "merge_candidates": list(merge_split_suggestions.get("merge_candidates") or []),
         "split_suspicions": list(merge_split_suggestions.get("split_suspicions") or []),
         "confidence_overall": confidence_overall,
-        "review_required": bool((intake_result.get("review") or {}).get("required"))
+        "review_required": _hard_intake_review_required(intake_result)
             or bool(blockers and any("Powi" in blocker and "potwierdzenia" in blocker for blocker in blockers))
             or bool(context_quality.get("has_blocking_conflicts"))
             or bool(context_quality.get("has_blocking_gaps")),

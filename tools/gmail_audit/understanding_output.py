@@ -11,6 +11,7 @@ from case_context_contract import (
     operator_feed_conflicting_fact,
     operator_feed_plain_summary,
 )
+from case_intelligence.constants import MISSING_INFO_CRITICAL_KEYWORDS
 from case_intelligence.missing_info import _active_fact_values, _is_collectable_gap, _is_redundant_known_fact_gap
 from context_quality_contract import normalize_context_quality
 from log_config import get_logger
@@ -387,12 +388,14 @@ def _missing_fields(
     trusted_case_link: bool = False,
 ) -> list[str]:
     out: list[str] = []
-    for key in ("critical", "important", "helpful"):
-        values = missing.get(key) if isinstance(missing.get(key), list) else []
-        for item in values:
-            s = operator_feed_plain_summary(item, fallback="")
-            if s:
-                out.append(s[:240])
+    structured_tiers_present = any(isinstance(missing.get(key), list) for key in ("critical", "important", "helpful"))
+    values = missing.get("critical") if isinstance(missing.get("critical"), list) else []
+    for item in values:
+        s = operator_feed_plain_summary(item, fallback="")
+        if s:
+            out.append(s[:240])
+    if structured_tiers_present:
+        return _dedupe(out)
     for item in business.get("missing_information") or []:
         # RC-IQ-R6: the raw business-reasoner passthrough must be filtered by the same
         # collectable-gap rule as the tiered missing_info, or dropped non-gaps (awaited
@@ -404,6 +407,9 @@ def _missing_fields(
             known_facts=known_facts or {},
             trusted_case_link=trusted_case_link,
         ):
+            continue
+        lowered = str(item).lower()
+        if not any(keyword in lowered for keyword in MISSING_INFO_CRITICAL_KEYWORDS):
             continue
         s = operator_feed_plain_summary(item, fallback="")
         if s:

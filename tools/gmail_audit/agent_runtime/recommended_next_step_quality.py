@@ -38,6 +38,7 @@ _SERVICE_KINDS = frozenset(
         "complaint",
     }
 )
+_TECHNICAL_KINDS = frozenset({"technical_question", "technical", "compatibility", "documents"})
 _ADMIN_KINDS = frozenset(
     {
         "faktura_sprzedaz",
@@ -99,6 +100,8 @@ def normalize_case_kind(*, case_kind: str = "", business_area: str = "", case_fa
     raw = " ".join(
         str(x or "").strip().lower() for x in (case_kind, business_area, case_family) if x
     )
+    if any(k in raw for k in ("kompatybil", "technic", "technicz", "karta katalog", "dokument")):
+        return "technical_question"
     if any(k in raw for k in ("awaria", "serwis", "reklam", "napraw", "przeglad", "service")):
         return "awaria_naprawa"
     if any(k in raw for k in ("wycen", "ofert", "lead", "sales", "zapytanie")):
@@ -343,6 +346,7 @@ def sharpen_recommended_next_step(
     risks: list[Any] | None = None,
     open_loops: list[Any] | None = None,
     thread_delta: dict[str, Any] | None = None,
+    later_missing_fields: list[str] | None = None,
 ) -> str:
     title = str(title_pl or "").strip()
     reason = str(reason_pl or "").strip()
@@ -351,13 +355,22 @@ def sharpen_recommended_next_step(
         case_kind=case_kind, business_area=business_area, case_family=case_family
     )
     missing = [str(x).strip() for x in (missing_critical_fields or []) if str(x).strip()]
+    later = [str(x).strip() for x in (later_missing_fields or []) if str(x).strip()]
     changed = str(what_changed_pl or "").strip()
     base = title or reason or action
     if not base:
         # Honest absence — do not invent a next step when Brain1 left NBA empty.
         return ""
 
-    combined = f"{title} {reason} {action}"
+    combined = f"{title} {reason} {action} {essence_pl}"
+    technical_question = kind in _TECHNICAL_KINDS or any(
+        marker in combined.lower()
+        for marker in ("kompatybil", "technicz", "karta katalog", "dokument", "aquarea")
+    )
+    multi_intent = technical_question and any(
+        marker in combined.lower()
+        for marker in ("dwie intencje", "dwie sprawy", "po pierwsze", "po drugie", "serwis", "awaria")
+    )
     meaningful_delta = is_meaningful_follow_up_delta(
         what_changed_pl=changed,
         thread_delta=thread_delta,
@@ -368,7 +381,7 @@ def sharpen_recommended_next_step(
         risks=risks, open_loops=open_loops, essence_pl=essence_pl
     )
 
-    if not is_vague_next_step(combined):
+    if not later and not is_vague_next_step(combined):
         # Concrete NBA stays concrete — do not rewrite with thread-delta prefixes.
         if reason and reason.lower() not in title.lower():
             return f"{title}. {reason}"[:400] if title else reason[:400]
@@ -420,6 +433,60 @@ def sharpen_recommended_next_step(
             "(draft / clarification / stop), bez ogólnej eskalacji."
         )[:400]
 
+    if multi_intent:
+        if missing:
+            return (
+                "Multi-intent: odpowiedz na czesc techniczna i osobno dopytaj tylko o blocker serwisowy ("
+                + ", ".join(missing[:2])
+                + ")."
+            )[:400]
+        return (
+            "Multi-intent: odpowiedz technicznie teraz i osobno przyjmij problem serwisowy do triage; "
+            "dane do dalszej obslugi: "
+            + ", ".join(later[:3])
+            + "."
+        )[:400]
+
+    if technical_question:
+        if missing:
+            return (
+                "Techniczne: odpowiedz w granicach evidence i dopytaj tylko o blocker obecnej oceny ("
+                + ", ".join(missing[:2])
+                + "); bez pelnej checklisty ofertowej."
+            )[:400]
+        if later:
+            return (
+                "Techniczne: daj bounded compatibility assessment albo 1-2 trafne pytania; "
+                "dane do pelnej oferty zachowaj jako pozniejsze: "
+                + ", ".join(later[:3])
+                + "."
+            )[:400]
+        return (
+            "Techniczne: odpowiedz na pytanie z watku w granicach evidence; "
+            "nie udawaj pelnej kompatybilnosci bez danych technicznych."
+        )[:400]
+
+    if (
+        (kind in _SERVICE_KINDS or "awaria" in kind or "serwis" in kind)
+        and later
+        and not missing
+        and any(marker in combined.lower() for marker in ("niepiln", "nie ma pospiechu", "low urgency"))
+    ):
+        return (
+            "Serwis: zachowaj low urgency i odpowiedz informacyjnie z bounded triage; "
+            "nie wymyslaj diagnozy ani wizyty. Pomocne dane na pozniej: "
+            + ", ".join(later[:3])
+            + "."
+        )[:400]
+
+    if (kind in _SERVICE_KINDS or "awaria" in kind or "serwis" in kind) and later and not missing:
+        return (
+            "Serwis: przyjmij zgloszenie i rozpocznij bounded triage/eskalacje; "
+            "nie wymyslaj diagnozy ani wizyty. Dane do dalszej obslugi: "
+            + ", ".join(later[:3])
+            + "."
+        )[:400]
+
     if kind in _SERVICE_KINDS or "awaria" in kind or "serwis" in kind:
         if missing:
             return (
@@ -431,6 +498,14 @@ def sharpen_recommended_next_step(
             "Serwis: potwierdź urządzenie i objaw z wątku, przygotuj draft serwisowy "
             "lub request_operator_clarification z jedną konkretną decyzją (termin/część)."
         )
+
+    if (kind in _SALES_KINDS or "wycen" in kind or "ofert" in kind) and later and not missing:
+        return (
+            "Lead: odpowiedz klientowi i zaproponuj najblizszy bezpieczny krok; "
+            "nie oznaczaj jako quote-ready i nie licz ceny. Dane do pozniejszej wyceny: "
+            + ", ".join(later[:3])
+            + "."
+        )[:400]
 
     if kind in _SALES_KINDS or "wycen" in kind or "ofert" in kind:
         if missing:
@@ -463,6 +538,24 @@ def sharpen_recommended_next_step(
         "generate_draft_reply, request_operator_clarification (z konkretnym ask_pl) "
         "albo report_gaps_and_stop."
     )[:400]
+
+
+def _later_missing_fields(understanding: dict[str, Any]) -> list[str]:
+    missing = understanding.get("missing_information") if isinstance(understanding.get("missing_information"), dict) else {}
+    out: list[str] = []
+    for key in ("important", "helpful"):
+        for item in missing.get(key) or []:
+            text = str(item).strip()
+            if text:
+                out.append(text[:240])
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in out:
+        lowered = item.lower()
+        if lowered not in seen:
+            seen.add(lowered)
+            unique.append(item)
+    return unique
 
 
 def evaluate_understanding_to_decision_quality(
@@ -511,6 +604,7 @@ def evaluate_understanding_to_decision_quality(
         risks=risks,
         open_loops=open_loops,
         thread_delta=delta,
+        later_missing_fields=_later_missing_fields(uo),
     )
     gaps_vs_risks = separate_gaps_vs_risks(
         missing_critical_fields=missing,
@@ -632,6 +726,7 @@ def apply_nba_quality_to_understanding(
         risks=risks,
         open_loops=open_loops,
         thread_delta=delta,
+        later_missing_fields=_later_missing_fields(uo),
     )
     decision_state = classify_decision_state(
         sharpened_pl=sharpened,

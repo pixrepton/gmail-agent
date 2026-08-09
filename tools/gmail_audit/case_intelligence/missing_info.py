@@ -1,5 +1,6 @@
 """Missing information extraction for case intelligence."""
 from __future__ import annotations
+import re
 from typing import Any
 
 from .constants import MISSING_INFO_CRITICAL_KEYWORDS, MISSING_INFO_IMPORTANT_KEYWORDS
@@ -48,6 +49,110 @@ _TRUSTED_LINK_GAP_MARKERS = (
     "pełny wątek",
     "historia sprawy",
     "confirmed case reference",
+)
+
+_SERVICE_MARKERS = (
+    "serwis",
+    "reklamac",
+    "awaria",
+    "usterk",
+    "nie dziala",
+    "nie działa",
+    "przestala",
+    "przestała",
+    "halas",
+    "hałas",
+    "dzwiek",
+    "dźwięk",
+    "temperatura",
+    "ciepla woda",
+    "ciepła woda",
+)
+_TECHNICAL_QUESTION_MARKERS = (
+    "kompatybil",
+    "pytanie techniczne",
+    "karta katalogowa",
+    "dokumentac",
+    "czy pompa",
+    "aquarea",
+    "grzejnik",
+)
+_QUOTE_LATER_MARKERS = (
+    "adres",
+    "address",
+    "telefon",
+    "phone",
+    "ozc",
+    "zapotrzebowanie",
+    "termin",
+    "harmonogram",
+    "schedule",
+    "marka",
+    "brand",
+    "odbiornik",
+    "grzejnik",
+    "podlog",
+    "podłog",
+    "cwu",
+    "bufor",
+    "rok budowy",
+    "izolac",
+    "doplata",
+    "dopłata",
+    "dojazd",
+)
+_SERVICE_LATER_MARKERS = (
+    "adres",
+    "address",
+    "telefon",
+    "phone",
+    "model",
+    "seryjn",
+    "serial",
+    "umowy",
+    "zlecenia",
+    "opis objaw",
+    "objaw",
+    "kody bled",
+    "kody błęd",
+    "pilnos",
+    "pilnoś",
+    "dostepnosc",
+    "dostępność",
+)
+_TECHNICAL_BROAD_SALES_MARKERS = (
+    "adres",
+    "address",
+    "telefon",
+    "phone",
+    "powierzchnia",
+    "metraz",
+    "metraż",
+    "m2",
+    "ozc",
+    "termin",
+    "harmonogram",
+    "strefa",
+    "dojazd",
+    "cwu",
+    "bufor",
+    "rok budowy",
+    "marka",
+    "brand",
+)
+_HARD_CURRENT_BLOCKER_MARKERS = (
+    "confirmed case",
+    "case reference",
+    "potwierdzenie wlasciwej sprawy",
+    "potwierdzenie właściwej sprawy",
+    "sprzeczn",
+    "konflikt",
+    "contradict",
+    "conflict",
+    "calendar evidence",
+    "dowod umowienia",
+    "dowód umówienia",
+    "potwierdzenie umowionej wizyty",
 )
 
 
@@ -117,6 +222,124 @@ def _is_redundant_known_fact_gap(item: str, *, known_facts: dict[str, Any], trus
     return False
 
 
+def _flatten_context_text(*values: Any) -> str:
+    chunks: list[str] = []
+
+    def visit(value: Any) -> None:
+        if len(chunks) >= 120:
+            return
+        if isinstance(value, dict):
+            for key, item in value.items():
+                chunks.append(str(key))
+                visit(item)
+            return
+        if isinstance(value, list):
+            for item in value[:40]:
+                visit(item)
+            return
+        if value not in (None, "", [], {}):
+            chunks.append(str(value))
+
+    for value in values:
+        visit(value)
+    return " ".join(chunks).lower()
+
+
+def _has_actionable_lead_profile(intake_result: dict[str, Any], business_result: dict[str, Any]) -> bool:
+    text = _flatten_context_text(
+        intake_result.get("business_area"),
+        intake_result.get("case_assessment"),
+        intake_result.get("extracted_data"),
+        intake_result.get("reason"),
+        business_result.get("business_area"),
+        business_result.get("business_interpretation"),
+        business_result.get("business_summary_short"),
+        business_result.get("recommended_action_reason"),
+    )
+    is_sales = any(marker in text for marker in ("sales", "lead", "wycen", "ofert", "pompa ciepla", "pompa ciepła"))
+    if not is_sales:
+        return False
+    evidence_count = sum(
+        1
+        for present in (
+            bool(re.search(r"\b\d{2,3}(?:[.,]\d+)?\s*(?:m2|m²)\b", text)) or "heated_area_m2" in text,
+            any(marker in text for marker in ("wroclaw", "wrocław", "jaworzno", "lokaliz", "miasto", "raw_geographic_signal")),
+            any(marker in text for marker in ("dom", "budynek", "jednorodzin")),
+            any(marker in text for marker in ("gaz", "podlog", "podłog", "grzejnik", "current_heating_source")),
+            any(marker in text for marker in ("budzet", "budżet", "pln", "45000", "budget")),
+        )
+        if present
+    )
+    return evidence_count >= 2
+
+
+def _is_service_context(intake_result: dict[str, Any], business_result: dict[str, Any]) -> bool:
+    text = _flatten_context_text(
+        intake_result.get("business_area"),
+        intake_result.get("case_assessment"),
+        intake_result.get("extracted_data"),
+        intake_result.get("reason"),
+        business_result.get("business_area"),
+        business_result.get("business_interpretation"),
+        business_result.get("business_summary_short"),
+        business_result.get("recommended_action_reason"),
+    )
+    return any(marker in text for marker in _SERVICE_MARKERS)
+
+
+def _is_technical_question_context(intake_result: dict[str, Any], business_result: dict[str, Any]) -> bool:
+    text = _flatten_context_text(
+        intake_result.get("business_area"),
+        intake_result.get("case_assessment"),
+        intake_result.get("extracted_data"),
+        intake_result.get("reason"),
+        business_result.get("business_area"),
+        business_result.get("business_interpretation"),
+        business_result.get("business_summary_short"),
+        business_result.get("recommended_action_reason"),
+    )
+    return any(marker in text for marker in _TECHNICAL_QUESTION_MARKERS)
+
+
+def _has_actionable_current_step(intake_result: dict[str, Any], business_result: dict[str, Any]) -> bool:
+    return (
+        _has_actionable_lead_profile(intake_result, business_result)
+        or _is_service_context(intake_result, business_result)
+        or _is_technical_question_context(intake_result, business_result)
+    )
+
+
+def _is_hard_current_blocker_gap(lowered: str) -> bool:
+    return any(marker in lowered for marker in _HARD_CURRENT_BLOCKER_MARKERS)
+
+
+def _is_later_gap_for_current_context(
+    item: str,
+    *,
+    intake_result: dict[str, Any],
+    business_result: dict[str, Any],
+) -> bool:
+    lowered = item.lower()
+    if _is_hard_current_blocker_gap(lowered):
+        return False
+    if _is_technical_question_context(intake_result, business_result):
+        return any(marker in lowered for marker in _TECHNICAL_BROAD_SALES_MARKERS)
+    if _is_service_context(intake_result, business_result):
+        return any(marker in lowered for marker in _SERVICE_LATER_MARKERS)
+    if _has_actionable_lead_profile(intake_result, business_result):
+        return any(marker in lowered for marker in _QUOTE_LATER_MARKERS)
+    return False
+
+
+def _later_gap_tier(item: str, *, technical_question: bool) -> str:
+    lowered = item.lower()
+    if technical_question and any(marker in lowered for marker in _TECHNICAL_BROAD_SALES_MARKERS):
+        return "helpful"
+    if any(marker in lowered for marker in ("marka", "brand", "preferenc")):
+        return "helpful"
+    return "important"
+
+
 def build_missing_info(
     *,
     intake_result: dict[str, Any],
@@ -143,10 +366,20 @@ def build_missing_info(
     critical: list[str] = []
     important: list[str] = []
     helpful: list[str] = []
+    technical_question = _is_technical_question_context(intake_result, business_result)
     for item in raw_items:
         localized_item = _missing_info_label_pl(item)
         lowered = item.lower()
-        if any(keyword in lowered for keyword in MISSING_INFO_CRITICAL_KEYWORDS):
+        if _is_later_gap_for_current_context(
+            item,
+            intake_result=intake_result,
+            business_result=business_result,
+        ):
+            if _later_gap_tier(item, technical_question=technical_question) == "helpful":
+                helpful.append(localized_item)
+            else:
+                important.append(localized_item)
+        elif any(keyword in lowered for keyword in MISSING_INFO_CRITICAL_KEYWORDS):
             critical.append(localized_item)
         elif any(keyword in lowered for keyword in MISSING_INFO_IMPORTANT_KEYWORDS):
             important.append(localized_item)
@@ -166,8 +399,12 @@ def build_missing_info(
     if bool(reply_result.get("draft_enabled")) and (reply_result.get("drafts") or []):
         customer_question_draft_pl = str((reply_result.get("drafts") or [{}])[0].get("body") or "").strip()
     elif critical or important:
-        requested = critical[:2] + important[:2]
-        customer_question_draft_pl = "Dzien dobry, zeby ruszyc dalej, prosimy o: " + ", ".join(requested) + "."
+        if critical:
+            requested = critical[:2] + important[:1]
+            customer_question_draft_pl = "Dzien dobry, zeby bezpiecznie wykonac obecny krok, prosimy o: " + ", ".join(requested) + "."
+        else:
+            requested = important[:2]
+            customer_question_draft_pl = "Dzien dobry, na kolejnym etapie przydadza sie: " + ", ".join(requested) + "."
 
     operator_checklist_pl = []
     for item in critical:

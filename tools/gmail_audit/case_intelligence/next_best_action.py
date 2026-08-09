@@ -3,7 +3,17 @@ from __future__ import annotations
 from typing import Any
 
 from .constants import ACTION_CHANNEL, ACTION_TITLE_PL, INTELLIGENCE_ACTION_TYPES
+from .missing_info import _has_actionable_current_step, _is_service_context, _is_technical_question_context
 from .validators import _action_item, _bounded_float, _normalize_urgency, _string_or_default
+
+
+def _soft_review_from_action_plan(intake_result: dict[str, Any], primary_action_plan: str) -> bool:
+    review_obj_present = isinstance(intake_result.get("review"), dict)
+    review = intake_result.get("review") if review_obj_present else {}
+    review_flags = [str(flag).strip() for flag in (review.get("flags") or []) if str(flag).strip()]
+    if review_flags:
+        return False
+    return (review_obj_present and bool(review.get("required"))) or primary_action_plan == "create_review"
 
 
 def build_next_best_action(
@@ -16,18 +26,34 @@ def build_next_best_action(
     missing_info: dict[str, Any],
     merge_split_suggestions: dict[str, Any],
 ) -> dict[str, Any]:
-    review_required = bool((intake_result.get("review") or {}).get("required")) or str(action_plan_result.get("primary_action") or "") == "create_review"
     business_action = str(business_result.get("recommended_next_action") or "").strip()
     primary_action_plan = str(action_plan_result.get("primary_action") or "").strip()
     case_link_decision = str(case_link_result.get("decision") or "").strip()
     business_area = str(intake_result.get("business_area") or "").strip()
     case_family = str((intake_result.get("case_assessment") or {}).get("case_family") or "").strip()
+    review_obj_present = isinstance(intake_result.get("review"), dict)
+    review = intake_result.get("review") if review_obj_present else {}
+    hard_review_required = bool(review.get("required")) and bool(review.get("flags") or [])
+    if not review_obj_present and bool(intake_result.get("review_required")):
+        hard_review_required = True
+    soft_review_required = _soft_review_from_action_plan(intake_result, primary_action_plan)
+    current_action_ready = (
+        not missing_info.get("critical")
+        and _has_actionable_current_step(intake_result, business_result)
+    )
+    review_required = hard_review_required or (soft_review_required and not current_action_ready)
 
     action_type = "wait"
     if review_required:
         action_type = "review_required"
     elif business_action == "wait":
         action_type = "wait"
+    elif current_action_ready and business_action in {"collect_data", "escalate_review"}:
+        if _is_service_context(intake_result, business_result):
+            urgency = _normalize_urgency(str(business_result.get("urgency") or intake_result.get("priority") or "normal"))
+            action_type = "answer_customer" if urgency == "low" or _is_technical_question_context(intake_result, business_result) else "escalate_internal"
+        else:
+            action_type = "answer_customer"
     elif business_action == "collect_data":
         action_type = "ask_for_missing_data"
     elif business_action == "reply":
@@ -38,7 +64,13 @@ def build_next_best_action(
         action_type = "review_required"
     elif business_area in {"procurement", "logistics", "supplier_commercial"}:
         action_type = "follow_up_supplier"
-    elif case_family == "lead_opportunity" and not missing_info.get("critical") and primary_action_plan == "prepare_reply":
+    elif (
+        case_family == "lead_opportunity"
+        and not missing_info.get("critical")
+        and not missing_info.get("important")
+        and not missing_info.get("helpful")
+        and primary_action_plan == "prepare_reply"
+    ):
         action_type = "prepare_offer"
     elif primary_action_plan in {"update_case", "create_task", "hold"}:
         action_type = "escalate_internal"
