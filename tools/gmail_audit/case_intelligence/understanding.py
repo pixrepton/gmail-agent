@@ -16,6 +16,9 @@ from .validators import (
 
 
 def _resolve_case_id(*, intake_result: dict[str, Any], case_link_result: dict[str, Any]) -> str:
+    explicit_case_id = str(case_link_result.get("case_id") or case_link_result.get("selected_case_id") or "").strip()
+    if explicit_case_id and str(case_link_result.get("decision") or "") == "linked":
+        return explicit_case_id
     case_key_info = resolve_case_key_metadata(intake_result)
     projected_case_key = str(case_key_info.get("case_key") or "").strip()
     case_family = str((intake_result.get("case_assessment") or {}).get("case_family") or "unknown")

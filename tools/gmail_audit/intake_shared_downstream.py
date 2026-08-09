@@ -119,6 +119,100 @@ def fallback_case_intelligence_result(
     }
 
 
+_INVALID_FACT_STATUSES = {"superseded", "rejected", "stale", "invalidated", "disputed"}
+
+
+def _case_id_from_context_pack(pack: dict[str, Any]) -> str:
+    case_id = str(pack.get("case_id") or "").strip()
+    if case_id:
+        return case_id
+    snapshot = pack.get("snapshot") if isinstance(pack.get("snapshot"), dict) else {}
+    return str(snapshot.get("case_id") or snapshot.get("case_key") or "").strip()
+
+
+def _source_message_id(snapshot: dict[str, Any], intake_result: dict[str, Any]) -> str:
+    source = snapshot.get("source_message") if isinstance(snapshot.get("source_message"), dict) else {}
+    return str(source.get("message_id") or intake_result.get("message_id") or "").strip()
+
+
+def _trusted_prior_state_in_context_pack(pack: dict[str, Any], *, source_message_id: str) -> bool:
+    facts = pack.get("active_facts") if isinstance(pack.get("active_facts"), list) else []
+    for fact in facts:
+        if not isinstance(fact, dict):
+            continue
+        status = str(fact.get("status") or "active").strip().lower()
+        if status in _INVALID_FACT_STATUSES:
+            continue
+        key = str(fact.get("fact_key") or fact.get("key") or "").strip()
+        if not key:
+            continue
+        source_ref = str(fact.get("source_ref") or "").strip()
+        source_refs = [str(ref.get("source_id") or ref.get("message_id") or "").strip() for ref in fact.get("source_refs") or [] if isinstance(ref, dict)]
+        evidence_refs = {ref for ref in [source_ref, *source_refs] if ref}
+        if not evidence_refs:
+            continue
+        if source_message_id and source_message_id in evidence_refs:
+            continue
+        return True
+    snapshot = pack.get("snapshot") if isinstance(pack.get("snapshot"), dict) else {}
+    for key in ("key_facts", "open_questions", "latest_documents", "timeline"):
+        values = snapshot.get(key)
+        if isinstance(values, list) and values:
+            return True
+    for key in ("documents", "latest_documents"):
+        values = pack.get(key)
+        if isinstance(values, list) and values:
+            return True
+    return False
+
+
+def trust_case_link_from_context_pack(
+    *,
+    case_link_result: dict[str, Any],
+    mailbox_memory_result: dict[str, Any],
+    context_pack: dict[str, Any] | None,
+    snapshot: dict[str, Any],
+    intake_result: dict[str, Any],
+) -> dict[str, Any]:
+    """Upgrade an empty/no-link decision only when mailbox SoT already has prior case state."""
+    from intake_schema import validate_case_link_result
+
+    original = case_link_result if isinstance(case_link_result, dict) else {}
+    decision = str(original.get("decision") or "no_link")
+    if decision not in {"", "no_link"}:
+        return original
+    pack = context_pack if isinstance(context_pack, dict) else {}
+    case_id = _case_id_from_context_pack(pack)
+    mailbox_case_id = str((mailbox_memory_result or {}).get("case_id") or "").strip()
+    if not case_id:
+        return original
+    if mailbox_case_id and mailbox_case_id != case_id:
+        return original
+    source_id = _source_message_id(snapshot, intake_result)
+    if not _trusted_prior_state_in_context_pack(pack, source_message_id=source_id):
+        return original
+
+    confidence = max(float(original.get("confidence") or 0.0), 0.88)
+    reasons = [*list(original.get("reasons") or []), "trusted_case_context_pack", "prior_case_state_present"]
+    return validate_case_link_result({
+        "selected_case_key": str(pack.get("case_key") or case_id),
+        "selected_case_id": case_id,
+        "case_id": case_id,
+        "decision": "linked",
+        "confidence": confidence,
+        "source": "context_candidate",
+        "reasons": reasons,
+        "candidates": [{
+            "case_key": str(pack.get("case_key") or case_id),
+            "score": confidence,
+            "source": "context_candidate",
+            "reasons": reasons,
+            "hard_match_count": 1,
+            "soft_match_count": 0,
+        }],
+    })
+
+
 def run_shared_downstream_stages(
     *,
     snapshot: dict[str, Any],
@@ -175,6 +269,21 @@ def run_shared_downstream_stages(
         from gmail_intake import _resolve_effective_context_bundle
 
         context_bundle = _resolve_effective_context_bundle(snapshot, context_bundle, stage_config)
+        effective_pack = context_bundle.get("case_context_pack") if isinstance(context_bundle, dict) else None
+    else:
+        effective_pack = mailbox_context_pack
+
+    trusted_case_link_result = trust_case_link_from_context_pack(
+        case_link_result=case_link_result,
+        mailbox_memory_result=mailbox_memory_result,
+        context_pack=effective_pack if isinstance(effective_pack, dict) else None,
+        snapshot=snapshot,
+        intake_result=intake_result,
+    )
+    if trusted_case_link_result != case_link_result:
+        stage_config["case_link_result_before_context_trust"] = case_link_result
+        case_link_result = trusted_case_link_result
+        stage_config["case_link_result"] = case_link_result
 
     # Krok 3: LLM-intensive stages przez ThreadPoolExecutor.
     # RP-30: case_intelligence runs before action_plan so planning follows understanding.
@@ -351,5 +460,6 @@ __all__ = [
     "SharedDownstreamResult",
     "fallback_case_intelligence_result",
     "resolve_hot_state_case_id",
+    "trust_case_link_from_context_pack",
     "run_shared_downstream_stages",
 ]

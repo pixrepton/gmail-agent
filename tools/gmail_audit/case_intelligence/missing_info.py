@@ -20,6 +20,35 @@ _SPECULATIVE_MARKERS = ("jesli dotyczy", "jeśli dotyczy", "if applicable")
 # datum the customer can supply. Both are dropped from the operator gap surface.
 _OPTIONAL_MARKERS = ("(opcjonalnie)", "opcjonalnie)", "(optional)")
 _INTERNAL_LINK_MARKERS = ("case id", "case_id")
+_INVALID_FACT_STATUSES = {"superseded", "rejected", "stale", "invalidated", "disputed"}
+
+_FACT_GAP_MARKERS: dict[str, tuple[str, ...]] = {
+    "heated_area_m2": ("metraz", "metraż", "powierzchnia", "area"),
+    "city": ("miasto", "lokalizacja", "localization", "location"),
+    "raw_geographic_signal": ("miasto", "lokalizacja", "localization", "location"),
+    "scope": ("zakres", "scope"),
+    "dhw_required": ("cwu", "ciepla woda", "ciepła woda", "zasobnik"),
+    "current_heating_source": ("obecne zrodlo", "obecne źródło"),
+}
+
+_TRUSTED_LINK_GAP_MARKERS = (
+    "do ktorej konkretnej wyceny",
+    "do której konkretnej wyceny",
+    "ktorej oferty",
+    "której oferty",
+    "ktorego przypadku",
+    "którego przypadku",
+    "brak powiazania",
+    "brak powiązania",
+    "powiazanie z istniejącym",
+    "powiązanie z istniejącym",
+    "odniesienie do wczesniejszej wyceny",
+    "odniesienie do wcześniejszej wyceny",
+    "pelny watek",
+    "pełny wątek",
+    "historia sprawy",
+    "confirmed case reference",
+)
 
 
 def _is_collectable_gap(item: str) -> bool:
@@ -35,6 +64,59 @@ def _is_collectable_gap(item: str) -> bool:
     return True
 
 
+def _active_fact_values(case_context_pack: dict[str, Any] | None) -> dict[str, Any]:
+    pack = case_context_pack if isinstance(case_context_pack, dict) else {}
+    conflicts = pack.get("conflicting_facts") if isinstance(pack.get("conflicting_facts"), list) else []
+    conflicted_keys = {
+        str(item.get("fact_key") or item.get("key") or "").strip()
+        for item in conflicts
+        if isinstance(item, dict)
+    }
+    grouped: dict[str, list[Any]] = {}
+    for fact in pack.get("active_facts") or []:
+        if not isinstance(fact, dict):
+            continue
+        status = str(fact.get("status") or "active").strip().lower()
+        if status in _INVALID_FACT_STATUSES:
+            continue
+        key = str(fact.get("fact_key") or fact.get("key") or "").strip()
+        if not key or key in conflicted_keys:
+            continue
+        value = fact.get("value")
+        if value is None:
+            value = fact.get("normalized_value")
+        if value in (None, "", [], {}):
+            continue
+        grouped.setdefault(key, []).append(value)
+    out: dict[str, Any] = {}
+    for key, values in grouped.items():
+        distinct = {str(v) for v in values}
+        if len(distinct) == 1:
+            out[key] = values[-1]
+    return out
+
+
+def _is_redundant_known_fact_gap(item: str, *, known_facts: dict[str, Any], trusted_case_link: bool) -> bool:
+    low = str(item or "").lower()
+    if trusted_case_link and any(marker in low for marker in _TRUSTED_LINK_GAP_MARKERS):
+        return True
+    for fact_key, markers in _FACT_GAP_MARKERS.items():
+        if fact_key in known_facts and any(marker in low for marker in markers):
+            return True
+    if trusted_case_link and known_facts.get("offer_sent") is True:
+        if (
+            "numer oferty" in low
+            or "identyfikator oferty" in low
+            or "identyfikator lub numer" in low
+            or "wczesniejszej oferty" in low
+            or "wcześniejszej oferty" in low
+            or "oryginalnej oferty" in low
+            or "offer id" in low
+        ):
+            return True
+    return False
+
+
 def build_missing_info(
     *,
     intake_result: dict[str, Any],
@@ -43,12 +125,18 @@ def build_missing_info(
     case_link_result: dict[str, Any],
     attachment_intelligence: dict[str, Any] | None = None,
     thread_memory: dict[str, Any] | None = None,
+    case_context_pack: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    raw_items = [
-        str(item).strip()
-        for item in (business_result.get("missing_information") or [])
-        if str(item).strip() and _is_collectable_gap(str(item))
-    ]
+    known_facts = _active_fact_values(case_context_pack)
+    trusted_case_link = str(case_link_result.get("decision") or "") == "linked"
+    raw_items = []
+    for item in business_result.get("missing_information") or []:
+        text = str(item).strip()
+        if not text or not _is_collectable_gap(text):
+            continue
+        if _is_redundant_known_fact_gap(text, known_facts=known_facts, trusted_case_link=trusted_case_link):
+            continue
+        raw_items.append(text)
     if str(case_link_result.get("decision") or "") in {"weak_link", "competing_links"}:
         raw_items.append("confirmed case reference")
 

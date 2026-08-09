@@ -11,7 +11,7 @@ from case_context_contract import (
     operator_feed_conflicting_fact,
     operator_feed_plain_summary,
 )
-from case_intelligence.missing_info import _is_collectable_gap
+from case_intelligence.missing_info import _active_fact_values, _is_collectable_gap, _is_redundant_known_fact_gap
 from context_quality_contract import normalize_context_quality
 from log_config import get_logger
 
@@ -61,7 +61,7 @@ def build_understanding_output(
     tm = thread_memory if isinstance(thread_memory, dict) else {}
     ai = attachment_intelligence if isinstance(attachment_intelligence, dict) else {}
     pack = case_context_pack if isinstance(case_context_pack, dict) else {}
-    _ = case_link_result
+    link = case_link_result if isinstance(case_link_result, dict) else {}
 
     source = snap.get("source_message") if isinstance(snap.get("source_message"), dict) else {}
     source_signal_id = str(source.get("message_id") or "").strip()
@@ -82,9 +82,19 @@ def build_understanding_output(
 
     prior_state_rows = _prior_known_state_rows(pack)
     prior_state_pl = _prior_known_state_pl(prior_state_rows)
-    pending_outcome_gaps = _pending_outcome_gaps_pl(prior_state_rows)
+    pending_outcome_gaps = _pending_outcome_gaps_pl(
+        prior_state_rows,
+        snapshot=snap,
+        intake_result=intake,
+        attachment_intelligence=ai,
+    )
 
-    llm_missing_fields = _missing_fields(missing, business)
+    llm_missing_fields = _missing_fields(
+        missing,
+        business,
+        known_facts=_active_fact_values(pack),
+        trusted_case_link=str(link.get("decision") or "") == "linked",
+    )
     # RC-IQ-R1: an unanswered customer question is an OPEN LOOP, not a datum for the
     # operator/customer to supply. Previously it was appended into
     # missing_critical_fields, which (a) mislabelled the operator's data checklist with
@@ -123,7 +133,7 @@ def build_understanding_output(
     primary_action = nba.get("primary_next_action") if isinstance(nba.get("primary_next_action"), dict) else {}
     case_id = str(cu.get("case_id") or "").strip()
     context_quality = _context_quality(pack, tm, ai)
-    source_quality = _source_quality(source, case_link_result if isinstance(case_link_result, dict) else {}, evidence_refs)
+    source_quality = _source_quality(source, link, evidence_refs)
     facts_explicit, facts_extracted, facts_inferred = _facts_from_inputs(
         intake=intake,
         source_signal_id=source_signal_id,
@@ -369,7 +379,13 @@ def validate_understanding_situation_only(obj: dict[str, Any]) -> list[str]:
     return list(_validate_understanding_situation_only(probe))
 
 
-def _missing_fields(missing: dict[str, Any], business: dict[str, Any]) -> list[str]:
+def _missing_fields(
+    missing: dict[str, Any],
+    business: dict[str, Any],
+    *,
+    known_facts: dict[str, Any] | None = None,
+    trusted_case_link: bool = False,
+) -> list[str]:
     out: list[str] = []
     for key in ("critical", "important", "helpful"):
         values = missing.get(key) if isinstance(missing.get(key), list) else []
@@ -382,6 +398,12 @@ def _missing_fields(missing: dict[str, Any], business: dict[str, Any]) -> list[s
         # collectable-gap rule as the tiered missing_info, or dropped non-gaps (awaited
         # decision / speculative) would re-enter the flat missing_critical_fields list.
         if not _is_collectable_gap(str(item)):
+            continue
+        if _is_redundant_known_fact_gap(
+            str(item),
+            known_facts=known_facts or {},
+            trusted_case_link=trusted_case_link,
+        ):
             continue
         s = operator_feed_plain_summary(item, fallback="")
         if s:
@@ -600,7 +622,44 @@ def _pending_outcome_value_pl(raw_value: Any) -> str:
         return s
 
 
-def _pending_outcome_gaps_pl(prior_rows: list[dict[str, Any]]) -> list[str]:
+def _current_signal_addresses_pending_outcome(
+    key: str,
+    *,
+    snapshot: dict[str, Any],
+    intake_result: dict[str, Any],
+    attachment_intelligence: dict[str, Any],
+) -> bool:
+    if key == "requested_document":
+        attachments = attachment_intelligence.get("attachments") if isinstance(attachment_intelligence.get("attachments"), list) else []
+        if attachments:
+            return True
+        flags = attachment_intelligence.get("combined_risk_flags") if isinstance(attachment_intelligence.get("combined_risk_flags"), list) else []
+        return any(str(flag).lower() in {"document_present", "invoice_present", "financial_document_present"} for flag in flags)
+    if key == "agreed_visit_date":
+        source = snapshot.get("source_message") if isinstance(snapshot.get("source_message"), dict) else {}
+        text = " ".join(
+            str(value or "")
+            for value in (
+                source.get("subject"),
+                source.get("snippet"),
+                source.get("body"),
+                intake_result.get("reason"),
+                (intake_result.get("decision") or {}).get("reason") if isinstance(intake_result.get("decision"), dict) else "",
+            )
+        ).lower()
+        has_visit = any(marker in text for marker in ("wizj", "wizy", "visit"))
+        has_reschedule = any(marker in text for marker in ("przelo", "przeło", "zmian", "piatek", "piątek", "friday", "reschedul"))
+        return has_visit and has_reschedule
+    return False
+
+
+def _pending_outcome_gaps_pl(
+    prior_rows: list[dict[str, Any]],
+    *,
+    snapshot: dict[str, Any] | None = None,
+    intake_result: dict[str, Any] | None = None,
+    attachment_intelligence: dict[str, Any] | None = None,
+) -> list[str]:
     """Wave 3 (gaps completeness, RC-U-STATE follow-up): a small, curated class of
     prior facts represents a PLANNED/PROMISED action (a visit date was agreed, a
     document was requested) rather than a COMPLETED one. Production write
@@ -622,6 +681,13 @@ def _pending_outcome_gaps_pl(prior_rows: list[dict[str, Any]]) -> list[str]:
     out: list[str] = []
     for key, (done_marker, template) in _PENDING_OUTCOME_FACTS.items():
         if key in have_keys and done_marker not in have_keys:
+            if _current_signal_addresses_pending_outcome(
+                key,
+                snapshot=snapshot or {},
+                intake_result=intake_result or {},
+                attachment_intelligence=attachment_intelligence or {},
+            ):
+                continue
             value = next((r.get("value") for r in prior_rows if r.get("fact_key") == key), "")
             out.append(template.format(value=_pending_outcome_value_pl(value))[:240])
     return out
@@ -681,19 +747,43 @@ def _prior_known_state_rows(pack: dict[str, Any]) -> list[dict[str, Any]]:
     ``changes``). Null-safe and deduped by fact_key; no fabrication.
     """
     facts = pack.get("active_facts") if isinstance(pack.get("active_facts"), list) else []
-    rows: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    conflicts = pack.get("conflicting_facts") if isinstance(pack.get("conflicting_facts"), list) else []
+    conflicted_keys = {
+        str(item.get("fact_key") or item.get("key") or "").strip()
+        for item in conflicts
+        if isinstance(item, dict)
+    }
+    grouped: dict[str, list[dict[str, Any]]] = {}
     for f in facts:
         if not isinstance(f, dict):
             continue
+        status = str(f.get("status") or "active").strip().lower()
+        if status in {"superseded", "rejected", "stale", "invalidated", "disputed"}:
+            continue
         key = str(f.get("fact_key") or f.get("key") or "").strip()
-        if not key or key in seen:
+        if not key or key in conflicted_keys:
             continue
         val = f.get("value")
         if val is None:
             val = f.get("normalized_value")
         if val in (None, "", [], {}):
             continue
+        grouped.setdefault(key, []).append(f)
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for key, group in grouped.items():
+        if not key or key in seen:
+            continue
+        values = {
+            str((fact.get("value") if fact.get("value") is not None else fact.get("normalized_value")) or "")
+            for fact in group
+        }
+        if len(values) != 1:
+            continue
+        f = group[-1]
+        val = f.get("value")
+        if val is None:
+            val = f.get("normalized_value")
         seen.add(key)
         rows.append({
             "fact_key": key,

@@ -297,10 +297,15 @@ def validate_case_link_result(obj: dict[str, Any] | None) -> dict[str, Any]:
         selected_case_key = normalized_candidates[0]["case_key"]
     if decision == "no_link":
         selected_case_key = ""
+    selected_case_id = str(obj.get("case_id") or obj.get("selected_case_id") or "").strip()
+    if decision == "no_link":
+        selected_case_id = ""
 
     reasons = _normalize_string_list_contract(obj.get("reasons"))
     normalized = {
         "selected_case_key": selected_case_key,
+        "selected_case_id": selected_case_id,
+        "case_id": selected_case_id,
         "decision": decision,
         "confidence": _bounded_float(obj.get("confidence"), default=normalized_candidates[0]["score"] if normalized_candidates else 0.0),
         "source": _normalize_case_link_source(obj.get("source"), default=_infer_case_link_source_from_candidates(normalized_candidates, decision)),

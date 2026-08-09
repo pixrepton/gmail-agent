@@ -61,7 +61,8 @@ def build_case_intelligence(
     missing_info = build_missing_info(
         intake_result=intake_result, business_result=business_result or {},
         reply_result=reply_result or {}, case_link_result=case_link_result or {},
-        attachment_intelligence=attachment_intelligence or {}, thread_memory=thread_memory or {})
+        attachment_intelligence=attachment_intelligence or {}, thread_memory=thread_memory or {},
+        case_context_pack=case_context_pack or {})
     risk_assessment = build_risk_assessment(
         intake_result=intake_result, business_result=business_result or {},
         missing_info=missing_info, current_note_state=current_note_state or {},
