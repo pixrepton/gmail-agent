@@ -24,6 +24,19 @@ from eval_planner_spine_handoff import (
 from agent_runtime.constitution import load_constitution
 
 
+def _candidate(case_id: str, message_id: str) -> dict[str, object]:
+    return {
+        "schema_version": "decision_candidate.v1",
+        "decision_candidate_id": f"dc_{case_id}_{message_id}",
+        "case_id": case_id,
+        "source_signal_id": message_id,
+        "next_best_action": "answer_customer",
+        "recommended_mode": "projection_only",
+        "evidence_refs": [{"evidence_id": f"ev_{message_id}", "source_ref": message_id}],
+        "requires_policy": True,
+    }
+
+
 def _settings() -> AgentRuntimeSettings:
     return AgentRuntimeSettings(
         enabled=True,
@@ -41,9 +54,11 @@ def _settings() -> AgentRuntimeSettings:
 
 
 def test_spine_handoff_produces_current_envelope() -> None:
+    real_case_id = "case_real_INT-01"
+    message_id = "msg_int01"
     intel = {
         "understanding_output": {
-            "source_signal_id": "msg_int01",
+            "source_signal_id": message_id,
             "operator_explanation": {
                 "essence_pl": "Lead 150 m2 pod Wrocławiem",
                 "why_pl": "Klient prosi o wycenę",
@@ -54,15 +69,17 @@ def test_spine_handoff_produces_current_envelope() -> None:
                 "reason_pl": "escalate_internal",
             },
             "case_family": "wycena_oferta",
-        }
+        },
+        "decision_candidate": _candidate(real_case_id, message_id),
     }
     handoff = build_production_faithful_planner_signal(
-        case_id="case_INT-01",
+        case_id="case_recovery_INT-01",
         signal_id="sig_INT-01",
-        message_id="msg_int01",
+        message_id=message_id,
         subject="Wycena PC",
         body="Dom 150 m2 pod Wrocławiem, obecnie gaz.",
         case_intelligence_result=intel,
+        action_plan_result={"primary_action": "create_task"},
         case_kind="wycena_oferta",
         extraction={"heated_area_m2": 150, "city": "Wrocław"},
         policy_required=True,
@@ -71,6 +88,11 @@ def test_spine_handoff_produces_current_envelope() -> None:
     signal = handoff["signal_payload"]
     presence = handoff["envelope_presence"]
     assert presence["status"] == "present_current"
+    assert signal["case_id"] == real_case_id
+    assert signal["planner_case_id_requested"] == "case_recovery_INT-01"
+    assert handoff["case_intelligence_result"]["_policy_spine_attach_status"] == "attached_from_policy_engine"
+    assert "_harness_candidate_synthesized" not in handoff["case_intelligence_result"]
+    assert "_harness_spine_synthesized" not in handoff["case_intelligence_result"]
     assert signal["policy_action_envelope"]["freshness"] == "current"
     assert signal["policy_action_envelope"]["policy_decision_id"]
     assert signal["policy_action_envelope"]["action_proposal_id"]
@@ -82,25 +104,86 @@ def test_spine_handoff_produces_current_envelope() -> None:
     ]
 
 
-def test_graph_run_with_envelope_correlates_plan() -> None:
+def test_spine_handoff_does_not_synthesize_policy_without_decision_candidate() -> None:
+    handoff = build_production_faithful_planner_signal(
+        case_id="case_missing_candidate",
+        signal_id="sig_missing_candidate",
+        message_id="msg_missing_candidate",
+        subject="Wycena PC",
+        body="Dom 150 m2",
+        case_intelligence_result={
+            "understanding_output": {
+                "source_signal_id": "msg_missing_candidate",
+                "operator_explanation": {"essence_pl": "Lead"},
+            }
+        },
+        case_kind="wycena_oferta",
+        policy_required=True,
+    )
+    intel = handoff["case_intelligence_result"]
+    assert intel["_policy_spine_attach_status"] == "missing_decision_candidate"
+    assert "policy_decision" not in intel
+    assert "action_proposals_v2" not in intel
+    assert handoff["signal_payload"]["spine_persist"] == {
+        "policy_decision_inserted": False,
+        "action_proposals_v2_inserted": 0,
+    }
+    assert handoff["envelope_presence"]["status"] == "wiring_failure"
+
+
+def test_spine_handoff_wrong_message_correlation_stays_fail_closed() -> None:
     intel = {
         "understanding_output": {
-            "source_signal_id": "msg_x",
+            "source_signal_id": "msg_real",
+            "operator_explanation": {"essence_pl": "Lead"},
+        },
+        "decision_candidate": _candidate("case_real", "msg_real"),
+    }
+    handoff = build_production_faithful_planner_signal(
+        case_id="case_real",
+        signal_id="sig_real",
+        message_id="msg_other",
+        subject="Wycena PC",
+        body="Dom 150 m2",
+        case_intelligence_result=intel,
+        action_plan_result={"primary_action": "create_task"},
+        policy_required=True,
+    )
+    produced = handoff["case_intelligence_result"]
+    assert produced["_policy_spine_attach_status"] == "attached_from_policy_engine"
+    assert produced["policy_decision"]["policy_decision_id"]
+    assert produced["action_proposals_v2"]
+    assert handoff["signal_payload"]["spine_persist"] == {
+        "policy_decision_inserted": False,
+        "action_proposals_v2_inserted": 0,
+    }
+    assert handoff["signal_payload"]["policy_action_envelope"]["freshness"] == "unavailable"
+    assert "canonical_action_proposal_v2_not_found" in handoff["envelope_presence"]["reason_codes"]
+
+
+def test_graph_run_with_envelope_correlates_plan() -> None:
+    real_case_id = "case_real_INT-04"
+    message_id = "msg_x"
+    intel = {
+        "understanding_output": {
+            "source_signal_id": message_id,
             "operator_explanation": {"essence_pl": "Awaria pompy", "why_pl": "brak ciepła"},
             "missing_critical_fields": ["objaw"],
             "next_best_action_recommendation": {
                 "title_pl": "escalate_internal",
             },
             "case_family": "awaria_naprawa",
-        }
+        },
+        "decision_candidate": _candidate(real_case_id, message_id),
     }
     handoff = build_production_faithful_planner_signal(
-        case_id="case_INT-04",
+        case_id="case_recovery_INT-04",
         signal_id="sig_INT-04",
-        message_id="msg_x",
+        message_id=message_id,
         subject="Awaria",
         body="Pompa nie grzeje od wczoraj",
         case_intelligence_result=intel,
+        action_plan_result={"primary_action": "create_task"},
         case_kind="awaria_naprawa",
         policy_required=True,
     )

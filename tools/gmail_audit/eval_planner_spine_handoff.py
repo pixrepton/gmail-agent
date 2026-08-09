@@ -21,16 +21,39 @@ from llm_contracts.engagement_snapshot_v2 import PolicyActionEnvelopeV1
 from mailbox_memory import InMemoryMailboxMemoryStore
 
 
+def _candidate_from_intelligence(intelligence: dict[str, Any]) -> dict[str, Any]:
+    candidate = intelligence.get("decision_candidate")
+    if isinstance(candidate, dict):
+        return candidate
+    pipeline = intelligence.get("decision_pipeline")
+    if not isinstance(pipeline, dict):
+        return {}
+    outputs = pipeline.get("outputs")
+    if not isinstance(outputs, dict):
+        return {}
+    nested = outputs.get("decision_candidate")
+    return nested if isinstance(nested, dict) else {}
+
+
 def ensure_policy_spine_on_intelligence(
     intelligence: dict[str, Any] | None,
     *,
     case_id: str,
     message_id: str,
     dry_run_only: bool = True,
+    action_plan_result: dict[str, Any] | None = None,
+    intake_result: dict[str, Any] | None = None,
+    case_link_result: dict[str, Any] | None = None,
+    entity_link_result: dict[str, Any] | None = None,
+    mailbox_memory_result: dict[str, Any] | None = None,
+    snapshot: dict[str, Any] | None = None,
+    case_snapshot_hot_state: dict[str, Any] | None = None,
+    run_state: dict[str, Any] | None = None,
+    settings: Any | None = None,
+    stage_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Attach PolicyDecision + APv2 when decision_candidate exists but spine missing."""
-    from action_proposal_v2 import build_action_proposals_v2
-    from policy_decision import build_policy_decision
+    """Attach real PolicyDecision + APv2 when a real DecisionCandidate exists."""
+    from policy_action_proposal import attach_policy_and_proposals
 
     intel = dict(intelligence) if isinstance(intelligence, dict) else {}
     if isinstance(intel.get("policy_decision"), dict) and isinstance(
@@ -38,61 +61,58 @@ def ensure_policy_spine_on_intelligence(
     ) and intel.get("action_proposals_v2"):
         return intel
 
-    candidate = intel.get("decision_candidate")
-    if not isinstance(candidate, dict) or not candidate:
-        pipeline = intel.get("decision_pipeline")
-        if isinstance(pipeline, dict):
-            outputs = pipeline.get("outputs")
-            if isinstance(outputs, dict) and isinstance(
-                outputs.get("decision_candidate"), dict
-            ):
-                candidate = outputs["decision_candidate"]
-                intel["decision_candidate"] = candidate
-
-    cid = str(case_id or "").strip() or "case_unknown"
-    mid = str(message_id or "").strip() or f"{cid}_msg"
+    candidate = _candidate_from_intelligence(intel)
     if not isinstance(candidate, dict) or not str(
         candidate.get("decision_candidate_id") or ""
     ).strip():
-        candidate = {
-            "schema_version": "decision_candidate.v1",
-            "decision_candidate_id": f"dc_harness_{cid}",
-            "case_id": cid,
-            "source_signal_id": mid,
-            "next_best_action": "answer_customer",
-            "evidence_refs": [{"evidence_id": "ev_harness", "source_ref": mid}],
-        }
-        intel["decision_candidate"] = candidate
-        intel["_harness_candidate_synthesized"] = True
-    else:
-        candidate = dict(candidate)
-        candidate.setdefault("case_id", cid)
-        candidate.setdefault("source_signal_id", mid)
-        intel["decision_candidate"] = candidate
+        intel["_policy_spine_attach_status"] = "missing_decision_candidate"
+        return intel
 
-    report = {
-        "status": "APPROVED",
-        "effective_risk_class": "low",
-        "policy_basis": ["harness_spine_fidelity"],
-        "failed_rules": [],
-        "warnings": ["harness_policy_attached_for_fidelity"],
-        "requires_review": True,
-    }
-    decision = build_policy_decision(
-        policy_report=report,
-        decision_candidate_id=str(candidate.get("decision_candidate_id") or ""),
-        decision_candidate=candidate,
-        dry_run_only=dry_run_only,
+    candidate = dict(candidate)
+    cid = str(candidate.get("case_id") or "").strip()
+    mid = str(candidate.get("source_signal_id") or "").strip()
+    if not cid or not mid:
+        intel["decision_candidate"] = candidate
+        intel["_policy_spine_attach_status"] = "decision_candidate_correlation_incomplete"
+        return intel
+    intel["decision_candidate"] = candidate
+
+    snap = dict(snapshot or {})
+    source_message = snap.get("source_message")
+    if not isinstance(source_message, dict):
+        source_message = {}
+    source_message.setdefault("message_id", mid)
+    snap["source_message"] = source_message
+
+    mb = dict(mailbox_memory_result or {})
+    mb.setdefault("case_id", cid)
+    context_pack = intel.get("mailbox_memory_context_pack")
+    if isinstance(context_pack, dict) and context_pack:
+        mb.setdefault("context_pack", context_pack)
+
+    stage = dict(stage_config or {})
+    stage.setdefault("action_proposal_v2_enabled", True)
+    stage.setdefault("decision_pipeline_dry_run_only", bool(dry_run_only))
+
+    attach_policy_and_proposals(
+        action_plan_result=action_plan_result or {},
+        intake_result=intake_result or {},
+        case_link_result=case_link_result or {},
+        entity_link_result=entity_link_result or {},
+        case_intelligence_result=intel,
+        mailbox_memory_result=mb,
+        snapshot=snap,
+        case_snapshot_hot_state=case_snapshot_hot_state,
+        run_state=run_state or {"run_id": f"policy_spine_{cid}_{mid}"},
+        settings=settings,
+        stage_config=stage,
     )
-    proposals = build_action_proposals_v2(
-        decision_candidate=candidate,
-        policy_decision=decision,
-        primary_action_type="prepare_reply",
-        dry_run_only=dry_run_only,
-    )
-    intel["policy_decision"] = decision
-    intel["action_proposals_v2"] = proposals
-    intel["_harness_spine_synthesized"] = True
+    if isinstance(intel.get("policy_decision"), dict) and isinstance(
+        intel.get("action_proposals_v2"), list
+    ) and intel.get("action_proposals_v2"):
+        intel["_policy_spine_attach_status"] = "attached_from_policy_engine"
+    else:
+        intel["_policy_spine_attach_status"] = "policy_attach_produced_no_v2"
     return intel
 
 
@@ -107,21 +127,46 @@ def build_production_faithful_planner_signal(
     case_kind: str | None = None,
     extraction: dict[str, Any] | None = None,
     mailbox_store: Any | None = None,
+    action_plan_result: dict[str, Any] | None = None,
+    intake_result: dict[str, Any] | None = None,
+    case_link_result: dict[str, Any] | None = None,
+    entity_link_result: dict[str, Any] | None = None,
+    mailbox_memory_result: dict[str, Any] | None = None,
+    snapshot: dict[str, Any] | None = None,
+    case_snapshot_hot_state: dict[str, Any] | None = None,
+    run_state: dict[str, Any] | None = None,
+    settings: Any | None = None,
+    stage_config: dict[str, Any] | None = None,
     harness_mode: bool = False,
     policy_required: bool = True,
 ) -> dict[str, Any]:
     """Build signal_payload matching agent_reconcile handoff shape."""
     store = mailbox_store if mailbox_store is not None else InMemoryMailboxMemoryStore()
-    mid = str(message_id or "").strip() or f"{case_id}_current"
+    source_intel = dict(case_intelligence_result) if isinstance(case_intelligence_result, dict) else {}
+    source_candidate = _candidate_from_intelligence(source_intel)
+    source_mid = str(source_candidate.get("source_signal_id") or "").strip()
+    mid = str(message_id or "").strip() or source_mid or f"{case_id}_current"
     sid = str(signal_id or "").strip() or f"sig_{case_id}"
-    cid = str(case_id or "").strip()
+    requested_cid = str(case_id or "").strip()
 
     intel = ensure_policy_spine_on_intelligence(
         case_intelligence_result,
-        case_id=cid,
+        case_id=requested_cid,
         message_id=mid,
         dry_run_only=True,
+        action_plan_result=action_plan_result,
+        intake_result=intake_result,
+        case_link_result=case_link_result,
+        entity_link_result=entity_link_result,
+        mailbox_memory_result=mailbox_memory_result,
+        snapshot=snapshot,
+        case_snapshot_hot_state=case_snapshot_hot_state,
+        run_state=run_state,
+        settings=settings,
+        stage_config=stage_config,
     )
+    candidate = _candidate_from_intelligence(intel)
+    spine_cid = str(candidate.get("case_id") or "").strip() or requested_cid
     # Align Understanding source_signal_id with message_id for projection.
     uo = intel.get("understanding_output")
     if isinstance(uo, dict) and uo and not str(uo.get("source_signal_id") or "").strip():
@@ -138,7 +183,7 @@ def build_production_faithful_planner_signal(
     persisted, envelope = build_policy_action_envelope_handoff(
         store=store,
         case_intelligence_result=intel,
-        case_id=cid,
+        case_id=spine_cid,
         source_signal_id=sid,
         source_message_id=mid,
     )
@@ -161,7 +206,8 @@ def build_production_faithful_planner_signal(
     signal: dict[str, Any] = {
         "signal_id": sid,
         "source_kind": "gmail",
-        "case_id": cid,
+        "case_id": spine_cid,
+        "planner_case_id_requested": requested_cid,
         "message_id": mid,
         "subject": str(subject or ""),
         "snippet": str(body or "")[:500],
