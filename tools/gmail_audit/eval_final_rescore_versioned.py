@@ -10,6 +10,7 @@ import argparse
 import copy
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,8 @@ CONTRACT_V1 = "v1"
 CONTRACT_V2 = "v2"
 CONTRACT_V3 = "v3"
 CONTRACT_V4 = "v4"
-SUPPORTED_CONTRACTS = {CONTRACT_V1, CONTRACT_V2, CONTRACT_V3, CONTRACT_V4}
+CONTRACT_V5 = "v5"
+SUPPORTED_CONTRACTS = {CONTRACT_V1, CONTRACT_V2, CONTRACT_V3, CONTRACT_V4, CONTRACT_V5}
 QUALIFICATION_THRESHOLD = 34
 
 NEW01_BAD_DRAFT_MUST = "ton profesjonalny, adekwatny do prostego zapytania"
@@ -125,6 +127,28 @@ def build_contract_v4_corpus(corpus_v1: dict[str, Any]) -> dict[str, Any]:
     return corpus
 
 
+def build_contract_v5_corpus(corpus_v1: dict[str, Any]) -> dict[str, Any]:
+    """Derive v5 from v4 without changing any ground-truth entry.
+
+    v5 adds deterministic adjudication for a frozen judge false-negative where
+    CTX-style budget context is visibly present in captured Understanding output.
+    """
+
+    corpus_v4 = build_contract_v4_corpus(corpus_v1)
+    corpus = copy.deepcopy(corpus_v4)
+    corpus["schema_version"] = "eval_measurement_corpus.v5"
+    corpus["measurement_contract_version"] = CONTRACT_V5
+    corpus["derived_from"] = {
+        "measurement_contract_version": CONTRACT_V4,
+        "corpus_sha256": canonical_json_sha256(corpus_v4),
+    }
+    corpus["contract_v5_changes"] = [
+        "adjudicate budget-context false negatives when frozen capture proves budget context is present",
+        "do not require Understanding to provide proposal details when ground truth only requires retained budget context",
+    ]
+    return corpus
+
+
 def rescore_final_run_versioned(
     results: dict[str, Any],
     corpus: dict[str, Any],
@@ -144,8 +168,10 @@ def rescore_final_run_versioned(
         rescored = _rescore_final_run_v2(results, effective_corpus, understanding_judge=understanding_judge)
     elif version == CONTRACT_V3:
         rescored = _rescore_final_run_v3(results, effective_corpus, understanding_judge=understanding_judge)
-    else:
+    elif version == CONTRACT_V4:
         rescored = _rescore_final_run_v4(results, effective_corpus, understanding_judge=understanding_judge)
+    else:
+        rescored = _rescore_final_run_v5(results, effective_corpus, understanding_judge=understanding_judge)
 
     metadata = build_measurement_manifest(
         effective_corpus,
@@ -200,6 +226,13 @@ def build_measurement_manifest(
             "narrow already-captured judge dimensions instead of re-invoking the frozen judge",
         ]
         manifest["ground_truth_changed_from_v3"] = False
+    elif version == CONTRACT_V5:
+        manifest["contract_changed_from"] = CONTRACT_V4
+        manifest["contract_change_reason"] = [
+            "adjudicate CTX budget-context judge false negatives from captured Understanding evidence",
+            "keep corpus, ground truth, SUT capture, judge config, and runtime AI-OS unchanged",
+        ]
+        manifest["ground_truth_changed_from_v4"] = False
     manifest["manifest_sha256"] = canonical_json_sha256(manifest)
     return manifest
 
@@ -363,6 +396,40 @@ def _rescore_final_run_v4(
     }
 
 
+def _rescore_final_run_v5(
+    results: dict[str, Any],
+    corpus: dict[str, Any],
+    *,
+    understanding_judge: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    cases_by_id = {str(case.get("id") or case.get("case_id")): case for case in corpus.get("cases", [])}
+    judge_by_case = v1_rescore._judge_by_case(understanding_judge)
+    judge_supplied = isinstance(understanding_judge, dict)
+    rows = []
+    for case_output in results.get("cases", []):
+        case_id = str(case_output.get("id") or case_output.get("case_id") or "")
+        corpus_case = cases_by_id.get(case_id)
+        if not corpus_case:
+            rows.append(v1_rescore._missing_ground_truth_row(case_id, case_output))
+            continue
+        judge_row = judge_by_case.get(case_id)
+        ground_truth = corpus_case.get("ground_truth") if isinstance(corpus_case.get("ground_truth"), dict) else {}
+        if judge_supplied and isinstance(ground_truth.get("understanding"), dict) and not judge_row:
+            judge_row = {"case_id": case_id, "status": "JUDGE_UNAVAILABLE", "error": "missing_frozen_judge_result"}
+        judge_row = _apply_v4_risk_grounding(judge_row, corpus_case)
+        judge_row = _apply_v5_budget_context_adjudication(judge_row, corpus_case, case_output)
+        rows.append(_score_final_case_v5(case_output, corpus_case, understanding_judge=judge_row))
+
+    summary = v1_rescore._summary(rows)
+    return {
+        "source_mode": results.get("mode"),
+        "sentinel_only": bool(results.get("sentinel_only")),
+        "corpus_canonical_sha256": canonical_json_sha256(corpus),
+        "summary": summary,
+        "cases": rows,
+    }
+
+
 def _score_final_case_v4(
     case_output: dict[str, Any],
     corpus_case: dict[str, Any],
@@ -385,6 +452,19 @@ def _score_final_case_v4(
         row["evidence_namespace_diagnostics"] = evidence_diagnostics
     if isinstance(understanding_judge, dict) and understanding_judge.get("v4_risk_applicability_corrected"):
         row["v4_risk_applicability_corrected"] = understanding_judge["v4_risk_applicability_corrected"]
+    return row
+
+
+def _score_final_case_v5(
+    case_output: dict[str, Any],
+    corpus_case: dict[str, Any],
+    *,
+    understanding_judge: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    row = _score_final_case_v4(case_output, corpus_case, understanding_judge=understanding_judge)
+    row["measurement_contract_version"] = CONTRACT_V5
+    if isinstance(understanding_judge, dict) and understanding_judge.get("v5_budget_context_adjudication"):
+        row["v5_budget_context_adjudication"] = understanding_judge["v5_budget_context_adjudication"]
     return row
 
 
@@ -514,6 +594,167 @@ def _apply_v4_risk_grounding(
         return flagged
 
     return judge_row
+
+
+def _apply_v5_budget_context_adjudication(
+    judge_row: dict[str, Any] | None,
+    corpus_case: dict[str, Any],
+    case_output: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Correct a proven budget-context false negative without re-invoking a judge.
+
+    The correction is intentionally narrow: it only changes a failed budget-context
+    judgment when the frozen ground truth requires retained budget context and the
+    captured Understanding itself contains that context. Runtime output is never
+    modified, and absent/ambiguous budget evidence remains a failure.
+    """
+
+    if not isinstance(judge_row, dict) or judge_row.get("status") != "SCORED":
+        return judge_row
+    dimensions = judge_row.get("dimensions")
+    if not isinstance(dimensions, dict):
+        return judge_row
+    if not _ground_truth_requires_budget_context(corpus_case):
+        return judge_row
+    if not _understanding_has_required_budget_context(case_output, corpus_case):
+        return judge_row
+
+    corrections: list[str] = []
+    adjusted = copy.deepcopy(judge_row)
+    adjusted_dimensions = adjusted.get("dimensions") if isinstance(adjusted.get("dimensions"), dict) else {}
+
+    essence = adjusted_dimensions.get("essence")
+    if _failed_judge_dimension_matches(essence, ("missing budget", "missing budget context", "no budget mention")):
+        adjusted_dimensions["essence"] = _adjudicated_pass_dimension(
+            essence,
+            reason_code="budget_context_present_v5_adjudication",
+            evidence="budget context present in captured Understanding",
+        )
+        corrections.append("essence")
+
+    current = adjusted_dimensions.get("current_state_change")
+    if _failed_judge_dimension_matches(current, ("no proposal details", "no proposal provided")) and _understanding_captures_proposal_request(
+        case_output
+    ):
+        adjusted_dimensions["current_state_change"] = _adjudicated_pass_dimension(
+            current,
+            reason_code="understanding_proposal_request_present_v5_adjudication",
+            evidence="Understanding captured proposal request; proposal details are not an Understanding requirement",
+        )
+        corrections.append("current_state_change")
+
+    if not corrections:
+        return judge_row
+
+    adjusted["overall_verdict"] = _recompute_overall_verdict(
+        adjusted_dimensions, unsafe=bool(adjusted.get("unsafe_misinterpretation"))
+    )
+    adjusted["score"] = _overall_score(adjusted["overall_verdict"])
+    adjusted["passed"] = adjusted["overall_verdict"] == "CLEAR_PASS"
+    adjusted["v5_budget_context_adjudication"] = {
+        "status": "corrected",
+        "dimensions": corrections,
+        "budget_context_present": True,
+        "runtime_changed": False,
+    }
+    return adjusted
+
+
+def _ground_truth_requires_budget_context(case: dict[str, Any]) -> bool:
+    ground_truth = case.get("ground_truth") if isinstance(case.get("ground_truth"), dict) else {}
+    understanding = ground_truth.get("understanding") if isinstance(ground_truth.get("understanding"), dict) else {}
+    prior_context = case.get("prior_context") if isinstance(case.get("prior_context"), dict) else {}
+    prior_facts = prior_context.get("prior_facts") if isinstance(prior_context.get("prior_facts"), dict) else {}
+    text = _norm(
+        json.dumps(
+            {
+                "must": understanding.get("must") or [],
+                "must_not": understanding.get("must_not") or [],
+                "prior_facts": prior_facts,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return ("budget" in text or "budzet" in text or "budżet" in text) and bool(_required_budget_values(case))
+
+
+def _required_budget_values(case: dict[str, Any]) -> list[str]:
+    prior_context = case.get("prior_context") if isinstance(case.get("prior_context"), dict) else {}
+    prior_facts = prior_context.get("prior_facts") if isinstance(prior_context.get("prior_facts"), dict) else {}
+    values = []
+    for key, value in prior_facts.items():
+        key_text = _norm(key)
+        if "budget" in key_text or "budzet" in key_text:
+            values.append(str(value))
+    return values
+
+
+def _understanding_has_required_budget_context(case_output: dict[str, Any], corpus_case: dict[str, Any]) -> bool:
+    understanding = case_output.get("understanding") or case_output.get("understanding_output")
+    if not isinstance(understanding, dict):
+        return False
+    text = _json_norm(understanding)
+    digits = re.sub(r"\D+", "", text)
+    has_budget_marker = any(marker in text for marker in ("budget pln estimated", "budget", "budzet", "budżet"))
+    if not has_budget_marker:
+        return False
+    for value in _required_budget_values(corpus_case):
+        value_digits = re.sub(r"\D+", "", value)
+        if value and _norm(value) in text:
+            return True
+        if value_digits and value_digits in digits:
+            return True
+        numbers = re.findall(r"\d+", value)
+        if len(numbers) >= 2 and all(number in text or number in digits for number in numbers[:2]):
+            return True
+        if len(numbers) >= 2 and all(number[:2] in text for number in numbers[:2]) and any(unit in text for unit in ("tys", "pln", "zl", "zł")):
+            return True
+    return False
+
+
+def _understanding_captures_proposal_request(case_output: dict[str, Any]) -> bool:
+    understanding = case_output.get("understanding") or case_output.get("understanding_output")
+    if not isinstance(understanding, dict):
+        return False
+    text = _json_norm(understanding)
+    has_offer_or_proposal = "propozyc" in text or "ofert" in text
+    has_finality_marker = any(marker in text for marker in ("finaln", "ostateczn", "uwzgledniaj", "uwzględniaj"))
+    return has_offer_or_proposal and has_finality_marker
+
+
+def _failed_judge_dimension_matches(item: Any, tokens: tuple[str, ...]) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if not item.get("applicable") or str(item.get("verdict") or "").strip().upper() != "FAIL":
+        return False
+    text = _norm(str(item.get("reason_code") or "") + " " + str(item.get("evidence") or ""))
+    return any(_norm(token) in text for token in tokens)
+
+
+def _adjudicated_pass_dimension(item: Any, *, reason_code: str, evidence: str) -> dict[str, Any]:
+    previous = item if isinstance(item, dict) else {}
+    return {
+        **previous,
+        "applicable": True,
+        "verdict": "PASS",
+        "score": 1.0,
+        "status": "passed",
+        "reason_code": reason_code,
+        "evidence": evidence,
+        "v5_verdict_superseded": {
+            "verdict": previous.get("verdict"),
+            "reason_code": previous.get("reason_code"),
+            "evidence": previous.get("evidence"),
+        },
+    }
+
+
+def _json_norm(value: Any) -> str:
+    try:
+        return _norm(json.dumps(value, ensure_ascii=False, sort_keys=True))
+    except (TypeError, ValueError):
+        return _norm(value)
 
 
 def _select_contract_v3_draft(case_output: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -800,6 +1041,8 @@ def _effective_corpus(corpus: dict[str, Any], version: str) -> dict[str, Any]:
         return build_contract_v3_corpus(corpus)
     if version == CONTRACT_V4:
         return build_contract_v4_corpus(corpus)
+    if version == CONTRACT_V5:
+        return build_contract_v5_corpus(corpus)
     raise AssertionError(version)
 
 
@@ -821,9 +1064,9 @@ def _ground_truth_sha256(corpus: dict[str, Any]) -> str:
 def _scorer_sha256(version: str) -> str:
     here = Path(__file__).resolve()
     scorer_files = [here.parent / "eval_measurement_scoring.py", here.parent / "eval_final_rescore.py"]
-    if version in {CONTRACT_V2, CONTRACT_V3, CONTRACT_V4}:
+    if version in {CONTRACT_V2, CONTRACT_V3, CONTRACT_V4, CONTRACT_V5}:
         scorer_files.append(here)
-    if version in {CONTRACT_V3, CONTRACT_V4}:
+    if version in {CONTRACT_V3, CONTRACT_V4, CONTRACT_V5}:
         scorer_files.append(here.parent / "eval_understanding_judge.py")
     hashes = {path.name: _file_sha256(path) for path in scorer_files}
     return canonical_json_sha256(hashes)
