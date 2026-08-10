@@ -1,0 +1,60 @@
+{
+  "_purpose": [
+    "Declares the ROLE of each LLM provider identity in AI-OS, so that a temporary arrangement",
+    "cannot quietly become the assumed target state. Read this before concluding anything about",
+    "'which provider AI-OS uses'.",
+    "",
+    "This file is the governance record. The runtime reads the same roles through",
+    "groq_client.resolve_deepseek_host(); a test asserts the two agree, so they cannot drift."
+  ],
+  "logical_model_intent": "deepseek",
+  "canonical_target": "deepseek_direct",
+  "active_host_env_var": "AI_OS_PRIMARY_PROVIDER",
+  "active_host_allowed_values": ["deepseek_direct", "deepseek_nvidia"],
+  "providers": {
+    "deepseek_direct": {
+      "telemetry_provider_label": "deepseek",
+      "role": "CANONICAL_TARGET",
+      "hosts": "DeepSeek Direct API",
+      "base_url_env": "DEEPSEEK_BASE_URL",
+      "model_env": "DEEPSEEK_MODEL",
+      "credential_env": "DEEPSEEK_API_KEY",
+      "note": "The intended primary SUT provider. Keeps the historical 'deepseek' telemetry label so measurements stay comparable with the 32/38 and 38/38 baselines recorded under it."
+    },
+    "deepseek_nvidia": {
+      "telemetry_provider_label": "deepseek_nvidia",
+      "role": "TEMPORARY_BRIDGE",
+      "hosts": "NVIDIA NIM hosting a DeepSeek model",
+      "base_url_env": "DEEPSEEK_NVIDIA_BASE_URL",
+      "model_env": "DEEPSEEK_NVIDIA_MODEL",
+      "credential_env": "DEEPSEEK_NVIDIA_API_KEY",
+      "reason": "DEEPSEEK_DIRECT_BILLING_UNAVAILABLE",
+      "opened_at_utc": "2026-08-11",
+      "expires_when": "DeepSeek Direct account is funded and passes a health smoke",
+      "return_runbook": "knowledge/eval/deepseek-temp-nvidia-bridge-20260811/RETURN_TO_DEEPSEEK_DIRECT.md",
+      "note": "NOT a migration and NOT the target state. Any benchmark produced while this host is active is TEMP_PROVIDER_CAPABILITY_SIGNAL, never a final canonical Capability baseline."
+    },
+    "groq": {
+      "role": "FALLBACK",
+      "note": "Router-tier fallback for the structured stages. Also the deliberately frozen judge provider, which is a separate concern from the SUT chain."
+    },
+    "cerebras": {
+      "role": "OPTIONAL_FALLBACK",
+      "note": "Declared in the fallback chain; skipped while unconfigured."
+    },
+    "openai_chat": {
+      "role": "NOT_IN_ACTIVE_CHAIN",
+      "note": "Removed from the active fallback chain on 2026-08-10. A configured credential alone must never make it primary."
+    },
+    "anthropic": {
+      "role": "UNCONFIGURED_OPTIONAL",
+      "note": "Tier-2 slot, unconfigured in this deployment and therefore skipped."
+    }
+  },
+  "rules": [
+    "The host switch is explicit and operator-controlled. There is no automatic provider switch triggered by a billing or quota error.",
+    "Switching hosts changes endpoint, credential and model id only. Prompts, schema contracts, reasoning policy and business logic are identical across hosts.",
+    "Telemetry must always distinguish which host served a call: llm_deepseek_host, llm_provider_role and llm_canonical_target travel with every DeepSeek-tier response.",
+    "A final canonical Capability baseline may only be established on deepseek_direct."
+  ]
+}

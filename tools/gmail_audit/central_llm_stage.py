@@ -25,6 +25,7 @@ from exceptions import LLMError, LLMTimeoutError, LLMRateLimitError
 from groq_client import (
     GroqClientError,
     deepseek_configured,
+    resolve_deepseek_host,
     deepseek_error_allows_fallback,
     extract_json_candidate,
     run_deepseek_structured_stage,
@@ -65,6 +66,10 @@ _provider_semaphores: dict[str, threading.Semaphore] = {}
 # Zrodlo: oficjalne cenniki providerow (stan na 2026-07).
 _PROVIDER_COST_PER_1K_TOKENS: dict[str, float] = {
     "groq": 0.0005,
+    # DeepSeek tier: canonical direct host and the temporary NVIDIA-hosted bridge are priced
+    # separately so cost telemetry never attributes bridge spend to the canonical provider.
+    "deepseek": 0.0003,
+    "deepseek_nvidia": 0.0003,
     "cerebras": 0.0006,
     "openai": 0.002,
     "anthropic": 0.003,
@@ -308,7 +313,10 @@ def anthropic_configured(settings: Settings) -> bool:
 
 def primary_llm_provider(settings: Settings) -> str:
     if deepseek_configured(settings):
-        return "deepseek"
+        # Identity of the host actually serving the DeepSeek tier: "deepseek" for the canonical
+        # direct host, "deepseek_nvidia" for the temporary bridge. The logical model intent is
+        # DeepSeek either way; the label is what keeps a bridge measurement attributable.
+        return resolve_deepseek_host(settings).provider
     if anthropic_configured(settings):
         return "anthropic"
     named = str(getattr(settings, "llm_primary_provider", "") or "").strip()
@@ -825,8 +833,9 @@ def _run_central_structured_stage_bounded(
 
         if deepseek_stage is not None:
             request_meta = dict(deepseek_stage.get("request_meta") or {})
-            provider = "deepseek"
-            model_name = str(deepseek_stage.get("model_name") or settings.deepseek_model)
+            _ds_host = resolve_deepseek_host(settings)
+            provider = _ds_host.provider
+            model_name = str(deepseek_stage.get("model_name") or _ds_host.model or settings.deepseek_model)
             attempt_count = int(deepseek_stage.get("attempt_count") or 1)
             if output_model is None:
                 deepseek_stage["assembled_context"] = assembled_context_to_dict(assembled, context_budget=context_budget)

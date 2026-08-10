@@ -14,7 +14,13 @@ from typing import Any, Callable
 
 import requests
 
-from config import Settings, normalize_google_access_token
+from config import (
+    DEEPSEEK_HOST_DIRECT,
+    DEEPSEEK_HOST_NVIDIA,
+    DEFAULT_DEEPSEEK_MODEL,
+    Settings,
+    normalize_google_access_token,
+)
 from llm_deadline import (
     DeadlineExhausted,
     attempt_timeout_sec,
@@ -363,9 +369,76 @@ def run_structured_stage(
     }
 
 
+@dataclass(frozen=True, slots=True)
+class DeepSeekHost:
+    """Which host currently serves the DeepSeek tier, and how to reach it.
+
+    The tier expresses a logical model intent ("use DeepSeek"). *Who hosts it* is a separate,
+    operator-controlled decision, so that a billing outage on one host does not force a change
+    to prompts, schema contracts or business logic.
+
+    ``provider`` is the telemetry identity and is deliberately distinct per host: a measurement
+    produced through NVIDIA NIM must never be indistinguishable from one produced by DeepSeek
+    Direct.
+    """
+
+    host: str            # deepseek_direct | deepseek_nvidia
+    # Telemetry identity. The canonical host deliberately keeps the long-standing "deepseek"
+    # label: renaming it would make future canonical-mode measurements non-comparable with the
+    # historical baselines (32/38, 38/38) that were recorded under it. Only the bridge takes a
+    # new identity, which is what makes the two distinguishable.
+    provider: str
+    base_url: str
+    model: str
+    api_keys: tuple[str, ...]
+    missing_config: str
+    role: str            # CANONICAL_TARGET | TEMPORARY_BRIDGE
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.base_url and self.api_keys)
+
+
+def resolve_deepseek_host(settings: Settings) -> DeepSeekHost:
+    """Resolve the active DeepSeek host from configuration alone.
+
+    Note what this does *not* consult: ``LLM_BACKEND``. The DeepSeek tier passes an explicit
+    ``base_url``/``api_key``/``model`` to the OpenAI-compatible adapter, so host selection is
+    independent of the backend variable and its URL/model-resolution coupling.
+    """
+    host = str(getattr(settings, "deepseek_host", "") or DEEPSEEK_HOST_DIRECT).strip().lower()
+
+    if host == DEEPSEEK_HOST_NVIDIA:
+        keys = tuple(getattr(settings, "deepseek_nvidia_api_keys", ()) or ())
+        if not keys and str(getattr(settings, "deepseek_nvidia_api_key", "") or "").strip():
+            keys = (str(settings.deepseek_nvidia_api_key).strip(),)
+        return DeepSeekHost(
+            host=DEEPSEEK_HOST_NVIDIA,
+            provider=DEEPSEEK_HOST_NVIDIA,
+            base_url=str(getattr(settings, "deepseek_nvidia_base_url", "") or "").strip(),
+            model=str(getattr(settings, "deepseek_nvidia_model", "") or "").strip(),
+            api_keys=keys,
+            missing_config="DEEPSEEK_NVIDIA_API_KEY",
+            role="TEMPORARY_BRIDGE",
+        )
+
+    keys = tuple(getattr(settings, "deepseek_api_keys", ()) or ())
+    if not keys and str(getattr(settings, "deepseek_api_key", "") or "").strip():
+        keys = (str(settings.deepseek_api_key).strip(),)
+    return DeepSeekHost(
+        host=DEEPSEEK_HOST_DIRECT,
+        provider="deepseek",
+        base_url=str(getattr(settings, "deepseek_base_url", "") or "").strip(),
+        model=str(getattr(settings, "deepseek_model", "") or "").strip(),
+        api_keys=keys,
+        missing_config="DEEPSEEK_API_KEY",
+        role="CANONICAL_TARGET",
+    )
+
+
 def deepseek_configured(settings: Settings) -> bool:
-    """Check if a DeepSeek API key is configured (priority-1 structured-stage provider)."""
-    return bool(str(getattr(settings, "deepseek_api_key", "") or "").strip())
+    """Is the DeepSeek tier usable on its currently selected host?"""
+    return resolve_deepseek_host(settings).configured
 
 
 def _deepseek_thinking_payload(settings: Settings) -> dict[str, Any]:
@@ -405,19 +478,24 @@ def _deepseek_providers(
     mode: str | None,
     temperature: float,
 ) -> list[LLMProvider]:
-    """Single-provider chain for the DeepSeek priority-1 tier (see run_deepseek_structured_stage)."""
-    provider_model = str(model or getattr(settings, "deepseek_model", "") or "").strip() or "deepseek-v4-flash"
-    deepseek_base_url = str(getattr(settings, "deepseek_base_url", "") or "").strip()
-    deepseek_keys = tuple(getattr(settings, "deepseek_api_keys", ()) or ())
-    if not deepseek_keys and str(getattr(settings, "deepseek_api_key", "") or "").strip():
-        deepseek_keys = (str(settings.deepseek_api_key).strip(),)
+    """Single-provider chain for the DeepSeek priority-1 tier (see run_deepseek_structured_stage).
+
+    The endpoint, credential and model come from the currently selected host
+    (``deepseek_direct`` or the temporary ``deepseek_nvidia`` bridge). Everything else about the
+    tier -- prompts, schema contract, thinking payload, deadline, retry/fallback -- is identical
+    across hosts by design, so switching hosts changes where the call goes and nothing else.
+    """
+    host = resolve_deepseek_host(settings)
+    provider_model = str(model or host.model or "").strip() or DEFAULT_DEEPSEEK_MODEL
+    deepseek_base_url = host.base_url
+    deepseek_keys = host.api_keys
     if not deepseek_keys or not deepseek_base_url:
         return [
             _unconfigured_structured_provider(
-                provider="deepseek",
+                provider=host.provider,
                 backend="openai_compatible",
                 model=provider_model,
-                missing_config="DEEPSEEK_API_KEY",
+                missing_config=host.missing_config,
             )
         ]
     thinking_payload = _deepseek_thinking_payload(settings)
@@ -447,16 +525,22 @@ def _deepseek_providers(
             request_meta["llm_temperature_effective"] = (
                 "provider_managed" if thinking_payload else float(temperature)
             )
+            # Provenance: which host actually served this call, and in what role. Without these
+            # a bridge measurement and a canonical measurement look identical after the fact.
+            request_meta["llm_logical_model_intent"] = "deepseek"
+            request_meta["llm_deepseek_host"] = host.host
+            request_meta["llm_provider_role"] = host.role
+            request_meta["llm_canonical_target"] = DEEPSEEK_HOST_DIRECT
             return synthetic, request_meta
 
         providers.append(
             LLMProvider(
-                provider="deepseek",
+                provider=host.provider,
                 backend="openai_compatible",
                 model=provider_model,
                 call=call_deepseek,
                 configured=bool(deepseek_base_url and deepseek_api_key),
-                missing_config="DEEPSEEK_API_KEY",
+                missing_config=host.missing_config,
             )
         )
     return providers

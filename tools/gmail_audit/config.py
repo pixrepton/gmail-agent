@@ -29,6 +29,25 @@ DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-20250514"
 DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash"
 DEFAULT_DEEPSEEK_REASONING_EFFORT = "high"
+
+# ── DeepSeek tier hosting (DEEPSEEK-TEMP-BRIDGE-01) ──────────────────────────────────
+# The DeepSeek tier expresses a *logical model intent* ("use DeepSeek"), which is separate from
+# *who hosts it*. `deepseek_direct` is the canonical target and the default. `deepseek_nvidia`
+# is a temporary bridge for use while DeepSeek Direct billing is unavailable; it keeps the same
+# tier, prompts and schema contracts, and only changes the endpoint, credential and model id.
+#
+# The switch is explicit and operator-controlled. There is deliberately no automatic
+# "fall back to NVIDIA when DeepSeek returns 402" behaviour: a hidden billing-triggered provider
+# switch would silently change which model produced a measurement.
+DEEPSEEK_HOST_DIRECT = "deepseek_direct"
+DEEPSEEK_HOST_NVIDIA = "deepseek_nvidia"
+DEEPSEEK_HOSTS = (DEEPSEEK_HOST_DIRECT, DEEPSEEK_HOST_NVIDIA)
+DEFAULT_DEEPSEEK_HOST = DEEPSEEK_HOST_DIRECT
+# NVIDIA NIM hosts DeepSeek models under their own ids. This must NOT default to NVIDIA_MODEL:
+# that variable feeds the generic `nvidia` router slot (currently `gpt-oss-120b`) and reusing it
+# would change the logical model while pretending only the host changed.
+DEFAULT_DEEPSEEK_NVIDIA_MODEL = "deepseek-ai/deepseek-r1"
+DEFAULT_DEEPSEEK_NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 DEFAULT_HTTP_RETRY_BASE_DELAY = 2.0
 # Total wall-clock budget for one structured LLM stage, owned by the stage itself and shared
 # down through provider fallback and per-attempt HTTP timeouts (see llm_deadline.py). It must
@@ -378,6 +397,13 @@ class Settings:
     deepseek_base_url: str = DEFAULT_DEEPSEEK_BASE_URL
     deepseek_thinking_enabled: bool = True
     deepseek_reasoning_effort: str = DEFAULT_DEEPSEEK_REASONING_EFFORT
+    # Which host serves the DeepSeek tier. Canonical target is always deepseek_direct; the
+    # nvidia host is a temporary, explicitly-selected bridge (DEEPSEEK-TEMP-BRIDGE-01).
+    deepseek_host: str = DEFAULT_DEEPSEEK_HOST
+    deepseek_nvidia_api_key: str = field(default="", repr=False)
+    deepseek_nvidia_api_keys: tuple[str, ...] = ()
+    deepseek_nvidia_model: str = DEFAULT_DEEPSEEK_NVIDIA_MODEL
+    deepseek_nvidia_base_url: str = DEFAULT_DEEPSEEK_NVIDIA_BASE_URL
 
     @property
     def responses_url(self) -> str:
@@ -886,6 +912,37 @@ def load_settings(*, require_groq: bool = True, require_google: bool = True) -> 
     deepseek_thinking_enabled = _parse_bool_env("DEEPSEEK_THINKING_ENABLED", default=True)
     deepseek_reasoning_effort = (
         os.getenv("DEEPSEEK_REASONING_EFFORT", "").strip() or DEFAULT_DEEPSEEK_REASONING_EFFORT
+    )
+
+    # DEEPSEEK-TEMP-BRIDGE-01. AI_OS_PRIMARY_PROVIDER is the operator-facing switch; the older
+    # DEEPSEEK_HOST name is accepted as an alias. Anything unrecognised is a configuration error
+    # rather than a silent fallback to the canonical host: a typo must not quietly send a whole
+    # measurement to a different provider than the operator believes is active.
+    deepseek_host = (
+        os.getenv("AI_OS_PRIMARY_PROVIDER", "").strip().lower()
+        or os.getenv("DEEPSEEK_HOST", "").strip().lower()
+        or DEFAULT_DEEPSEEK_HOST
+    )
+    if deepseek_host not in DEEPSEEK_HOSTS:
+        raise ConfigError(
+            f"AI_OS_PRIMARY_PROVIDER must be one of {', '.join(DEEPSEEK_HOSTS)} (got {deepseek_host!r}). "
+            f"{DEEPSEEK_HOST_DIRECT} is the canonical target; {DEEPSEEK_HOST_NVIDIA} is a temporary bridge."
+        )
+    # The bridge credential is deliberately its own variable, falling back to NVIDIA_API_KEY so an
+    # existing NVIDIA credential can be reused without duplication.
+    deepseek_nvidia_api_keys = parse_api_key_pool(
+        os.getenv("DEEPSEEK_NVIDIA_API_KEYS", ""),
+        os.getenv("DEEPSEEK_NVIDIA_API_KEY", ""),
+        os.getenv("NVIDIA_API_KEY", ""),
+    )
+    deepseek_nvidia_api_key = deepseek_nvidia_api_keys[0] if deepseek_nvidia_api_keys else ""
+    deepseek_nvidia_model = (
+        os.getenv("DEEPSEEK_NVIDIA_MODEL", "").strip() or DEFAULT_DEEPSEEK_NVIDIA_MODEL
+    )
+    deepseek_nvidia_base_url = (
+        os.getenv("DEEPSEEK_NVIDIA_BASE_URL", "").strip()
+        or os.getenv("NVIDIA_BASE_URL", "").strip()
+        or DEFAULT_DEEPSEEK_NVIDIA_BASE_URL
     )
 
     google_access_token, google_access_token_had_bearer_prefix = normalize_google_access_token(
@@ -1479,6 +1536,11 @@ def load_settings(*, require_groq: bool = True, require_google: bool = True) -> 
         deepseek_base_url=deepseek_base_url,
         deepseek_thinking_enabled=deepseek_thinking_enabled,
         deepseek_reasoning_effort=deepseek_reasoning_effort,
+        deepseek_host=deepseek_host,
+        deepseek_nvidia_api_key=deepseek_nvidia_api_key,
+        deepseek_nvidia_api_keys=deepseek_nvidia_api_keys,
+        deepseek_nvidia_model=deepseek_nvidia_model,
+        deepseek_nvidia_base_url=deepseek_nvidia_base_url,
     )
     if runtime_profile == CANONICAL_PRODUCTION_RUNTIME_PROFILE:
         viol = canonical_production_violations(settings)
