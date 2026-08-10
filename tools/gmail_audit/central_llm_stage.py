@@ -266,6 +266,41 @@ def _call_with_retry(
     raise last_exc or LLMError("LLM call failed (unknown reason)")
 
 
+_DEEPSEEK_DIAGNOSTIC_FIELDS = (
+    "error_class",
+    "finish_reason",
+    "has_tool_calls",
+    "has_reasoning_content",
+    "content_type",
+    "content_len",
+    "status_code",
+    "attempt",
+    "mode",
+)
+
+
+def _deepseek_failure_diagnostics(exc: Exception) -> dict[str, Any]:
+    """Response-shape facts from a failed DeepSeek attempt, safe to log.
+
+    Only the whitelisted diagnostic fields are copied. The provider error's ``details`` can
+    also carry request echoes, so an allow-list -- not a blanket copy -- is what keeps prompt
+    content and credentials out of the log.
+    """
+    details = dict(getattr(exc, "details", {}) or {})
+    out: dict[str, Any] = {}
+    for field in _DEEPSEEK_DIAGNOSTIC_FIELDS:
+        if field in details:
+            out[field] = details[field]
+    # Nested provider attempts (router-shaped errors) carry the same shape one level down.
+    attempts = details.get("llm_provider_attempts")
+    if isinstance(attempts, list) and attempts:
+        last = attempts[-1] if isinstance(attempts[-1], dict) else {}
+        for field in ("provider", "error_class", "retryable", "latency_ms"):
+            if field in last:
+                out.setdefault(f"last_attempt_{field}", last[field])
+    return out
+
+
 def anthropic_configured(settings: Settings) -> bool:
     """Check if Anthropic API key is configured."""
     return bool(str(getattr(settings, "anthropic_api_key", "") or "").strip())
@@ -756,7 +791,16 @@ def _run_central_structured_stage_bounded(
                 if not deepseek_error_allows_fallback(exc):
                     raise
                 logger.error("LLM_DEEPSEEK_FAILED", extra={"x": {
-                    "stage": stage_name, "error": str(exc)[:300],
+                    "stage": stage_name,
+                    "error": str(exc)[:300],
+                    # The adapter already builds exactly the fields needed to diagnose why a
+                    # response was unusable (`error_class`, `finish_reason`, `has_tool_calls`,
+                    # `has_reasoning_content`, `content_type`, `content_len`) -- and this line
+                    # used to discard all of them, keeping only the message. A run with 34
+                    # DeepSeek fallthroughs across 28 cases could therefore not be classified
+                    # afterwards: nothing recorded whether the provider returned nothing at all,
+                    # returned only reasoning, or was cut off by its own token budget.
+                    **_deepseek_failure_diagnostics(exc),
                 }})
                 logger.warning("LLM_FALLBACK_DEEPSEEK_TO_PREVIOUS_CHAIN", extra={"x": {
                     "stage": stage_name,
