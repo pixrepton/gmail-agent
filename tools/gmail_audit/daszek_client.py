@@ -20,6 +20,25 @@ class DaszekClientError(RuntimeError):
     """Raised when Daszek authentication or API calls fail."""
 
 
+class _DaszekSession(requests.Session):
+    """A session that reports transport failures as ``DaszekClientError``.
+
+    ``requests.ConnectionError`` subclasses ``OSError``. An unreachable Daszek therefore used
+    to surface at the CLI boundary as ``except OSError`` -> "File/OS error in intake" -> exit
+    code 1, which turned an outage of an *optional projection* dependency into a container
+    crash loop (627 restarts observed) and mislabeled a network problem as local file I/O.
+    Translating once here keeps every call site honest: a Daszek failure is a Daszek failure.
+    """
+
+    def request(self, method, url, *args, **kwargs):  # type: ignore[override]
+        try:
+            return super().request(method, url, *args, **kwargs)
+        except requests.RequestException as exc:
+            raise DaszekClientError(
+                f"Daszek transport failure ({method} {sanitize_text(str(url))}): {sanitize_text(str(exc))}"
+            ) from exc
+
+
 @dataclass(slots=True)
 class DaszekPushResult:
     request_id: str
@@ -83,7 +102,7 @@ class DaszekClient:
             raise DaszekClientError("Missing DASZEK_PASSWORD for live Daszek push.")
 
         self.settings = settings
-        self.session = requests.Session()
+        self.session = _DaszekSession()
         # Connection pool: 20 connections, 10 per-host — enterprise grade
         from requests.adapters import HTTPAdapter
         adapter = HTTPAdapter(pool_maxsize=20, pool_connections=10, max_retries=0)
@@ -632,7 +651,8 @@ class DaszekClient:
                 headers=self._telemetry_headers({}),
                 timeout=self.settings.http_timeout,
             )
-        except requests.RequestException:
+        except (requests.RequestException, DaszekClientError):
+            # Base-URL discovery is best-effort; an unreachable Daszek is handled by the caller.
             return
 
         final_url = str(getattr(response, "url", "") or "").strip()

@@ -405,9 +405,22 @@ def _invoice_direction_refine(ctx: ToolExecutionContext, kind: str) -> str:
     return kind
 
 
+# The agent turn is supervised at 45s (graph.AGENT_TURN_TIMEOUT_SECONDS), so an LLM tool
+# inside it must terminate well before that. This is the tool's budget contract; it is
+# enforced as a deadline shared with provider retry/fallback rather than as a wrapper thread.
+AGENT_EXTRACTION_BUDGET_SEC = 30
+
+
 def _run_llm_extraction(ctx: ToolExecutionContext, text: str) -> dict[str, Any] | None:
-    """Realna ekstrakcja HVAC przez central LLM (reużycie istniejącego run_signal_extraction)."""
-    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+    """Realna ekstrakcja HVAC przez central LLM (reużycie istniejącego run_signal_extraction).
+
+    Previously wrapped in ``ThreadPoolExecutor(...).result(timeout=30)`` around a chain whose
+    single HTTP attempt was already allowed 60s -- the outer kill could not fire later than
+    the first attempt's own timeout, so retry and provider fallback were unreachable here for
+    the same structural reason as intake reasoning, and the abandoned request kept running.
+    The 30s contract is preserved, but as a budget the whole chain can see.
+    """
+    from llm_deadline import stage_deadline
 
     try:
         from signal_extractor import run_signal_extraction
@@ -427,25 +440,27 @@ def _run_llm_extraction(ctx: ToolExecutionContext, text: str) -> dict[str, Any] 
 
             settings = load_settings(require_groq=False, require_google=False)
 
-        def _call():
-            return run_signal_extraction(
+        with stage_deadline("agent_extract_facts_from_text", AGENT_EXTRACTION_BUDGET_SEC) as deadline:
+            # run_signal_extraction never raises for provider problems: it converts them into
+            # an {"parse_status": "extraction_failed"} marker, so budget exhaustion arrives
+            # here as a marker too and is handled by the status check below.
+            res = run_signal_extraction(
                 settings=settings,
                 snapshot=snap,
                 context_bundle={"case_id": ctx.snapshot.case_id},
             )
-
-        executor = ThreadPoolExecutor(max_workers=1)
-        try:
-            future = executor.submit(_call)
-            res = future.result(timeout=30)
-        except FuturesTimeout:
-            logger.warning("LLM_EXTRACTION_TIMEOUT", extra={"x": {"tool": "extract_facts_from_text", "timeout_sec": 30}})
-            return None
-        finally:
-            executor.shutdown(wait=False)
+            budget_exhausted = deadline.expired()
+            budget_telemetry = deadline.telemetry()
 
         status = str(res.get("parse_status") or "")
         if status.startswith("extraction_failed") or status == "empty_result":
+            if budget_exhausted:
+                logger.warning("LLM_EXTRACTION_TIMEOUT", extra={"x": {
+                    "tool": "extract_facts_from_text",
+                    "terminal_failure_reason": "stage_deadline_exhausted",
+                    "parse_status": status,
+                    **budget_telemetry,
+                }})
             return None
         return res
     except Exception as exc:  # noqa: BLE001

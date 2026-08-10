@@ -32,6 +32,12 @@ from groq_client import (
     run_structured_stage,
 )
 from llm_client import TopInstalLLMClient, TopInstalLLMError
+from llm_deadline import (
+    remaining_sec as deadline_remaining_sec,
+    resolve_min_attempt_sec,
+    resolve_stage_budget_sec,
+    stage_deadline,
+)
 from log_config import get_logger
 
 TModel = TypeVar("TModel", bound=BaseModel)
@@ -159,9 +165,25 @@ def _call_with_retry(
     model: str = "",
     provider: str = "",  # Faza 2a: nazwa providera dla semafora rate limiting
 ) -> Any:
-    """Execute an LLM callable with timeout + exponential backoff retry + provider rate limiting."""
+    """Execute an LLM callable with timeout + exponential backoff retry + provider rate limiting.
+
+    Same-class hardening as the router path: when a stage deadline is active, this wrapper's
+    own hard timeout is clamped to the budget that is actually left and retries stop once the
+    budget can no longer fund a real attempt. Without that clamp this is a second, independent
+    timeout system nested inside the stage's -- exactly the collision FIX-RT01 removes.
+    """
     last_exc: Exception | None = None
+    min_attempt = resolve_min_attempt_sec(None)
     for attempt in range(max_retries + 1):
+        remaining = deadline_remaining_sec()
+        if remaining is not None:
+            if remaining < min_attempt:
+                logger.warning("LLM_RETRY_BUDGET_EXHAUSTED", extra={"x": {
+                    "stage": stage_name, "model": model, "attempt": attempt + 1,
+                    "remaining_budget_ms": int(round(remaining * 1000)),
+                }})
+                break
+            hard_timeout = int(max(1, min(hard_timeout, remaining)))
         # Faza 2a: semafor per-provider — ogranicza równoczesne calle do tego samego API
         sem = _get_provider_semaphore(provider) if provider else None
         if sem is not None and not sem.acquire(blocking=False):
@@ -214,11 +236,16 @@ def _call_with_retry(
                 sem.release()
 
         if attempt < max_retries:
-            wait_sec = RETRY_BACKOFF_BASE ** attempt
+            wait_sec: float = RETRY_BACKOFF_BASE ** attempt
+            remaining = deadline_remaining_sec()
+            if remaining is not None:
+                # Never sleep away the window the retry itself needs.
+                wait_sec = max(0.0, min(wait_sec, remaining - min_attempt))
             logger.info("LLM_RETRY_WAIT", extra={"x": {
                 "stage": stage_name, "model": model, "wait_sec": wait_sec, "attempt": attempt + 1,
             }})
-            time.sleep(wait_sec)
+            if wait_sec > 0:
+                time.sleep(wait_sec)
 
     raise last_exc or LLMError("LLM call failed (unknown reason)")
 
@@ -518,7 +545,109 @@ def run_central_structured_stage(
     temperature: float = 0,  # Requested sampling value; provider/model determinism is not guaranteed.
     correlation_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """Run structured LLM with company context; validate via Pydantic when output_model is set."""
+    """Run one structured LLM stage under a single, owned wall-clock budget.
+
+    This is the stage boundary and therefore the one place a deadline is created. Provider
+    fallback and per-attempt HTTP timeouts below this point all derive from the same budget
+    instead of keeping private clocks (see ``llm_deadline``). Callers must not add their own
+    outer timeout wrapper: doing so recreates the defect this boundary exists to remove --
+    an envelope that expires before the retry/fallback chain it wraps can act, while leaving
+    the abandoned request running.
+    """
+    budget_sec = resolve_stage_budget_sec(settings)
+    with stage_deadline(stage_name, budget_sec) as deadline:
+        try:
+            return _run_central_structured_stage_bounded(
+                settings,
+                stage_name=stage_name,
+                task_instructions=task_instructions,
+                prompt_input=prompt_input,
+                query_text=query_text,
+                json_schema=json_schema,
+                schema_name=schema_name,
+                case_id=case_id,
+                engagement_id=engagement_id,
+                model=model,
+                verbose=verbose,
+                input_variants=input_variants,
+                output_model=output_model,
+                max_chunks=max_chunks,
+                context_bundle=context_bundle,
+                client_timeout=client_timeout,
+                max_retries=max_retries,
+                temperature=temperature,
+                correlation_id=correlation_id,
+            )
+        except GroqClientError as exc:
+            log_stage_budget_failure(stage_name, deadline, exc)
+            raise
+
+
+def log_stage_budget_failure(stage_name: str, deadline: Any, exc: Exception) -> dict[str, Any]:
+    """Emit the provenance needed to answer 'who consumed the budget, and why no recovery?'.
+
+    Before this, a production timeout produced a single ``INTAKE_LLM_TIMEOUT`` line with a
+    constant in it -- enough to know a stage died, not enough to know which provider stalled,
+    whether fallback was reached, or how much budget was left. Everything here is provider
+    names, counts and durations; no prompt content, no response bodies, no credentials.
+    """
+    details = dict(getattr(exc, "details", {}) or {})
+    provider_attempts = details.get("llm_provider_attempts") or []
+    last_attempt = provider_attempts[-1] if provider_attempts else {}
+    payload = {
+        "stage": stage_name,
+        "terminal_failure_reason": details.get("terminal_failure_reason") or "provider_chain_failed",
+        "provider": last_attempt.get("provider") or details.get("provider") or "",
+        "attempt": last_attempt.get("attempt") or details.get("attempt") or len(provider_attempts),
+        "fallback_index": max(0, len(provider_attempts) - 1),
+        "fallback_used": bool(details.get("llm_fallback_used")),
+        "retryable": last_attempt.get("retryable"),
+        "provider_attempts": [
+            {
+                "provider": item.get("provider"),
+                "status": item.get("status"),
+                "error_class": item.get("error_class"),
+                "retryable": item.get("retryable"),
+                "latency_ms": item.get("latency_ms"),
+                "provider_budget_ms": item.get("provider_budget_ms"),
+                "remaining_budget_ms": item.get("remaining_budget_ms"),
+            }
+            for item in provider_attempts
+        ],
+        "error": str(exc)[:300],
+    }
+    if deadline is not None:
+        payload.update(deadline.telemetry())
+    logger.error("LLM_STAGE_BUDGET_FAILURE", extra={"x": payload})
+    return payload
+
+
+def _run_central_structured_stage_bounded(
+    settings: Settings,
+    *,
+    stage_name: str,
+    task_instructions: str,
+    prompt_input: dict[str, Any],
+    query_text: str,
+    json_schema: dict[str, Any],
+    schema_name: str,
+    case_id: str | None = None,
+    engagement_id: str | None = None,
+    model: str | None = None,
+    verbose: bool = False,
+    input_variants: list[dict[str, Any]] | None = None,
+    output_model: Type[TModel] | None = None,
+    max_chunks: int = 6,
+    context_bundle: dict[str, Any] | None = None,
+    client_timeout: int = LLM_CLIENT_TIMEOUT_SEC,
+    max_retries: int = MAX_RETRIES,
+    temperature: float = 0,
+    correlation_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Run structured LLM with company context; validate via Pydantic when output_model is set.
+
+    Always called inside an active stage deadline -- see ``run_central_structured_stage``.
+    """
     started = time.monotonic()
     assembler = build_context_assembler(settings)
     assembled = assembler.assemble(

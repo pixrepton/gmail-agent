@@ -64,6 +64,43 @@ REVIEW_DIRECT_PATTERNS = (
     "przekazana wiadomosc",
     "przeslana wiadomosc",
 )
+# Unambiguous legal/contract escalation. Each of these states an action, not a person, so it
+# needs no surrounding context to justify skipping the LLM lane.
+REVIEW_DIRECT_RISK_PATTERNS = (
+    "zerwanie umowy",
+    "wypowiedzenie umowy",
+    "odstapienie od umowy",
+    "odstąpienie od umowy",
+    "zwrocenie sie do prawnika",
+    "zwrócenie się do prawnika",
+    "pozew",
+    "wezwanie przedsadowe",
+    "wezwanie przedsądowe",
+)
+
+# Mentioning a lawyer is not, by itself, a legal threat. The bare tokens "prawnik"/"prawnika"
+# used to sit in the list above and matched by plain substring, so an ordinary sales lead was
+# routed straight to review_direct and never reached the reasoning lane. Proven over-broad
+# against benign negatives: a referral ("moj sasiad jest prawnikiem i polecil Panstwa firme"),
+# the sender's own profession ("jestem prawnikiem, potrzebuje wyceny pompy ciepla"), and an
+# incidental bookkeeping mention all escalated. A legal actor now escalates only alongside an
+# adversarial cue -- a general semantic rule, not a per-case exception.
+LEGAL_ACTOR_RE = re.compile(
+    r"\b(?:prawnik\w*|adwokat\w*|radc\w*\s+prawn\w*|kancelari\w*\s+(?:prawn\w*|adwokack\w*))\b",
+    re.IGNORECASE,
+)
+LEGAL_ESCALATION_CUE_RE = re.compile(
+    r"\b(?:"
+    r"sad|sad\w+|sąd\w*|"
+    r"pozew\w*|pozwa\w*|pozywa\w*|"
+    r"roszcze\w*|odszkodowan\w*|"
+    r"kroki\s+prawne|drog[aeęi]\s+prawn\w*|na\s+drodze\s+prawnej|"
+    r"wezwani\w*\s+do\s+zap[lł]at\w*|"
+    r"przekazuj\w*\s+spraw\w*|skieruj\w*\s+spraw\w*|"
+    r"post[eę]powani\w*\s+s[aą]dow\w*"
+    r")\b",
+    re.IGNORECASE,
+)
 QUESTION_RE = re.compile(r"\?")
 
 _KEYWORD_PATTERN_CACHE: dict[str, re.Pattern[str]] = {}
@@ -113,16 +150,17 @@ def preclassify_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         }})
         return result
 
-    if is_obvious_review_direct(snapshot):
+    review_detail = _review_direct_reason(snapshot)
+    if review_detail is not None:
         result = {
             "lane": "review_direct",
-            "reasons": ["low_signal_forward_or_attachment_only"],
+            "reasons": [review_detail],
             "confidence": 0.84,
             "stage_name": PRECLASSIFIER_STAGE_NAME,
         }
         logger.info("PRECLASSIFY_DECISION", extra={"x": {
             "decision": "review_direct", "subject": subject[:100], "sender": sender,
-            "reason": "low_signal_forward_or_attachment_only",
+            "reason": review_detail,
         }})
         return result
 
@@ -168,6 +206,11 @@ def is_obvious_noise(snapshot: dict[str, Any]) -> bool:
 
 def is_obvious_review_direct(snapshot: dict[str, Any]) -> bool:
     """Return True for low-signal messages that should go straight to review."""
+    return _review_direct_reason(snapshot) is not None
+
+
+def _review_direct_reason(snapshot: dict[str, Any]) -> str | None:
+    """Return the deterministic review-direct reason, or None."""
     message = snapshot.get("source_message") or {}
     thread_context = snapshot.get("thread_context") or {}
     body = _message_text(message.get("body"))
@@ -182,7 +225,19 @@ def is_obvious_review_direct(snapshot: dict[str, Any]) -> bool:
     weak_thread = str(thread_context.get("quality") or "weak") == "weak"
     self_forward = bool(routing_hints.get("self_forward"))
 
-    return attachment_only or forwarded_chaos or (self_forward and weak_thread and very_short_body)
+    combined = _message_text(subject, body, snippet)
+    risk_direct = any(token in combined for token in REVIEW_DIRECT_RISK_PATTERNS)
+    legal_actor_escalation = bool(LEGAL_ACTOR_RE.search(combined)) and bool(
+        LEGAL_ESCALATION_CUE_RE.search(combined)
+    )
+    contract_exit = "umow" in combined and any(
+        token in combined for token in ("zerwanie", "wypowiedzeni", "odstapieni", "odstąpieni")
+    )
+    if risk_direct or legal_actor_escalation or contract_exit:
+        return "legal_or_contract_escalation_signal"
+    if attachment_only or forwarded_chaos or (self_forward and weak_thread and very_short_body):
+        return "low_signal_forward_or_attachment_only"
+    return None
 
 
 def _reference_only_reason(snapshot: dict[str, Any]) -> str | None:

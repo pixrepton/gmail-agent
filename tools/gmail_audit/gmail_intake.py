@@ -2459,9 +2459,20 @@ def _run_llm_with_timeout(
     case_id: str | None = None,
     engagement_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """Wrapper around run_central_structured_stage with 60s timeout."""
-    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+    """Run the intake-reasoning stage under the stage's own bounded deadline.
 
+    This used to wrap the call in ``ThreadPoolExecutor(...).result(timeout=60)``. That outer
+    envelope was numerically identical to a single inner HTTP attempt (``http_timeout=60``)
+    and its clock started first, so the router's 4-attempt retry and its ``groq`` fallback
+    could never run -- Fresh38 measured 6/38 first attempts dying that way. ``future.cancel()``
+    also could not stop the in-flight request, leaving an orphan thread whose outcome nobody
+    observed. The bound now lives in one place, ``run_central_structured_stage``, which shares
+    it with retry and fallback instead of racing them (see ``llm_deadline``).
+
+    Returns ``None`` only when the stage budget is genuinely exhausted -- the same terminal
+    contract the old timeout path had, so downstream parity handling is unchanged. Every other
+    provider error still propagates.
+    """
     _snapshot = snapshot or config.get("snapshot", {})
 
     def _call():
@@ -2483,16 +2494,25 @@ def _run_llm_with_timeout(
             correlation_id=str((_snapshot.get("source_message") or {}).get("message_id") or "").strip() or None,
         )
 
-    executor = ThreadPoolExecutor(max_workers=1)
     try:
-        future = executor.submit(_call)
-        return future.result(timeout=60)
-    except FuturesTimeout:
+        return _call()
+    except GroqClientError as exc:
+        details = dict(getattr(exc, "details", {}) or {})
+        if str(details.get("terminal_failure_reason") or "") != "stage_deadline_exhausted":
+            raise
         from log_config import get_logger
-        get_logger("gmail_intake").error("INTAKE_LLM_TIMEOUT", extra={"x": {"timeout_sec": 60}})
+
+        stage_telemetry = details.get("llm_stage_deadline") or {}
+        get_logger("gmail_intake").error("INTAKE_LLM_TIMEOUT", extra={"x": {
+            "terminal_failure_reason": "stage_deadline_exhausted",
+            "configured_stage_budget_ms": stage_telemetry.get("configured_stage_budget_ms"),
+            "elapsed_ms": stage_telemetry.get("elapsed_ms"),
+            "remaining_budget_ms": stage_telemetry.get("remaining_budget_ms"),
+            "provider_attempts": details.get("llm_provider_attempts") or [],
+            "fallback_used": bool(details.get("llm_fallback_used")),
+            "fallback_reason": details.get("llm_fallback_reason"),
+        }})
         return None
-    finally:
-        executor.shutdown(wait=False)
 
 
 def run_intake_reasoning(

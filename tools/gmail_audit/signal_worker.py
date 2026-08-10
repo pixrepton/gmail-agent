@@ -12,11 +12,13 @@ from typing import Any
 from artifact_io import append_jsonl
 from case_state_rebuilder import case_rebuild_from_journal
 from config import ConfigError, Settings
+from daszek_client import DaszekClientError
 from drive_change_detector import DriveChangeDetector
 from drive_ingest_models import DriveIngestCandidate
 from drive_lane_classifier import apply_classification
 from gmail_change_detector import GmailChangeDetector
 from intake_payload import build_source_snapshot
+from redaction import sanitize_text
 from signal_journal import SignalJournal
 from signal_reconciler import SignalRuntimeContext, replay_signal
 from log_config import get_logger
@@ -422,7 +424,6 @@ def run_signal_loop(
     from gmail_intake import (
         RUNS_DIR,
         annotate_env_metadata,
-        attach_daszek_client,
         attach_observability_runtime,
         fetch_context_messages,
         init_run_state,
@@ -505,7 +506,11 @@ def run_signal_loop(
         or bool(effective_settings.daszek_v2_push_enabled)
         or bool(getattr(effective_settings, "daszek_operational_feed_auto_push_enabled", False))
     ):
-        attach_daszek_client(run_state, effective_settings)
+        attach_daszek_projection_client(
+            run_state,
+            effective_settings,
+            mandatory=live_push_requested,
+        )
 
     result = SignalWorkerLoopResult(
         loop_mode=loop_mode,
@@ -1250,6 +1255,96 @@ def _resolve_run_settings(run_state: dict[str, Any]) -> Settings | None:
     return None
 
 
+# Daszek is the operator projection surface; Node B owns operational truth. A projection
+# outage must not stop canonical mailbox processing, so the reattach is a bounded backoff
+# rather than a startup precondition. Doubling from 30s caps at 10 minutes: fast enough to
+# recover a brief WordPress restart, slow enough not to hammer a dead host for hours.
+DASZEK_REATTACH_MIN_BACKOFF_SEC = 30.0
+DASZEK_REATTACH_MAX_BACKOFF_SEC = 600.0
+
+
+def attach_daszek_projection_client(
+    run_state: dict[str, Any],
+    settings: Settings,
+    *,
+    mandatory: bool,
+) -> bool:
+    """Attach the Daszek projection client, degrading instead of dying when it is optional.
+
+    Background projection push (``DASZEK_V2_PUSH`` / ``DASZEK_OPERATIONAL_FEED_AUTO_PUSH``) is
+    an *optional* dependency of the signal worker: it mirrors state into the operator UI, it is
+    not a precondition for polling Gmail, reconciling signals, or persisting canonical Node B
+    state. Treating it as a startup precondition is what turned a 42-hour Daszek outage into
+    627 container restarts, with the worker never reaching its poll loop at all.
+
+    An explicit operator ``--push-daszek`` request is the one case where the dependency really
+    is mandatory; that still fails fast and loudly rather than pretending to push.
+
+    Returns True when a live client is attached. Downstream feed pushes already handle a
+    missing client (``skipped_no_daszek_client``), so a False result degrades rather than fails.
+    """
+    from gmail_intake import attach_daszek_client
+
+    manifest = run_state.setdefault("manifest", {})
+    try:
+        attach_daszek_client(run_state, settings)
+    except DaszekClientError as exc:
+        if mandatory:
+            raise
+        run_state["daszek_client"] = None
+        manifest["daszek_dependency"] = {
+            "status": "degraded",
+            "required": False,
+            "reason": sanitize_text(str(exc))[:300],
+            "base_url": str(getattr(settings, "daszek_base_url", "") or ""),
+            "impact": "operator projection push paused; canonical Node B processing continues",
+            "since": datetime.now().astimezone().isoformat(),
+        }
+        run_state.setdefault("summary", {})["daszek_degraded"] = True
+        logger.warning("DASZEK_DEPENDENCY_DEGRADED", extra={"x": {
+            "dependency": "daszek_projection",
+            "required": False,
+            "error": sanitize_text(str(exc))[:200],
+            "impact": "worker stays alive; projection push paused until Daszek returns",
+        }})
+        return False
+
+    manifest["daszek_dependency"] = {
+        "status": "available",
+        "required": bool(mandatory),
+        "base_url": str(getattr(settings, "daszek_base_url", "") or ""),
+        "since": datetime.now().astimezone().isoformat(),
+    }
+    run_state.setdefault("summary", {})["daszek_degraded"] = False
+    return True
+
+
+def _maybe_reattach_daszek(*, run_state: dict[str, Any], settings: Settings) -> None:
+    """Retry a degraded Daszek projection dependency with bounded exponential backoff."""
+    summary = run_state.setdefault("summary", {})
+    if not summary.get("daszek_degraded"):
+        return
+
+    now_mono = time.monotonic()
+    backoff = float(summary.get("daszek_reattach_backoff_sec") or DASZEK_REATTACH_MIN_BACKOFF_SEC)
+    next_attempt_at = float(summary.get("daszek_reattach_next_monotonic") or 0.0)
+    if next_attempt_at and now_mono < next_attempt_at:
+        return
+
+    summary["daszek_reattach_attempts"] = int(summary.get("daszek_reattach_attempts") or 0) + 1
+    if attach_daszek_projection_client(run_state, settings, mandatory=False):
+        summary["daszek_reattach_backoff_sec"] = DASZEK_REATTACH_MIN_BACKOFF_SEC
+        summary["daszek_reattach_next_monotonic"] = 0.0
+        logger.info("DASZEK_DEPENDENCY_RECOVERED", extra={"x": {
+            "dependency": "daszek_projection",
+            "attempts": summary["daszek_reattach_attempts"],
+        }})
+        return
+
+    summary["daszek_reattach_backoff_sec"] = min(backoff * 2, DASZEK_REATTACH_MAX_BACKOFF_SEC)
+    summary["daszek_reattach_next_monotonic"] = now_mono + backoff
+
+
 def _run_worker_idle_maintenance(
     *,
     run_state: dict[str, Any],
@@ -1259,6 +1354,7 @@ def _run_worker_idle_maintenance(
 ) -> None:
     """Heartbeat feed push + periodic remote bridge drain when worker poll loop is idle."""
 
+    _maybe_reattach_daszek(run_state=run_state, settings=settings)
     try:
         from daszek_v3_feed_runtime import maybe_heartbeat_operational_feed
 

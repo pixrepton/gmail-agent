@@ -30,6 +30,13 @@ DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash"
 DEFAULT_DEEPSEEK_REASONING_EFFORT = "high"
 DEFAULT_HTTP_RETRY_BASE_DELAY = 2.0
+# Total wall-clock budget for one structured LLM stage, owned by the stage itself and shared
+# down through provider fallback and per-attempt HTTP timeouts (see llm_deadline.py). It must
+# stay comfortably above HTTP_TIMEOUT so retry and fallback are reachable rather than decorative.
+DEFAULT_LLM_STAGE_BUDGET_SEC = 180
+# Below this much remaining budget an HTTP attempt cannot produce a useful result, so the chain
+# stops and reports instead of burning the remainder on a guaranteed timeout.
+DEFAULT_LLM_MIN_ATTEMPT_SEC = 5
 CANONICAL_ENV_FILENAMES = (".env",)
 LEGACY_ENV_FILENAMES = (".env.local",)
 DISCOVERABLE_ENV_FILENAMES = CANONICAL_ENV_FILENAMES + LEGACY_ENV_FILENAMES
@@ -327,6 +334,8 @@ class Settings:
     http_timeout: int = DEFAULT_HTTP_TIMEOUT
     http_max_retries: int = DEFAULT_HTTP_MAX_RETRIES
     http_retry_base_delay: float = DEFAULT_HTTP_RETRY_BASE_DELAY
+    llm_stage_budget_sec: int = DEFAULT_LLM_STAGE_BUDGET_SEC
+    llm_min_attempt_sec: int = DEFAULT_LLM_MIN_ATTEMPT_SEC
     env_path: Path | None = None
     config_sources: dict[str, str] = field(default_factory=dict, repr=False)
     config_warnings: list[str] = field(default_factory=list, repr=False)
@@ -1132,6 +1141,14 @@ def load_settings(*, require_groq: bool = True, require_google: bool = True) -> 
         os.getenv("HTTP_RETRY_BASE_DELAY", str(DEFAULT_HTTP_RETRY_BASE_DELAY)).strip()
         or str(DEFAULT_HTTP_RETRY_BASE_DELAY)
     )
+    llm_stage_budget_raw = (
+        os.getenv("LLM_STAGE_BUDGET_SEC", str(DEFAULT_LLM_STAGE_BUDGET_SEC)).strip()
+        or str(DEFAULT_LLM_STAGE_BUDGET_SEC)
+    )
+    llm_min_attempt_raw = (
+        os.getenv("LLM_MIN_ATTEMPT_SEC", str(DEFAULT_LLM_MIN_ATTEMPT_SEC)).strip()
+        or str(DEFAULT_LLM_MIN_ATTEMPT_SEC)
+    )
 
     missing: list[str] = []
     if require_groq:
@@ -1278,6 +1295,21 @@ def load_settings(*, require_groq: bool = True, require_google: bool = True) -> 
     if http_retry_base_delay <= 0:
         raise ConfigError("HTTP_RETRY_BASE_DELAY must be greater than zero.")
 
+    llm_stage_budget_sec = _parse_positive_int(llm_stage_budget_raw, field_name="LLM_STAGE_BUDGET_SEC")
+    llm_min_attempt_sec = _parse_positive_int(llm_min_attempt_raw, field_name="LLM_MIN_ATTEMPT_SEC")
+    # A stage budget at or below one HTTP attempt reproduces the exact defect this model exists to
+    # remove: the envelope expires before the retry/fallback chain it wraps can do anything.
+    if llm_stage_budget_sec <= http_timeout:
+        raise ConfigError(
+            f"LLM_STAGE_BUDGET_SEC ({llm_stage_budget_sec}s) must exceed HTTP_TIMEOUT ({http_timeout}s); "
+            "otherwise provider retry and fallback can never run inside the stage budget."
+        )
+    if llm_min_attempt_sec >= llm_stage_budget_sec:
+        raise ConfigError(
+            f"LLM_MIN_ATTEMPT_SEC ({llm_min_attempt_sec}s) must be smaller than "
+            f"LLM_STAGE_BUDGET_SEC ({llm_stage_budget_sec}s)."
+        )
+
     _validate_https_url(
         google_token_endpoint,
         field_name="GOOGLE_TOKEN_ENDPOINT",
@@ -1417,6 +1449,8 @@ def load_settings(*, require_groq: bool = True, require_google: bool = True) -> 
         http_timeout=http_timeout,
         http_max_retries=http_max_retries,
         http_retry_base_delay=http_retry_base_delay,
+        llm_stage_budget_sec=llm_stage_budget_sec,
+        llm_min_attempt_sec=llm_min_attempt_sec,
         env_path=env_path,
         config_sources=config_sources,
         config_warnings=config_warnings,

@@ -15,12 +15,47 @@ from typing import Any, Callable
 import requests
 
 from config import Settings, normalize_google_access_token
+from llm_deadline import (
+    DeadlineExhausted,
+    attempt_timeout_sec,
+    resolve_min_attempt_sec,
+    retry_window_sec,
+)
 from llm_provider_router import LLMProvider, LLMRouter, LLMRouterError
 from llm_provider_router import classify_provider_error
 from log_config import get_logger
 from redaction import sanitize_for_storage, sanitize_text
 
 logger = get_logger(__name__)
+
+
+def _budget_allows_attempt(settings: Settings) -> bool:
+    """Is there enough of the stage/provider budget left for an attempt to mean anything?
+
+    ``retry_window_sec()`` returns None outside a stage deadline, in which case the
+    provider's own ``http_max_retries`` loop governs exactly as it did before.
+    """
+    window = retry_window_sec()
+    if window is None:
+        return True
+    return window >= resolve_min_attempt_sec(settings)
+
+
+def _deadline_exhausted_error(settings: Settings, *, provider: str, attempt: int, mode: str) -> DeadlineExhausted:
+    window = retry_window_sec()
+    return DeadlineExhausted(
+        f"Stage budget exhausted before attempt {attempt} on {provider} "
+        f"({0.0 if window is None else round(window, 2)}s remaining, "
+        f"{resolve_min_attempt_sec(settings)}s needed).",
+        details={
+            "error_class": "deadline_exhausted",
+            "provider": provider,
+            "attempt": attempt,
+            "mode": mode,
+            "remaining_budget_ms": 0 if window is None else int(round(window * 1000)),
+            "min_attempt_ms": int(round(resolve_min_attempt_sec(settings) * 1000)),
+        },
+    )
 
 
 def _unconfigured_structured_provider(
@@ -1301,20 +1336,36 @@ def _post_openai_chat_payload(
     mode_name = mode or "default"
 
     for attempt in range(1, attempts + 1):
+        # The budget is checked before every attempt, not only before the first: a long
+        # first attempt plus backoff can consume the room a later attempt needs, and
+        # starting it anyway would guarantee a timeout while hiding the real reason.
+        if not _budget_allows_attempt(settings):
+            if attempt == 1:
+                raise _deadline_exhausted_error(settings, provider="openai_chat", attempt=attempt, mode=mode_name)
+            break
         _wait_for_runtime_cooldown(settings)
+        attempt_timeout = attempt_timeout_sec(settings.http_timeout)
+        # Re-checked after the cooldown, which itself spends budget: a zero-length timeout
+        # would be issued as an immediate, uninformative failure.
+        if attempt_timeout <= 0:
+            if attempt == 1:
+                raise _deadline_exhausted_error(settings, provider="openai_chat", attempt=attempt, mode=mode_name)
+            break
         try:
             response = requests.post(
                 url,
                 headers=headers,
                 json=body,
-                timeout=settings.http_timeout,
+                timeout=attempt_timeout,
             )
         except requests.Timeout as exc:
             last_error = GroqClientError(
-                f"HTTP timeout ({settings.http_timeout}s) while calling OpenAI-compatible chat endpoint.",
+                f"HTTP timeout ({attempt_timeout:.1f}s of {settings.http_timeout}s configured) "
+                "while calling OpenAI-compatible chat endpoint.",
                 details={
                     "mode": mode_name,
                     "attempt": attempt,
+                    "attempt_timeout_ms": int(round(attempt_timeout * 1000)),
                     "retry_events": retry_events,
                 },
             )
@@ -1423,20 +1474,34 @@ def _post_responses_payload(
     mode_name = mode or "default"
 
     for attempt in range(1, attempts + 1):
+        # Same budget contract as the OpenAI-compatible loop: never start an attempt that
+        # the remaining stage/provider budget cannot let finish.
+        if not _budget_allows_attempt(settings):
+            if attempt == 1:
+                raise _deadline_exhausted_error(settings, provider="groq", attempt=attempt, mode=mode_name)
+            break
         _wait_for_runtime_cooldown(settings)
+        attempt_timeout = attempt_timeout_sec(settings.http_timeout)
+        # Re-checked after the cooldown, which itself spends budget.
+        if attempt_timeout <= 0:
+            if attempt == 1:
+                raise _deadline_exhausted_error(settings, provider="groq", attempt=attempt, mode=mode_name)
+            break
         try:
             response = requests.post(
                 settings.responses_url,
                 headers=headers,
                 json=payload,
-                timeout=settings.http_timeout,
+                timeout=attempt_timeout,
             )
         except requests.Timeout as exc:
             last_error = GroqClientError(
-                f"HTTP timeout ({settings.http_timeout}s) while calling Groq.",
+                f"HTTP timeout ({attempt_timeout:.1f}s of {settings.http_timeout}s configured) "
+                "while calling Groq.",
                 details={
                     "mode": mode_name,
                     "attempt": attempt,
+                    "attempt_timeout_ms": int(round(attempt_timeout * 1000)),
                     "retry_events": retry_events,
                 },
             )
@@ -1589,6 +1654,13 @@ def _sleep_before_retry(
 ) -> None:
     delay = _compute_retry_delay(settings, attempt, response=response, message=message)
     delay = min(delay, 600.0)
+    # Backoff must never consume the time the retry it is waiting for would need. Without
+    # this clamp a long Retry-After silently converts "we will retry" into "we will time out
+    # while sleeping", which is the same class of defect as an outer envelope preempting an
+    # inner retry. Outside a stage deadline the window is None and backoff is unchanged.
+    window = retry_window_sec()
+    if window is not None:
+        delay = max(0.0, min(delay, window - resolve_min_attempt_sec(settings)))
     if response is not None and response.status_code == 429:
         _increase_runtime_throttle(settings, delay)
     elif reason in {"timeout", "network"}:
@@ -1661,13 +1733,23 @@ def _runtime_key(settings: Settings) -> int:
 
 def _wait_for_runtime_cooldown(settings: Settings) -> None:
     remaining = _RUNTIME_COOLDOWNS.get(_runtime_key(settings), 0.0) - time.monotonic()
-    if remaining > 0:
-        print(
-            f"[cooldown] Groq runtime cooldown active. Sleeping {remaining:.1f}s before next request.",
-            file=sys.stderr,
-            flush=True,
-        )
-        time.sleep(remaining)
+    if remaining <= 0:
+        return
+    # The cooldown is a sleep inside the retry path, so it spends the same budget the attempt
+    # after it needs. Left unbounded it silently converts remaining budget into a zero-length
+    # attempt -- the same defect class as an outer envelope preempting an inner retry, just
+    # one layer down. Outside a stage deadline the window is None and the wait is unchanged.
+    window = retry_window_sec()
+    if window is not None:
+        remaining = max(0.0, min(remaining, window - resolve_min_attempt_sec(settings)))
+        if remaining <= 0:
+            return
+    print(
+        f"[cooldown] Groq runtime cooldown active. Sleeping {remaining:.1f}s before next request.",
+        file=sys.stderr,
+        flush=True,
+    )
+    time.sleep(remaining)
 
 
 def _increase_runtime_throttle(settings: Settings, delay: float) -> None:

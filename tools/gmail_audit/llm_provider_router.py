@@ -6,6 +6,14 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from llm_deadline import (
+    DEFAULT_LLM_MIN_ATTEMPT_SEC,
+    DeadlineExhausted,
+    current_deadline,
+    provider_budget_scope,
+    provider_budget_sec,
+)
+
 
 ProviderCall = Callable[[], tuple[dict[str, Any], dict[str, Any]]]
 
@@ -33,17 +41,50 @@ class LLMRouterError(RuntimeError):
 
 
 class LLMRouter:
-    """Try providers in order; fallback on transient or provider-local HTTP failures."""
+    """Try providers in order; fallback on transient or provider-local HTTP failures.
 
-    def __init__(self, providers: list[LLMProvider]) -> None:
+    Fallback is only real if it still has time to run. When a stage deadline is active
+    (see ``llm_deadline``) each provider is given an even share of the *remaining* stage
+    budget, so a slow primary cannot silently consume the fallback's turn -- the failure
+    mode Fresh38 measured as 6/38 ``INTAKE_LLM_TIMEOUT``. Unspent time rolls forward, so a
+    fast failure costs the chain nothing and the last provider gets the whole remainder.
+
+    With no deadline active the routing behavior is exactly as before.
+    """
+
+    def __init__(self, providers: list[LLMProvider], *, min_attempt_sec: float = DEFAULT_LLM_MIN_ATTEMPT_SEC) -> None:
         self.providers = providers
+        self.min_attempt_sec = float(min_attempt_sec)
+
+    def _configured_remaining(self, from_index: int) -> int:
+        return sum(1 for p in self.providers[from_index:] if p.configured)
 
     def run(self) -> tuple[dict[str, Any], dict[str, Any]]:
         attempts: list[dict[str, Any]] = []
         first_failure_reason = ""
+        deadline = current_deadline()
 
         for index, provider in enumerate(self.providers):
             started = time.monotonic()
+
+            # Budget check happens before the call, never after: starting an attempt that
+            # cannot finish converts remaining budget into a guaranteed timeout and hides
+            # the real reason the chain stopped.
+            if deadline is not None and provider.configured and not deadline.has_room_for_attempt(self.min_attempt_sec):
+                attempts.append(
+                    _attempt_record(
+                        provider=provider,
+                        status="skipped",
+                        error_class="deadline_exhausted",
+                        retryable=False,
+                        started=started,
+                        deadline=deadline,
+                    )
+                )
+                if index == 0:
+                    first_failure_reason = "stage_deadline_exhausted_before_first_provider"
+                break
+
             if not provider.configured:
                 # An unconfigured provider is never "tried" (no call() invocation — there is
                 # nothing to call), but it must not fake chain-terminal behavior either: its
@@ -61,8 +102,13 @@ class LLMRouter:
                     first_failure_reason = f"{provider.provider}_config_missing_{provider.missing_config}"
                 continue
 
+            share = provider_budget_sec(
+                providers_remaining=self._configured_remaining(index),
+                deadline=deadline,
+            )
             try:
-                response_json, request_meta = provider.call()
+                with provider_budget_scope(provider.provider, share):
+                    response_json, request_meta = provider.call()
             except Exception as exc:
                 info = classify_provider_error(exc)
                 attempt = _attempt_record(
@@ -71,6 +117,8 @@ class LLMRouter:
                     error_class=info.error_class,
                     retryable=info.retryable,
                     started=started,
+                    deadline=deadline,
+                    provider_budget_sec=share,
                 )
                 attempts.append(attempt)
                 if index == 0:
@@ -93,6 +141,8 @@ class LLMRouter:
                 error_class=None,
                 retryable=None,
                 started=started,
+                deadline=deadline,
+                provider_budget_sec=share,
             )
             attempts.append(attempt)
             meta = dict(request_meta or {})
@@ -103,14 +153,25 @@ class LLMRouter:
                     "llm_fallback_used": index > 0,
                     "llm_fallback_reason": first_failure_reason if index > 0 else None,
                     "llm_provider_backend": provider.backend,
+                    "llm_fallback_index": index,
                 }
             )
+            if deadline is not None:
+                meta["llm_stage_deadline"] = deadline.telemetry()
             return response_json, meta
 
-        raise LLMRouterError(
-            _exhausted_chain_message(self.providers, attempts),
-            details=_error_details(attempts=attempts, fallback_used=len(attempts) > 1, fallback_reason=first_failure_reason or None),
+        details = _error_details(
+            attempts=attempts,
+            fallback_used=len(attempts) > 1,
+            fallback_reason=first_failure_reason or None,
         )
+        deadline_terminal = any(a.get("error_class") == "deadline_exhausted" for a in attempts)
+        details["terminal_failure_reason"] = (
+            "stage_deadline_exhausted" if deadline_terminal else "provider_chain_exhausted"
+        )
+        if deadline is not None:
+            details["llm_stage_deadline"] = deadline.telemetry()
+        raise LLMRouterError(_exhausted_chain_message(self.providers, attempts), details=details)
 
 
 def _exhausted_chain_message(providers: list[LLMProvider], attempts: list[dict[str, Any]]) -> str:
@@ -127,7 +188,14 @@ def _exhausted_chain_message(providers: list[LLMProvider], attempts: list[dict[s
     for attempt in attempts:
         provider_name = attempt.get("provider")
         status = attempt.get("status")
-        if status == "skipped":
+        if status == "skipped" and attempt.get("error_class") == "deadline_exhausted":
+            remaining = attempt.get("remaining_budget_ms")
+            budget = attempt.get("configured_stage_budget_ms")
+            parts.append(
+                f"{provider_name} not attempted (stage budget exhausted: "
+                f"{remaining}ms left of {budget}ms)"
+            )
+        elif status == "skipped":
             missing = next(
                 (p.missing_config for p in providers if p.provider == provider_name and not p.configured),
                 "",
@@ -167,6 +235,11 @@ def classify_provider_error(exc: Exception) -> ProviderErrorInfo:
     status_code = details.get("status_code")
     message = str(exc).lower()
 
+    # Budget exhaustion is terminal for the whole chain, never a retryable provider fault:
+    # falling through to the next provider with no time left just relabels the same failure.
+    if isinstance(exc, DeadlineExhausted) or str(details.get("error_class") or "") == "deadline_exhausted":
+        return ProviderErrorInfo("deadline_exhausted", False)
+
     if status_code == 429 or "too many requests" in message or "rate limit" in message:
         return ProviderErrorInfo("rate_limit", True)
     if status_code == 400 and (
@@ -205,8 +278,16 @@ def _attempt_record(
     error_class: str | None,
     retryable: bool | None,
     started: float,
+    deadline: Any = None,
+    provider_budget_sec: float | None = None,
 ) -> dict[str, Any]:
-    return {
+    """One provider's outcome plus the budget state that produced it.
+
+    The budget fields are what make a production timeout diagnosable without
+    reconstructing it from log timestamps: which provider consumed the budget, how much
+    it was given, and how much was left when the chain moved on.
+    """
+    record: dict[str, Any] = {
         "provider": provider.provider,
         "model": provider.model,
         "status": status,
@@ -214,6 +295,12 @@ def _attempt_record(
         "retryable": retryable,
         "latency_ms": int(round((time.monotonic() - started) * 1000)),
     }
+    if provider_budget_sec is not None:
+        record["provider_budget_ms"] = int(round(float(provider_budget_sec) * 1000))
+    if deadline is not None:
+        record["remaining_budget_ms"] = int(round(deadline.remaining_sec() * 1000))
+        record["configured_stage_budget_ms"] = int(round(deadline.budget_sec * 1000))
+    return record
 
 
 def _error_details(
