@@ -1,8 +1,9 @@
 """OpenAI gpt-4o-mini tool planner (PR-C) with OpenRouter fallback.
 
 LLM Resilience features:
-- Hard timeout (45s) per LLM call via ThreadPoolExecutor
-- Provider-level timeout (30s) passed to OpenAI client
+- One owned planner budget (3 x 30s) shared across the endpoint chain, via llm_deadline
+- Per-attempt timeout (30s) handed to the OpenAI-compatible client, clamped by remaining budget
+- SDK-internal retry disabled (max_retries=0); retry/fallback belongs to the visible endpoint loop
 - Retryable vs permanent failure status codes
 - Circuit breaker per provider (3 failures → 30s cooldown)
 - Hallucination detection — no silent write fallback
@@ -12,12 +13,19 @@ from __future__ import annotations
 
 import json
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from llm_deadline import (
+    attempt_timeout_sec,
+    provider_budget_scope,
+    provider_budget_sec,
+    remaining_sec as deadline_remaining_sec,
+    resolve_min_attempt_sec,
+    stage_deadline,
+)
 from agent_runtime.constitution import AgentConstitution
 from agent_runtime.settings import AgentRuntimeSettings, build_agent_planner_endpoints
 from agent_runtime.tool_result import ToolCallPlan
@@ -34,8 +42,19 @@ from agent_runtime.circuit_breaker import get_breaker
 
 logger = get_logger("llm_planner")
 
-LLM_TIMEOUT_SEC = 45          # hard kill: ThreadPoolExecutor timeout
-LLM_CLIENT_TIMEOUT_SEC = 30   # soft timeout: passed to OpenAI client
+LLM_CLIENT_TIMEOUT_SEC = 30   # per-attempt HTTP timeout handed to the OpenAI-compatible client
+
+# Total wall-clock budget for one planner call across its whole endpoint chain, owned here and
+# shared downward (see llm_deadline). Derived, not chosen: three real endpoint attempts at the
+# configured per-attempt timeout, i.e. 3 x LLM_CLIENT_TIMEOUT_SEC.
+#
+# This replaces LLM_TIMEOUT_SEC = 45, which was a ThreadPoolExecutor hard kill. That value was
+# *shorter than the mechanism it wrapped*: the OpenAI SDK defaults to max_retries=2 and applies
+# `timeout` per attempt, so one create() call could legitimately need 3 x 30s plus backoff -- and
+# the 45s kill fired first, making the SDK's own retry unreachable. It also never cancelled
+# anything, so the abandoned request kept running and kept occupying one of only two slots in a
+# shared pool, letting orphaned work block later planner calls at the queue.
+AGENT_PLANNER_BUDGET_SEC = 3 * LLM_CLIENT_TIMEOUT_SEC
 
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 _PERMANENT_FAILURE_STATUS = frozenset({400, 401, 402, 403})
@@ -159,8 +178,6 @@ class OpenAIToolPlanner:
         self._client = client
         self.last_tokens_used: int = 0
         self.last_effective_tools: dict[str, Any] = {}
-        # Shared thread pool for timeout-enforced LLM calls
-        self._executor = ThreadPoolExecutor(max_workers=2)
 
     def plan_next_tool(
         self,
@@ -204,78 +221,105 @@ class OpenAIToolPlanner:
         # Expose last effective availability for telemetry / proofs (no persistence).
         self.last_effective_tools = effective.as_dict()
         last_exc: Exception | None = None
-        for index, endpoint in enumerate(endpoints):
-            provider_name = endpoint.base_url or "openai"
-            breaker = get_breaker(provider_name)
-            if breaker.is_open:
-                logger.warning("CIRCUIT_SKIP_PROVIDER", extra={"x": {"provider": provider_name}})
-                continue
-            client = self._client if self._client is not None else self._build_client(
-                base_url=endpoint.base_url,
-                api_key=endpoint.api_key,
-            )
-            try:
-                logger.info("LLM_CALL_START", extra={"x": {
-                    "provider": provider_name,
-                    "model": endpoint.model,
-                    "attempt": index + 1,
-                    "total_endpoints": len(endpoints),
-                }})
-                response = _call_llm_with_timeout(
-                    client=client,
-                    model=endpoint.model,
-                    messages=messages,
-                    tools=tools,
-                    executor=self._executor,
-                    provider_name=provider_name,
-                    reasoning_effort=endpoint.reasoning_effort,
-                    thinking_enabled=endpoint.thinking_enabled,
-                )
-                self.last_tokens_used = _extract_token_usage(response)
-                logger.info("LLM_CALL_COMPLETED", extra={"x": {
-                    "provider": provider_name,
-                    "model": endpoint.model,
-                    "tokens_used": self.last_tokens_used,
-                    "attempt": index + 1,
-                }})
-                breaker.record_success()
-                return self._parse_tool_call(response)
-            except Exception as exc:  # noqa: BLE001
-                last_exc = exc
-                breaker.record_failure()
-                is_hallucinated = "tool call validation failed" in str(exc).lower()
-
-                # Detect rate limit or timeout for backoff
-                is_rate_limit = isinstance(exc, LLMRateLimitError) or _is_rate_limit_error(exc)
-                is_timeout = isinstance(exc, LLMTimeoutError) or "timeout" in str(exc).lower()
-
-                logger.warning("LLM_FALLBACK", extra={"x": {
-                    "from_provider": provider_name,
-                    "model": endpoint.model,
-                    "reason": str(exc)[:200],
-                    "attempt": index + 1,
-                    "is_hallucination": is_hallucinated,
-                    "is_rate_limit": is_rate_limit,
-                }})
-                if is_hallucinated:
-                    raise  # re-raise immediately — never fallback a hallucination
-                # DeepSeek priority-1 (DEEPSEEK-MIGRATION-1): a DeepSeek-side failure — retryable
-                # or not — must not abort the whole planner call when the pre-existing chain
-                # (Cerebras/NVIDIA/Groq/OpenRouter/...) behind it can still be tried. Every other
-                # position keeps the prior "non-retryable aborts the chain" semantics unchanged.
-                is_deepseek_fallback_allowed = endpoint.label.startswith("deepseek") and _deepseek_should_fallback(exc)
-                if not _is_retryable(exc) and not is_deepseek_fallback_allowed:
-                    raise OpenAIAgentPlannerError(str(exc)) from exc
-
-                # Exponential backoff before next provider (rate limit / timeout)
-                if is_rate_limit or is_timeout:
-                    wait_sec = 2 ** index
-                    logger.info("LLM_BACKOFF", extra={"x": {
+        # One owned budget for the whole planner call, shared with the endpoint chain below.
+        with stage_deadline("agent_planner", AGENT_PLANNER_BUDGET_SEC) as deadline:
+            for index, endpoint in enumerate(endpoints):
+                provider_name = endpoint.base_url or "openai"
+                breaker = get_breaker(provider_name)
+                if breaker.is_open:
+                    logger.warning("CIRCUIT_SKIP_PROVIDER", extra={"x": {"provider": provider_name}})
+                    continue
+                # Never start an endpoint attempt the budget cannot let finish: it would only
+                # manufacture a timeout and hide why the chain actually stopped.
+                if not deadline.has_room_for_attempt():
+                    logger.warning("PLANNER_BUDGET_EXHAUSTED", extra={"x": {
                         "provider": provider_name,
-                        "wait_sec": wait_sec,
+                        "attempt": index + 1,
+                        "terminal_failure_reason": "planner_deadline_exhausted",
+                        **deadline.telemetry(),
+                    }})
+                    break
+                client = self._client if self._client is not None else self._build_client(
+                    base_url=endpoint.base_url,
+                    api_key=endpoint.api_key,
+                )
+                endpoint_budget = provider_budget_sec(
+                    providers_remaining=len(endpoints) - index,
+                    deadline=deadline,
+                )
+                try:
+                    logger.info("LLM_CALL_START", extra={"x": {
+                        "provider": provider_name,
+                        "model": endpoint.model,
+                        "attempt": index + 1,
+                        "total_endpoints": len(endpoints),
+                        "endpoint_budget_ms": (
+                            None if endpoint_budget is None else int(round(endpoint_budget * 1000))
+                        ),
+                    }})
+                    # Each endpoint gets an even share of what is left, so a slow endpoint
+                    # cannot consume the turn reserved for the ones not yet tried.
+                    with provider_budget_scope(provider_name, endpoint_budget):
+                        response = _call_llm_with_timeout(
+                            client=client,
+                            model=endpoint.model,
+                            messages=messages,
+                            tools=tools,
+                            provider_name=provider_name,
+                            reasoning_effort=endpoint.reasoning_effort,
+                            thinking_enabled=endpoint.thinking_enabled,
+                        )
+                    self.last_tokens_used = _extract_token_usage(response)
+                    logger.info("LLM_CALL_COMPLETED", extra={"x": {
+                        "provider": provider_name,
+                        "model": endpoint.model,
+                        "tokens_used": self.last_tokens_used,
                         "attempt": index + 1,
                     }})
-                    time.sleep(wait_sec)
+                    breaker.record_success()
+                    return self._parse_tool_call(response)
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+                    breaker.record_failure()
+                    is_hallucinated = "tool call validation failed" in str(exc).lower()
+
+                    # Detect rate limit or timeout for backoff
+                    is_rate_limit = isinstance(exc, LLMRateLimitError) or _is_rate_limit_error(exc)
+                    is_timeout = isinstance(exc, LLMTimeoutError) or "timeout" in str(exc).lower()
+
+                    logger.warning("LLM_FALLBACK", extra={"x": {
+                        "from_provider": provider_name,
+                        "model": endpoint.model,
+                        "reason": str(exc)[:200],
+                        "attempt": index + 1,
+                        "is_hallucination": is_hallucinated,
+                        "is_rate_limit": is_rate_limit,
+                    }})
+                    if is_hallucinated:
+                        raise  # re-raise immediately — never fallback a hallucination
+                    # DeepSeek priority-1 (DEEPSEEK-MIGRATION-1): a DeepSeek-side failure — retryable
+                    # or not — must not abort the whole planner call when the pre-existing chain
+                    # (Cerebras/NVIDIA/Groq/OpenRouter/...) behind it can still be tried. Every other
+                    # position keeps the prior "non-retryable aborts the chain" semantics unchanged.
+                    is_deepseek_fallback_allowed = endpoint.label.startswith("deepseek") and _deepseek_should_fallback(exc)
+                    if not _is_retryable(exc) and not is_deepseek_fallback_allowed:
+                        raise OpenAIAgentPlannerError(str(exc)) from exc
+
+                    # Exponential backoff before next provider (rate limit / timeout).
+                    # Clamped by the budget: sleeping past the point where the next endpoint
+                    # could still run turns "we will fall back" into "we will time out waiting".
+                    if is_rate_limit or is_timeout:
+                        wait_sec: float = 2 ** index
+                        remaining = deadline_remaining_sec()
+                        if remaining is not None:
+                            wait_sec = max(0.0, min(wait_sec, remaining - resolve_min_attempt_sec(None)))
+                        logger.info("LLM_BACKOFF", extra={"x": {
+                            "provider": provider_name,
+                            "wait_sec": wait_sec,
+                            "attempt": index + 1,
+                        }})
+                        if wait_sec > 0:
+                            time.sleep(wait_sec)
         # All endpoints exhausted via hallucination → raise, never write-fallback
         if last_exc and "tool call validation failed" in str(last_exc).lower():
             raw_tool_name = str(getattr(last_exc, "tool_name", "") or "unknown")
@@ -297,6 +341,11 @@ class OpenAIToolPlanner:
         return OpenAI(
             api_key=api_key or self._settings.openai_api_key,
             base_url=base_url or self._settings.openai_base_url,
+            # The SDK's own retry loop is a second, invisible retry layer whose worst case
+            # (max_retries=2 -> 3 attempts, timeout applied per attempt, plus backoff) used to
+            # exceed the wrapper meant to bound it. Retry and fallback belong to the endpoint
+            # loop above, which is budgeted, logged and observable.
+            max_retries=0,
         )
 
     def _build_messages(
@@ -452,23 +501,42 @@ def _call_llm_with_timeout(
     model: str,
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
-    executor: ThreadPoolExecutor,
     provider_name: str,
     reasoning_effort: str = "",
     thinking_enabled: bool = False,
 ) -> Any:
-    """Execute client.chat.completions.create with a hard timeout.
+    """Execute one bounded endpoint attempt, inside the planner's budget.
+
+    Two deliberate properties:
+
+    * **No wrapper thread.** The call runs on the caller's thread and is bounded by the HTTP
+      timeout it hands the client, so nothing can be abandoned mid-flight. The previous
+      ``ThreadPoolExecutor`` + ``future.result(timeout=45)`` never cancelled anything; the
+      request kept running and kept holding one of two shared worker slots.
+    * **``max_retries=0``.** The SDK's own retry loop is an *invisible* second retry layer whose
+      worst case (3 attempts x per-attempt timeout + backoff) exceeded the wrapper that was
+      supposed to bound it. Retry and fallback belong to the endpoint loop in
+      ``plan_next_tool``, which is visible, budgeted and logged; the SDK does exactly one
+      attempt per endpoint.
 
     ``extra_body`` carries DeepSeek's thinking-mode toggle/effort as raw top-level request
     fields — the openai SDK merges it into the JSON body regardless of whether the pinned SDK
     version recognizes ``reasoning_effort`` as a named parameter, so it's never passed as a
     direct kwarg (would risk a TypeError on stricter SDK versions).
     """
+    attempt_timeout = attempt_timeout_sec(LLM_CLIENT_TIMEOUT_SEC)
+    if attempt_timeout <= 0:
+        raise LLMTimeoutError(
+            "Planner budget exhausted before the endpoint attempt could start",
+            context={"provider": provider_name, "model": model},
+        )
+    bounded_client = _bounded_client(client, attempt_timeout)
+
     create_kwargs: dict[str, Any] = dict(
         model=model,
         messages=messages,
         tools=tools,
-        timeout=LLM_CLIENT_TIMEOUT_SEC,
+        timeout=attempt_timeout,
     )
     if thinking_enabled:
         create_kwargs["extra_body"] = {
@@ -478,17 +546,41 @@ def _call_llm_with_timeout(
     else:
         create_kwargs["tool_choice"] = "auto"
         create_kwargs["temperature"] = 0.2
-    future = executor.submit(
-        client.chat.completions.create,
-        **create_kwargs,
-    )
     try:
-        return future.result(timeout=LLM_TIMEOUT_SEC)
-    except TimeoutError:
-        raise LLMTimeoutError(
-            f"LLM call timed out after {LLM_TIMEOUT_SEC}s",
-            context={"provider": provider_name, "model": model},
-        ) from None
+        return bounded_client.chat.completions.create(**create_kwargs)
+    except Exception as exc:
+        if _is_timeout_error(exc):
+            raise LLMTimeoutError(
+                f"LLM endpoint attempt timed out after {attempt_timeout:.1f}s "
+                f"(configured per-attempt {LLM_CLIENT_TIMEOUT_SEC}s)",
+                context={"provider": provider_name, "model": model},
+            ) from exc
+        raise
+
+
+def _bounded_client(client: Any, attempt_timeout: float) -> Any:
+    """Re-option a real SDK client so one attempt means one HTTP request.
+
+    Only genuine ``openai`` clients are re-optioned. Injected doubles are returned untouched:
+    a ``MagicMock`` would happily auto-create ``with_options()`` and hand back a *different*
+    mock, silently detaching the call from whatever the caller configured.
+    """
+    with_options = getattr(client, "with_options", None)
+    if not callable(with_options):
+        return client
+    if not type(client).__module__.startswith("openai"):
+        return client
+    return with_options(max_retries=0, timeout=attempt_timeout)
+
+
+def _is_timeout_error(exc: Exception) -> bool:
+    """Recognize a transport timeout from the SDK or from httpx underneath it."""
+    if isinstance(exc, TimeoutError):
+        return True
+    name = type(exc).__name__.lower()
+    if "timeout" in name:
+        return True
+    return "timed out" in str(exc).lower() or "timeout" in str(exc).lower()
 
 
 def _is_retryable(exc: Exception) -> bool:

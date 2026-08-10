@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import concurrent.futures
 import hashlib
 import json
 import threading
@@ -33,6 +32,7 @@ from groq_client import (
 )
 from llm_client import TopInstalLLMClient, TopInstalLLMError
 from llm_deadline import (
+    attempt_timeout_sec,
     remaining_sec as deadline_remaining_sec,
     resolve_min_attempt_sec,
     resolve_stage_budget_sec,
@@ -45,7 +45,10 @@ TModel = TypeVar("TModel", bound=BaseModel)
 logger = get_logger("central_llm_stage")
 
 # ── LLM Resilience constants ──────────────────────────────────────────
-LLM_HARD_TIMEOUT_SEC = 60      # hard kill: ThreadPoolExecutor timeout
+# Retained for backward compatibility with callers/tests that import it. It is no longer a
+# timeout anyone enforces: the Anthropic path's per-attempt bound now comes from the client's
+# own HTTP timeout, derived from the stage budget (see _call_anthropic_raw_text).
+LLM_HARD_TIMEOUT_SEC = 60
 LLM_CLIENT_TIMEOUT_SEC = 30    # soft timeout: passed to LLM client
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 2         # exponential: 2^attempt seconds
@@ -161,29 +164,48 @@ def _call_with_retry(
     *,
     stage_name: str,
     max_retries: int = MAX_RETRIES,
-    hard_timeout: int = LLM_HARD_TIMEOUT_SEC,
     model: str = "",
     provider: str = "",  # Faza 2a: nazwa providera dla semafora rate limiting
 ) -> Any:
-    """Execute an LLM callable with timeout + exponential backoff retry + provider rate limiting.
+    """Execute an LLM callable with exponential backoff retry + provider rate limiting.
 
-    Same-class hardening as the router path: when a stage deadline is active, this wrapper's
-    own hard timeout is clamped to the budget that is actually left and retries stop once the
-    budget can no longer fund a real attempt. Without that clamp this is a second, independent
-    timeout system nested inside the stage's -- exactly the collision FIX-RT01 removes.
+    This is the single visible retry layer for the Anthropic path. It owns *when* to retry;
+    it does not own a per-attempt bound, because it cannot enforce one -- ``fn`` is a blocking
+    HTTP call and only the callee's own timeout can stop it. ``fn`` is therefore responsible
+    for deriving its per-attempt timeout from the stage budget (see ``_call_anthropic_raw_text``),
+    and this loop stops retrying once the budget can no longer fund a real attempt.
+
+    It used to wrap ``fn`` in ``ThreadPoolExecutor`` with a ``hard_timeout``. That bounded
+    nothing: ``future.cancel()`` cannot stop an in-flight request, and ``Executor.__exit__``
+    calls ``shutdown(wait=True)``, so the block waited for the abandoned work regardless. The
+    parameter is gone rather than left as a comforting no-op.
     """
     last_exc: Exception | None = None
     min_attempt = resolve_min_attempt_sec(None)
     for attempt in range(max_retries + 1):
         remaining = deadline_remaining_sec()
-        if remaining is not None:
-            if remaining < min_attempt:
-                logger.warning("LLM_RETRY_BUDGET_EXHAUSTED", extra={"x": {
-                    "stage": stage_name, "model": model, "attempt": attempt + 1,
+        if remaining is not None and remaining < min_attempt:
+            logger.warning("LLM_RETRY_BUDGET_EXHAUSTED", extra={"x": {
+                "stage": stage_name, "model": model, "attempt": attempt + 1,
+                "terminal_failure_reason": "stage_deadline_exhausted",
+                "remaining_budget_ms": int(round(remaining * 1000)),
+                "min_attempt_ms": int(round(min_attempt * 1000)),
+            }})
+            # Exhausting the budget before any attempt ran leaves no provider error to report.
+            # Falling through to the generic "unknown reason" would erase the one fact that
+            # actually explains the failure, so name it here.
+            last_exc = last_exc or LLMTimeoutError(
+                f"Stage budget exhausted before attempt {attempt + 1} on {stage_name} "
+                f"({remaining:.2f}s remaining, {min_attempt:.2f}s needed)",
+                context={
+                    "stage": stage_name,
+                    "model": model,
+                    "attempt": attempt + 1,
+                    "terminal_failure_reason": "stage_deadline_exhausted",
                     "remaining_budget_ms": int(round(remaining * 1000)),
-                }})
-                break
-            hard_timeout = int(max(1, min(hard_timeout, remaining)))
+                },
+            )
+            break
         # Faza 2a: semafor per-provider — ogranicza równoczesne calle do tego samego API
         sem = _get_provider_semaphore(provider) if provider else None
         if sem is not None and not sem.acquire(blocking=False):
@@ -199,38 +221,32 @@ def _call_with_retry(
                 time.sleep(wait_sec)
             continue
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(fn)
-                try:
-                    result = future.result(timeout=hard_timeout)
-                    if attempt > 0:
-                        logger.info("LLM_RETRY_SUCCESS", extra={"x": {
-                            "stage": stage_name, "model": model, "attempt": attempt + 1,
-                        }})
-                    return result
-                except concurrent.futures.TimeoutError:
-                    future.cancel()
-                    last_exc = LLMTimeoutError(
-                        f"LLM call timed out after {hard_timeout}s",
-                        context={"stage": stage_name, "model": model, "attempt": attempt + 1},
-                    )
-                    logger.warning("LLM_TIMEOUT", extra={"x": {
-                        "stage": stage_name, "model": model, "attempt": attempt + 1, "max_retries": max_retries,
-                    }})
-                except (LLMRateLimitError, LLMTimeoutError) as exc:
-                    last_exc = exc
-                    logger.warning("LLM_RETRYABLE_ERROR", extra={"x": {
-                        "stage": stage_name, "model": model, "attempt": attempt + 1,
-                        "error_type": type(exc).__name__, "error": str(exc)[:200],
-                    }})
-                except LLMError as exc:
-                    raise  # non-retryable LLM error — propagate immediately
-                except Exception as exc:
-                    last_exc = exc
-                    logger.warning("LLM_UNEXPECTED_RETRY", extra={"x": {
-                        "stage": stage_name, "model": model, "attempt": attempt + 1,
-                        "error_type": type(exc).__name__, "error": str(exc)[:200],
-                    }})
+            # Called directly, on this thread. The previous
+            # `with ThreadPoolExecutor(...) as executor: future.result(timeout=hard_timeout)`
+            # bounded nothing: `future.cancel()` cannot stop a request already in flight, and
+            # `Executor.__exit__` calls `shutdown(wait=True)`, so the block waited for the
+            # abandoned work anyway. It only relabelled the error and burned a thread. The real
+            # per-attempt bound is the callee's own HTTP timeout, derived from the stage budget.
+            result = fn()
+            if attempt > 0:
+                logger.info("LLM_RETRY_SUCCESS", extra={"x": {
+                    "stage": stage_name, "model": model, "attempt": attempt + 1,
+                }})
+            return result
+        except (LLMRateLimitError, LLMTimeoutError) as exc:
+            last_exc = exc
+            logger.warning("LLM_RETRYABLE_ERROR", extra={"x": {
+                "stage": stage_name, "model": model, "attempt": attempt + 1,
+                "error_type": type(exc).__name__, "error": str(exc)[:200],
+            }})
+        except LLMError:
+            raise  # non-retryable LLM error — propagate immediately
+        except Exception as exc:
+            last_exc = exc
+            logger.warning("LLM_UNEXPECTED_RETRY", extra={"x": {
+                "stage": stage_name, "model": model, "attempt": attempt + 1,
+                "error_type": type(exc).__name__, "error": str(exc)[:200],
+            }})
         finally:
             if sem is not None:
                 sem.release()
@@ -344,12 +360,25 @@ def merge_system_prompt(assembled: AssembledContext, task_instructions: str) -> 
     return system
 
 
-def _anthropic_client(settings: Settings, *, temperature: float = 0) -> TopInstalLLMClient:
+def _anthropic_client(
+    settings: Settings,
+    *,
+    temperature: float = 0,
+    timeout_sec: float | None = None,
+    max_retries: int = 1,
+) -> TopInstalLLMClient:
+    """Build the Anthropic client for exactly one bounded attempt by default.
+
+    ``max_retries=1`` is deliberate: ``_call_with_retry`` above owns the retry loop, and the
+    client used to run its own on top (``min(3, http_max_retries)``), so a single logical call
+    could expand to 4 x 3 HTTP attempts with nothing observing the multiplication. One visible
+    retry layer is the same rule the router path follows.
+    """
     return TopInstalLLMClient(
         api_key=str(settings.anthropic_api_key),
         model=str(settings.anthropic_model),
-        timeout_sec=float(settings.http_timeout),
-        max_retries=min(3, int(settings.http_max_retries)),
+        timeout_sec=float(settings.http_timeout if timeout_sec is None else timeout_sec),
+        max_retries=max(1, int(max_retries)),
         temperature=temperature,
     )
 
@@ -448,7 +477,15 @@ def _call_anthropic_raw_text(
     model: str | None,
     temperature: float,
 ) -> str:
-    client = _anthropic_client(settings, temperature=temperature)
+    # The real bound for this attempt is the client's own HTTP timeout, clamped by whatever
+    # the stage budget has left -- there is no wrapper thread that could enforce one.
+    attempt_timeout = attempt_timeout_sec(float(settings.http_timeout))
+    if attempt_timeout <= 0:
+        raise LLMTimeoutError(
+            "Stage budget exhausted before the Anthropic attempt could start",
+            context={"stage": "anthropic", "model": str(model or settings.anthropic_model)},
+        )
+    client = _anthropic_client(settings, temperature=temperature, timeout_sec=attempt_timeout)
     payload = client.complete_json(
         system=system,
         user=user_json,
@@ -765,7 +802,6 @@ def _run_central_structured_stage_bounded(
                     ),
                     stage_name=stage_name,
                     max_retries=max_retries,
-                    hard_timeout=client_timeout + 30,
                     model=str(model or settings.anthropic_model),
                     provider="anthropic",  # Faza 2a: rate limiting per provider
                 )

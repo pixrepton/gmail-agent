@@ -773,7 +773,22 @@ def test_cerebras_transient_uses_nvidia_fallback(monkeypatch: pytest.MonkeyPatch
     ]
 
 
-def test_groq_invalid_api_key_does_not_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_groq_invalid_api_key_is_not_retried_but_does_not_disqualify_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rejected credential disqualifies itself, not the chain behind it.
+
+    This previously asserted that a 401 stopped the chain outright. Live provider triage
+    (CL-05) showed why that is harmful: one of four configured Groq keys answers 401 while the
+    other three answer 200, and `_rotate_groq_key_pool` moves the starting slot on every call --
+    so a chain-terminal auth error aborted roughly one call in four without ever reaching a
+    healthy key.
+
+    The intent behind the old assertion is kept: the rejected credential is never retried, and
+    the terminal error still names it, so a bad key stays operator-visible instead of being
+    silently absorbed. What changed is that a *different* credential or provider still gets its
+    turn.
+    """
     settings = _settings(LLM_STRUCTURED_PROVIDER_ALTERNATION="0")
     calls: list[str] = []
 
@@ -786,9 +801,16 @@ def test_groq_invalid_api_key_does_not_fallback(monkeypatch: pytest.MonkeyPatch)
     with pytest.raises(GroqClientError) as exc:
         _call(settings)
 
-    assert len(calls) == 1
-    assert "GROQ_API_KEY was rejected" in str(exc.value)
-    assert exc.value.details["llm_provider_attempts"][0]["retryable"] is False
+    attempts = exc.value.details["llm_provider_attempts"]
+    groq_attempts = [a for a in attempts if a["provider"] == "groq"]
+    assert len(groq_attempts) == 1, "the rejected credential must not be retried"
+    assert groq_attempts[0]["retryable"] is False
+    assert groq_attempts[0]["error_class"] == "auth"
+    # The chain moved on rather than aborting on the first rejected credential.
+    assert len(attempts) > 1, "remaining providers must still get a turn"
+    # Operator visibility now lives in the attempt record rather than in whichever provider
+    # happened to fail last, so a bad key is still attributable after the chain continues.
+    assert any(a["provider"] == "groq" and a["error_class"] == "auth" for a in attempts)
 
 
 def test_missing_cerebras_key_reports_fallback_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:

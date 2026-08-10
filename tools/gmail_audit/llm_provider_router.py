@@ -30,8 +30,24 @@ class LLMProvider:
 
 @dataclass(slots=True)
 class ProviderErrorInfo:
+    """How a provider failure should be handled.
+
+    ``retryable`` and "should the chain stop" are not the same question, and conflating them
+    caused a proven outage class. A rejected credential is emphatically *not* worth retrying
+    against the same credential -- but it says nothing about the next entry, which in a
+    multi-key pool is a different credential entirely.
+
+    ``chain_terminal=None`` keeps the historical behavior (``not retryable`` stops the chain)
+    for every class that has not made a deliberate choice.
+    """
+
     error_class: str
     retryable: bool
+    chain_terminal: bool | None = None
+
+    @property
+    def stops_chain(self) -> bool:
+        return (not self.retryable) if self.chain_terminal is None else self.chain_terminal
 
 
 class LLMRouterError(RuntimeError):
@@ -123,7 +139,7 @@ class LLMRouter:
                 attempts.append(attempt)
                 if index == 0:
                     first_failure_reason = f"{provider.provider}_{info.error_class}"
-                if not info.retryable or index + 1 >= len(self.providers):
+                if info.stops_chain or index + 1 >= len(self.providers):
                     details = dict(getattr(exc, "details", {}) or {})
                     details.update(
                         _error_details(
@@ -274,7 +290,12 @@ def classify_provider_error(exc: Exception) -> ProviderErrorInfo:
     if "failed to connect" in message or "network" in message or "connection" in message:
         return ProviderErrorInfo("network", True)
     if status_code in {401, 403} or "invalid api key" in message or "unauthorized" in message or "forbidden" in message:
-        return ProviderErrorInfo("auth", False)
+        # Never retried against the same credential -- that would be pure waste -- but it must
+        # not disqualify the entries behind it. Live triage found one of four Groq keys rejected
+        # with 401 while the other three answered 200, and `_rotate_groq_key_pool` moves the
+        # starting slot every call, so a chain-terminal auth error meant roughly one call in four
+        # aborted without ever trying a healthy key.
+        return ProviderErrorInfo("auth", False, chain_terminal=False)
     if "missing" in message and ("api_key" in message or "base_url" in message or "configured" in message):
         return ProviderErrorInfo("config", False)
     # Empty provider text is a transient/delivery failure, never a domain CAPABILITY result.
