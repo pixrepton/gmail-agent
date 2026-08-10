@@ -132,6 +132,19 @@ class LLMRouter:
                             fallback_reason=first_failure_reason if index > 0 else None,
                         )
                     )
+                    # Both terminal paths out of this router must describe themselves the same
+                    # way. Callers key on terminal_failure_reason to tell a budget timeout from
+                    # a provider fault -- gmail_intake returns a structured "central_llm_failed"
+                    # for the former and re-raises the latter -- so leaving it unset here would
+                    # make a budget exhausted *inside* the last provider's retry loop
+                    # indistinguishable from an ordinary provider error.
+                    details["terminal_failure_reason"] = (
+                        "stage_deadline_exhausted"
+                        if info.error_class == "deadline_exhausted"
+                        else "provider_chain_failed"
+                    )
+                    if deadline is not None:
+                        details["llm_stage_deadline"] = deadline.telemetry()
                     raise LLMRouterError(str(exc), details=details) from exc
                 continue
 

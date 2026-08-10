@@ -334,6 +334,39 @@ def test_case_e_no_provider_is_called_once_the_budget_is_gone():
     assert called == [], "starting an attempt with no budget only manufactures a timeout"
 
 
+def test_case_e_budget_exhausted_inside_the_last_provider_is_still_a_deadline_terminal():
+    """Both terminal paths out of the router must label themselves the same way.
+
+    The router can raise from two places: the pre-call budget check, and inside the loop when
+    the last provider fails. `gmail_intake._run_llm_with_timeout` keys on
+    `terminal_failure_reason` to decide between a structured `central_llm_failed` and
+    re-raising, so a budget exhausted inside the last provider must not look like an ordinary
+    provider fault.
+    """
+    def _exhausted() -> tuple[dict, dict]:
+        raise DeadlineExhausted("budget gone", details={"error_class": "deadline_exhausted"})
+
+    with stage_deadline("intake_reasoning", 30):
+        with pytest.raises(LLMRouterError) as caught:
+            LLMRouter([_provider("openai_chat", _exhausted)]).run()
+
+    details = caught.value.details
+    assert details["terminal_failure_reason"] == "stage_deadline_exhausted"
+    assert details["llm_stage_deadline"]["stage"] == "intake_reasoning"
+
+
+def test_case_d_ordinary_provider_exhaustion_is_labelled_as_such():
+    """The counterpart: a real provider fault must not masquerade as a budget timeout."""
+    def _fails() -> tuple[dict, dict]:
+        raise _ProviderError("401 Unauthorized", details={"status_code": 401})
+
+    with stage_deadline("intake_reasoning", 30):
+        with pytest.raises(LLMRouterError) as caught:
+            LLMRouter([_provider("openai_chat", _fails)]).run()
+
+    assert caught.value.details["terminal_failure_reason"] == "provider_chain_failed"
+
+
 def test_case_e_deadline_exhaustion_is_terminal_not_retryable():
     info = classify_provider_error(DeadlineExhausted("budget gone", details={"error_class": "deadline_exhausted"}))
     assert info.error_class == "deadline_exhausted"
