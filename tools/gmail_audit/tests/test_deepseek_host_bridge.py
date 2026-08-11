@@ -32,12 +32,17 @@ from config import (  # noqa: E402
     DEEPSEEK_HOST_NVIDIA,
     DEEPSEEK_HOSTS,
     DEFAULT_DEEPSEEK_HOST,
-    DEFAULT_DEEPSEEK_NVIDIA_MODEL,
 )
 from groq_client import _deepseek_providers, resolve_deepseek_host, deepseek_configured  # noqa: E402
 
 
-def _settings(host: str, *, nvidia_key: str = "", direct_key: str = "direct-key") -> SimpleNamespace:
+# The bridge has no default model, so tests must state one explicitly -- exactly as an
+# operator must. This stands in for the intended DeepSeek V4 Flash NIM id.
+EXPLICIT_BRIDGE_MODEL = "deepseek-ai/deepseek-v4-flash"
+
+
+def _settings(host: str, *, nvidia_key: str = "", direct_key: str = "direct-key",
+              nvidia_model: str = EXPLICIT_BRIDGE_MODEL) -> SimpleNamespace:
     return SimpleNamespace(
         deepseek_host=host,
         deepseek_base_url="https://api.deepseek.com/v1",
@@ -45,7 +50,7 @@ def _settings(host: str, *, nvidia_key: str = "", direct_key: str = "direct-key"
         deepseek_api_key=direct_key,
         deepseek_api_keys=(direct_key,) if direct_key else (),
         deepseek_nvidia_base_url="https://integrate.api.nvidia.com/v1",
-        deepseek_nvidia_model=DEFAULT_DEEPSEEK_NVIDIA_MODEL,
+        deepseek_nvidia_model=nvidia_model,
         deepseek_nvidia_api_key=nvidia_key,
         deepseek_nvidia_api_keys=(nvidia_key,) if nvidia_key else (),
         deepseek_thinking_enabled=False,
@@ -86,17 +91,82 @@ def test_switching_host_changes_only_endpoint_credential_and_model():
     assert direct.role != bridge.role
 
 
-# ── the bridge must not borrow the generic nvidia router slot's model ────────────────
+# ── the bridge model must be explicit: fail closed, never guessed ────────────────────
 
 
-def test_bridge_model_does_not_default_to_the_generic_nvidia_model(monkeypatch):
-    """NVIDIA_MODEL feeds the separate `nvidia` router slot; reusing it would change the model."""
+def test_bridge_has_no_default_model():
+    """The bridge changes the HOST; changing the model too would confound any comparison.
+
+    An earlier revision defaulted to `deepseek-ai/deepseek-r1`, which would have changed provider
+    *and* model simultaneously — so a bridge result could not be compared with a canonical one,
+    and nobody could tell which of the two changes explained a difference.
+    """
+    import dataclasses
+
+    import config
+
+    assert not hasattr(config, "DEFAULT_DEEPSEEK_NVIDIA_MODEL")
+    field = next(f for f in dataclasses.fields(config.Settings) if f.name == "deepseek_nvidia_model")
+    assert field.default == "", "the bridge must not ship a default model"
+
+
+def test_missing_bridge_model_makes_the_host_unconfigured():
+    host = resolve_deepseek_host(_settings(DEEPSEEK_HOST_NVIDIA, nvidia_key="nv", nvidia_model=""))
+    assert host.configured is False
+    assert "DEEPSEEK_NVIDIA_MODEL" in host.missing_config
+
+
+def test_missing_model_and_key_are_both_named():
+    """One pass, not a discovery sequence."""
+    host = resolve_deepseek_host(_settings(DEEPSEEK_HOST_NVIDIA, nvidia_key="", nvidia_model=""))
+    assert "DEEPSEEK_NVIDIA_API_KEY" in host.missing_config
+    assert "DEEPSEEK_NVIDIA_MODEL" in host.missing_config
+
+
+def test_selecting_the_bridge_without_a_model_is_a_config_error(monkeypatch):
+    from config import ConfigError, load_settings
+
+    monkeypatch.setenv("AI_OS_PRIMARY_PROVIDER", "deepseek_nvidia")
+    monkeypatch.delenv("DEEPSEEK_NVIDIA_MODEL", raising=False)
+    with pytest.raises(ConfigError) as caught:
+        load_settings(require_groq=False, require_google=False)
+    assert "DEEPSEEK_NVIDIA_MODEL" in str(caught.value)
+
+
+def test_canonical_mode_is_unaffected_by_an_unset_bridge_model(monkeypatch):
+    """A deployment running canonically must not break on a bridge variable it never uses."""
+    from config import load_settings
+
+    monkeypatch.delenv("AI_OS_PRIMARY_PROVIDER", raising=False)
+    monkeypatch.delenv("DEEPSEEK_NVIDIA_MODEL", raising=False)
+    settings = load_settings(require_groq=False, require_google=False)
+    assert settings.deepseek_host == DEEPSEEK_HOST_DIRECT
+    assert resolve_deepseek_host(settings).model  # canonical model still resolves
+
+
+def test_bridge_never_borrows_the_generic_nvidia_model(monkeypatch):
+    """NVIDIA_MODEL feeds the separate `nvidia` router slot and is not a DeepSeek model."""
+    from config import load_settings
+
+    monkeypatch.setenv("AI_OS_PRIMARY_PROVIDER", "deepseek_nvidia")
     monkeypatch.setenv("NVIDIA_MODEL", "gpt-oss-120b")
-    settings = _settings(DEEPSEEK_HOST_NVIDIA, nvidia_key="nv")
+    monkeypatch.setenv("DEEPSEEK_NVIDIA_MODEL", EXPLICIT_BRIDGE_MODEL)
+    settings = load_settings(require_groq=False, require_google=False)
     host = resolve_deepseek_host(settings)
-    assert host.model == DEFAULT_DEEPSEEK_NVIDIA_MODEL
-    assert "deepseek" in host.model.lower(), "the bridge must still host a DeepSeek model"
+    assert host.model == EXPLICIT_BRIDGE_MODEL
     assert host.model != "gpt-oss-120b"
+
+
+def test_bridge_never_substitutes_the_canonical_model():
+    """Sending `deepseek-v4-flash` to NVIDIA NIM would be wrong *and* invisible."""
+    providers = _deepseek_providers(
+        _settings(DEEPSEEK_HOST_NVIDIA, nvidia_key="nv", nvidia_model=""),
+        instructions="x", user_payload="{}", json_schema={}, schema_name="s",
+        model=None, mode="default", temperature=0,
+    )
+    assert len(providers) == 1
+    assert providers[0].configured is False
+    assert providers[0].model != "deepseek-v4-flash", "must not fall back to the canonical model id"
 
 
 # ── configuration is the only way to switch ──────────────────────────────────────────
@@ -135,9 +205,11 @@ def test_env_switch_selects_the_bridge(monkeypatch):
     from config import load_settings
 
     monkeypatch.setenv("AI_OS_PRIMARY_PROVIDER", "deepseek_nvidia")
+    monkeypatch.setenv("DEEPSEEK_NVIDIA_MODEL", EXPLICIT_BRIDGE_MODEL)
     settings = load_settings(require_groq=False, require_google=False)
     assert settings.deepseek_host == DEEPSEEK_HOST_NVIDIA
     assert resolve_deepseek_host(settings).role == "TEMPORARY_BRIDGE"
+    assert resolve_deepseek_host(settings).model == EXPLICIT_BRIDGE_MODEL
 
 
 def test_host_selection_is_independent_of_llm_backend(monkeypatch):
@@ -147,6 +219,7 @@ def test_host_selection_is_independent_of_llm_backend(monkeypatch):
     for backend in ("openai_chat", "groq"):
         monkeypatch.setenv("LLM_BACKEND", backend)
         monkeypatch.setenv("AI_OS_PRIMARY_PROVIDER", "deepseek_nvidia")
+        monkeypatch.setenv("DEEPSEEK_NVIDIA_MODEL", EXPLICIT_BRIDGE_MODEL)
         settings = load_settings(require_groq=False, require_google=False)
         host = resolve_deepseek_host(settings)
         assert host.host == DEEPSEEK_HOST_NVIDIA, f"backend={backend} changed host selection"

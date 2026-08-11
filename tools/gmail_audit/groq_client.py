@@ -17,7 +17,6 @@ import requests
 from config import (
     DEEPSEEK_HOST_DIRECT,
     DEEPSEEK_HOST_NVIDIA,
-    DEFAULT_DEEPSEEK_MODEL,
     Settings,
     normalize_google_access_token,
 )
@@ -396,7 +395,10 @@ class DeepSeekHost:
 
     @property
     def configured(self) -> bool:
-        return bool(self.base_url and self.api_keys)
+        # `model` is part of being configured, not an afterthought. A host with an endpoint and a
+        # credential but no explicit model is exactly the state where something would otherwise
+        # substitute a default and silently change what was measured.
+        return bool(self.base_url and self.api_keys and self.model)
 
 
 def resolve_deepseek_host(settings: Settings) -> DeepSeekHost:
@@ -412,13 +414,22 @@ def resolve_deepseek_host(settings: Settings) -> DeepSeekHost:
         keys = tuple(getattr(settings, "deepseek_nvidia_api_keys", ()) or ())
         if not keys and str(getattr(settings, "deepseek_nvidia_api_key", "") or "").strip():
             keys = (str(settings.deepseek_nvidia_api_key).strip(),)
+        bridge_model = str(getattr(settings, "deepseek_nvidia_model", "") or "").strip()
+        # Name every missing piece, so the operator fixes it in one pass instead of discovering
+        # the second omission only after supplying the first.
+        missing = [
+            name for name, present in (
+                ("DEEPSEEK_NVIDIA_API_KEY", bool(keys)),
+                ("DEEPSEEK_NVIDIA_MODEL", bool(bridge_model)),
+            ) if not present
+        ]
         return DeepSeekHost(
             host=DEEPSEEK_HOST_NVIDIA,
             provider=DEEPSEEK_HOST_NVIDIA,
             base_url=str(getattr(settings, "deepseek_nvidia_base_url", "") or "").strip(),
-            model=str(getattr(settings, "deepseek_nvidia_model", "") or "").strip(),
+            model=bridge_model,
             api_keys=keys,
-            missing_config="DEEPSEEK_NVIDIA_API_KEY",
+            missing_config=" + ".join(missing) or "DEEPSEEK_NVIDIA_API_KEY",
             role="TEMPORARY_BRIDGE",
         )
 
@@ -486,10 +497,13 @@ def _deepseek_providers(
     across hosts by design, so switching hosts changes where the call goes and nothing else.
     """
     host = resolve_deepseek_host(settings)
-    provider_model = str(model or host.model or "").strip() or DEFAULT_DEEPSEEK_MODEL
+    # No `or DEFAULT_DEEPSEEK_MODEL` here: on the bridge that would quietly send the canonical
+    # model id to NVIDIA NIM, which is both wrong and invisible. An absent model makes the host
+    # unconfigured, handled immediately below.
+    provider_model = str(model or host.model or "").strip()
     deepseek_base_url = host.base_url
     deepseek_keys = host.api_keys
-    if not deepseek_keys or not deepseek_base_url:
+    if not deepseek_keys or not deepseek_base_url or not provider_model:
         return [
             _unconfigured_structured_provider(
                 provider=host.provider,

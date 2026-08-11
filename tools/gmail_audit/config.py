@@ -43,10 +43,18 @@ DEEPSEEK_HOST_DIRECT = "deepseek_direct"
 DEEPSEEK_HOST_NVIDIA = "deepseek_nvidia"
 DEEPSEEK_HOSTS = (DEEPSEEK_HOST_DIRECT, DEEPSEEK_HOST_NVIDIA)
 DEFAULT_DEEPSEEK_HOST = DEEPSEEK_HOST_DIRECT
-# NVIDIA NIM hosts DeepSeek models under their own ids. This must NOT default to NVIDIA_MODEL:
-# that variable feeds the generic `nvidia` router slot (currently `gpt-oss-120b`) and reusing it
-# would change the logical model while pretending only the host changed.
-DEFAULT_DEEPSEEK_NVIDIA_MODEL = "deepseek-ai/deepseek-r1"
+# The bridge has NO default model, deliberately.
+#
+# Its entire purpose is to change the HOST while preserving the logical model identity. Any
+# default would defeat that: shipping `deepseek-ai/deepseek-r1` would change provider *and* model
+# at once, so a bridge measurement could not be compared with a canonical one, and nobody reading
+# the result later could tell which of the two changes explained a difference.
+#
+# There is also no fallback to NVIDIA_MODEL: that variable feeds the generic `nvidia` router slot
+# (currently `gpt-oss-120b`), which is not a DeepSeek model at all.
+#
+# So: the operator must state the exact NIM model id for the intended DeepSeek model. Missing it
+# is a configuration error, not something the system guesses.
 DEFAULT_DEEPSEEK_NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 DEFAULT_HTTP_RETRY_BASE_DELAY = 2.0
 # Total wall-clock budget for one structured LLM stage, owned by the stage itself and shared
@@ -402,7 +410,8 @@ class Settings:
     deepseek_host: str = DEFAULT_DEEPSEEK_HOST
     deepseek_nvidia_api_key: str = field(default="", repr=False)
     deepseek_nvidia_api_keys: tuple[str, ...] = ()
-    deepseek_nvidia_model: str = DEFAULT_DEEPSEEK_NVIDIA_MODEL
+    # No default: the bridge must be told exactly which NIM model id to use (see above).
+    deepseek_nvidia_model: str = ""
     deepseek_nvidia_base_url: str = DEFAULT_DEEPSEEK_NVIDIA_BASE_URL
 
     @property
@@ -936,14 +945,23 @@ def load_settings(*, require_groq: bool = True, require_google: bool = True) -> 
         os.getenv("NVIDIA_API_KEY", ""),
     )
     deepseek_nvidia_api_key = deepseek_nvidia_api_keys[0] if deepseek_nvidia_api_keys else ""
-    deepseek_nvidia_model = (
-        os.getenv("DEEPSEEK_NVIDIA_MODEL", "").strip() or DEFAULT_DEEPSEEK_NVIDIA_MODEL
-    )
+    # Explicit only. No R1 default, no NVIDIA_MODEL fallback.
+    deepseek_nvidia_model = os.getenv("DEEPSEEK_NVIDIA_MODEL", "").strip()
     deepseek_nvidia_base_url = (
         os.getenv("DEEPSEEK_NVIDIA_BASE_URL", "").strip()
         or os.getenv("NVIDIA_BASE_URL", "").strip()
         or DEFAULT_DEEPSEEK_NVIDIA_BASE_URL
     )
+    # Fail closed, but only when the bridge is actually the selected host: a deployment running
+    # canonically must not be broken by an unset bridge variable it never uses.
+    if deepseek_host == DEEPSEEK_HOST_NVIDIA and not deepseek_nvidia_model:
+        raise ConfigError(
+            "DEEPSEEK_NVIDIA_MODEL must be set explicitly when AI_OS_PRIMARY_PROVIDER="
+            f"{DEEPSEEK_HOST_NVIDIA}. The bridge exists to change the host while keeping the "
+            "logical model identity, so the exact NIM model id for the intended DeepSeek model "
+            "must be stated. There is deliberately no default and no NVIDIA_MODEL fallback: "
+            "guessing here would change provider and model at the same time."
+        )
 
     google_access_token, google_access_token_had_bearer_prefix = normalize_google_access_token(
         os.getenv("GOOGLE_ACCESS_TOKEN", "")

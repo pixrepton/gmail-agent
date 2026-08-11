@@ -10,7 +10,10 @@
   "logical_model_intent": "deepseek",
   "canonical_target": "deepseek_direct",
   "active_host_env_var": "AI_OS_PRIMARY_PROVIDER",
-  "active_host_allowed_values": ["deepseek_direct", "deepseek_nvidia"],
+  "active_host_allowed_values": [
+    "deepseek_direct",
+    "deepseek_nvidia"
+  ],
   "providers": {
     "deepseek_direct": {
       "telemetry_provider_label": "deepseek",
@@ -19,7 +22,8 @@
       "base_url_env": "DEEPSEEK_BASE_URL",
       "model_env": "DEEPSEEK_MODEL",
       "credential_env": "DEEPSEEK_API_KEY",
-      "note": "The intended primary SUT provider. Keeps the historical 'deepseek' telemetry label so measurements stay comparable with the 32/38 and 38/38 baselines recorded under it."
+      "note": "The intended primary SUT provider. Keeps the historical 'deepseek' telemetry label so measurements stay comparable with the 32/38 and 38/38 baselines recorded under it.",
+      "model_default": "deepseek-v4-flash (DEEPSEEK_MODEL)"
     },
     "deepseek_nvidia": {
       "telemetry_provider_label": "deepseek_nvidia",
@@ -32,7 +36,10 @@
       "opened_at_utc": "2026-08-11",
       "expires_when": "DeepSeek Direct account is funded and passes a health smoke",
       "return_runbook": "knowledge/eval/deepseek-temp-nvidia-bridge-20260811/RETURN_TO_DEEPSEEK_DIRECT.md",
-      "note": "NOT a migration and NOT the target state. Any benchmark produced while this host is active is TEMP_PROVIDER_CAPABILITY_SIGNAL, never a final canonical Capability baseline."
+      "note": "NOT a migration and NOT the target state. Any benchmark produced while this host is active is TEMP_PROVIDER_CAPABILITY_SIGNAL, never a final canonical Capability baseline.",
+      "model_default": null,
+      "model_policy": "EXPLICIT_REQUIRED. No default, and no NVIDIA_MODEL fallback. The bridge changes the HOST while preserving the logical model identity, so the operator must state the exact NIM model id for the intended DeepSeek model. Selecting this host without it is a ConfigError.",
+      "model_identity_intent": "Match the canonical DeepSeek model as closely as the host offers. If NVIDIA NIM does not host an equivalent, that is a finding to report -- not grounds to substitute a different DeepSeek model, which would change provider and model at once."
     },
     "groq": {
       "role": "FALLBACK",
@@ -55,6 +62,7 @@
     "The host switch is explicit and operator-controlled. There is no automatic provider switch triggered by a billing or quota error.",
     "Switching hosts changes endpoint, credential and model id only. Prompts, schema contracts, reasoning policy and business logic are identical across hosts.",
     "Telemetry must always distinguish which host served a call: llm_deepseek_host, llm_provider_role and llm_canonical_target travel with every DeepSeek-tier response.",
-    "A final canonical Capability baseline may only be established on deepseek_direct."
+    "A final canonical Capability baseline may only be established on deepseek_direct.",
+    "The bridge model id is explicit-only: no default, no NVIDIA_MODEL fallback, and no substitution of the canonical model id. Changing host and model at the same time would make a bridge measurement uninterpretable."
   ]
 }

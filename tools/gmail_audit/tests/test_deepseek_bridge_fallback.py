@@ -34,7 +34,8 @@ class _Settings:
     deepseek_api_key = ""
     deepseek_api_keys = ()
     deepseek_nvidia_base_url = "https://integrate.api.nvidia.com/v1"
-    deepseek_nvidia_model = "deepseek-ai/deepseek-r1"
+    # Explicitly configured by the operator in real deployments; there is no default.
+    deepseek_nvidia_model = "deepseek-ai/deepseek-v4-flash"
     deepseek_nvidia_api_key = "nv-key"
     deepseek_nvidia_api_keys = ("nv-key",)
     deepseek_thinking_enabled = False
