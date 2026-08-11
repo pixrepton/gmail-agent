@@ -8,7 +8,23 @@
     "groq_client.resolve_deepseek_host(); a test asserts the two agree, so they cannot drift."
   ],
   "logical_model_intent": "deepseek",
+  "logical_model_family": "DeepSeek V4 Flash",
   "canonical_target": "deepseek_direct",
+  "canonical_target_provider": "deepseek_direct",
+  "canonical_target_model": "deepseek-v4-flash",
+  "_semantic_correction_20260811": [
+    "This registry previously claimed the bridge changes hosting while preserving exact model",
+    "identity. That claim is no longer true and has been withdrawn.",
+    "",
+    "NVIDIA retired the unversioned `deepseek-ai/deepseek-v4-flash` on 2026-08-07, leaving only",
+    "the dated snapshot `deepseek-ai/deepseek-v4-flash-0731`. The canonical side is itself an",
+    "unversioned alias (`deepseek-v4-flash`) whose current resolution cannot be observed from",
+    "here. So snapshot equivalence between the two is UNPROVEN - not false, not true, unproven.",
+    "",
+    "The operator explicitly accepted this temporary provider + model-snapshot divergence to",
+    "restore operational continuity. It is not a canonical model decision and must never be",
+    "read as one."
+  ],
   "active_host_env_var": "AI_OS_PRIMARY_PROVIDER",
   "active_host_allowed_values": [
     "deepseek_direct",
@@ -23,11 +39,17 @@
       "model_env": "DEEPSEEK_MODEL",
       "credential_env": "DEEPSEEK_API_KEY",
       "note": "The intended primary SUT provider. Keeps the historical 'deepseek' telemetry label so measurements stay comparable with the 32/38 and 38/38 baselines recorded under it.",
-      "model_default": "deepseek-v4-flash (DEEPSEEK_MODEL)"
+      "model_default": "deepseek-v4-flash (DEEPSEEK_MODEL)",
+      "logical_model_family": "DeepSeek V4 Flash",
+      "exact_model_equivalence_to_canonical": "PROVEN"
     },
     "deepseek_nvidia": {
       "telemetry_provider_label": "deepseek_nvidia",
-      "role": "TEMPORARY_BRIDGE",
+      "role": "TEMPORARY_OPERATIONAL_BRIDGE",
+      "logical_model_family": "DeepSeek V4 Flash",
+      "exact_model_equivalence_to_canonical": "UNPROVEN",
+      "temporary_model_snapshot": "deepseek-ai/deepseek-v4-flash-0731",
+      "snapshot_note": "Authorized by the operator on 2026-08-11 after NVIDIA retired the unversioned id. Same model family; snapshot equivalence to the canonical alias is unproven and is not to be asserted.",
       "hosts": "NVIDIA NIM hosting a DeepSeek model",
       "base_url_env": "DEEPSEEK_NVIDIA_BASE_URL",
       "model_env": "DEEPSEEK_NVIDIA_MODEL",
@@ -38,8 +60,8 @@
       "return_runbook": "knowledge/eval/deepseek-temp-nvidia-bridge-20260811/RETURN_TO_DEEPSEEK_DIRECT.md",
       "note": "NOT a migration and NOT the target state. Any benchmark produced while this host is active is TEMP_PROVIDER_CAPABILITY_SIGNAL, never a final canonical Capability baseline.",
       "model_default": null,
-      "model_policy": "EXPLICIT_REQUIRED. No default, and no NVIDIA_MODEL fallback. The bridge changes the HOST while preserving the logical model identity, so the operator must state the exact NIM model id for the intended DeepSeek model. Selecting this host without it is a ConfigError.",
-      "model_identity_intent": "Match the canonical DeepSeek model as closely as the host offers. If NVIDIA NIM does not host an equivalent, that is a finding to report -- not grounds to substitute a different DeepSeek model, which would change provider and model at once."
+      "model_policy": "EXPLICIT_REQUIRED. No default, and no NVIDIA_MODEL fallback. The operator must state the exact NIM model id. Selecting this host without it is a ConfigError.",
+      "model_identity_intent": "Stay inside the canonical model FAMILY (DeepSeek V4 Flash). Exact snapshot equivalence to the canonical alias is not claimed and is recorded as UNPROVEN. Moving outside the family -- R1, Coder, GPT-OSS, any non-DeepSeek id -- is out of contract and is not something the fail-closed check can detect for you."
     },
     "groq": {
       "role": "FALLBACK",
@@ -61,8 +83,10 @@
   "rules": [
     "The host switch is explicit and operator-controlled. There is no automatic provider switch triggered by a billing or quota error.",
     "Switching hosts changes endpoint, credential and model id only. Prompts, schema contracts, reasoning policy and business logic are identical across hosts.",
-    "Telemetry must always distinguish which host served a call: llm_deepseek_host, llm_provider_role and llm_canonical_target travel with every DeepSeek-tier response.",
+    "Telemetry must always distinguish which host served a call: llm_deepseek_host, llm_provider_role, llm_canonical_target, llm_logical_model_family and llm_exact_model_equivalence travel with every DeepSeek-tier response.",
     "A final canonical Capability baseline may only be established on deepseek_direct.",
-    "The bridge model id is explicit-only: no default, no NVIDIA_MODEL fallback, and no substitution of the canonical model id. Changing host and model at the same time would make a bridge measurement uninterpretable."
+    "The bridge model id is explicit-only: no default, no NVIDIA_MODEL fallback, and no substitution of the canonical model id. Changing host and model at the same time would make a bridge measurement uninterpretable.",
+    "The bridge preserves the model FAMILY, not proven model identity. exact_model_equivalence_to_canonical is UNPROVEN on deepseek_nvidia and must not be upgraded to PROVEN without evidence that the canonical alias resolves to the same snapshot.",
+    "DEEPSEEK_NVIDIA_MODEL and the generic NVIDIA_MODEL are separate variables for separate router slots. Never point the generic slot at the bridge snapshot to 'keep them in sync'."
   ]
 }

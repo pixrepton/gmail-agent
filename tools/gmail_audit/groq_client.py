@@ -368,6 +368,15 @@ def run_structured_stage(
     }
 
 
+# Governance vocabulary for the DeepSeek tier. Constants rather than inline literals so the
+# registry test can assert the runtime and `provider_roles.json` agree on the exact strings.
+DEEPSEEK_MODEL_FAMILY = "DeepSeek V4 Flash"
+ROLE_CANONICAL_TARGET = "CANONICAL_TARGET"
+ROLE_TEMPORARY_OPERATIONAL_BRIDGE = "TEMPORARY_OPERATIONAL_BRIDGE"
+EQUIVALENCE_PROVEN = "PROVEN"
+EQUIVALENCE_UNPROVEN = "UNPROVEN"
+
+
 @dataclass(frozen=True, slots=True)
 class DeepSeekHost:
     """Which host currently serves the DeepSeek tier, and how to reach it.
@@ -379,6 +388,15 @@ class DeepSeekHost:
     ``provider`` is the telemetry identity and is deliberately distinct per host: a measurement
     produced through NVIDIA NIM must never be indistinguishable from one produced by DeepSeek
     Direct.
+
+    **The bridge is no longer "the same model on a different host", and says so.** NVIDIA retired
+    the unversioned ``deepseek-ai/deepseek-v4-flash`` on 2026-08-07, leaving only the dated
+    snapshot ``…-0731``; the canonical side is itself an unversioned alias
+    (``DEEPSEEK_MODEL=deepseek-v4-flash``) whose current resolution cannot be observed from here.
+    So the honest claim is *same model family, unproven snapshot equivalence* — carried by
+    ``model_family`` and ``exact_model_equivalence_to_canonical`` rather than left implicit.
+    An unprovable claim stated as fact would quietly contaminate every measurement taken while
+    the bridge is active.
     """
 
     host: str            # deepseek_direct | deepseek_nvidia
@@ -391,7 +409,13 @@ class DeepSeekHost:
     model: str
     api_keys: tuple[str, ...]
     missing_config: str
-    role: str            # CANONICAL_TARGET | TEMPORARY_BRIDGE
+    role: str            # CANONICAL_TARGET | TEMPORARY_OPERATIONAL_BRIDGE
+    # The logical family both hosts serve. Equal across hosts by design — it is what the bridge
+    # actually preserves.
+    model_family: str = DEEPSEEK_MODEL_FAMILY
+    # PROVEN on the canonical host (it *is* the canonical model, definitionally); UNPROVEN on the
+    # bridge, and it must stay UNPROVEN until someone establishes it rather than assumes it.
+    exact_model_equivalence_to_canonical: str = EQUIVALENCE_PROVEN
 
     @property
     def configured(self) -> bool:
@@ -430,7 +454,11 @@ def resolve_deepseek_host(settings: Settings) -> DeepSeekHost:
             model=bridge_model,
             api_keys=keys,
             missing_config=" + ".join(missing) or "DEEPSEEK_NVIDIA_API_KEY",
-            role="TEMPORARY_BRIDGE",
+            role=ROLE_TEMPORARY_OPERATIONAL_BRIDGE,
+            model_family=DEEPSEEK_MODEL_FAMILY,
+            # Not a defect to fix later: no observation available here can settle whether the
+            # bridge snapshot matches whatever the canonical alias currently resolves to.
+            exact_model_equivalence_to_canonical=EQUIVALENCE_UNPROVEN,
         )
 
     keys = tuple(getattr(settings, "deepseek_api_keys", ()) or ())
@@ -443,7 +471,9 @@ def resolve_deepseek_host(settings: Settings) -> DeepSeekHost:
         model=str(getattr(settings, "deepseek_model", "") or "").strip(),
         api_keys=keys,
         missing_config="DEEPSEEK_API_KEY",
-        role="CANONICAL_TARGET",
+        role=ROLE_CANONICAL_TARGET,
+        model_family=DEEPSEEK_MODEL_FAMILY,
+        exact_model_equivalence_to_canonical=EQUIVALENCE_PROVEN,
     )
 
 
@@ -545,6 +575,13 @@ def _deepseek_providers(
             request_meta["llm_deepseek_host"] = host.host
             request_meta["llm_provider_role"] = host.role
             request_meta["llm_canonical_target"] = DEEPSEEK_HOST_DIRECT
+            request_meta["llm_logical_model_family"] = host.model_family
+            # Travels with the response so a bridge-era result cannot later be mistaken for a
+            # canonical one by anyone reading only the provider label.
+            request_meta["llm_exact_model_equivalence"] = host.exact_model_equivalence_to_canonical
+            request_meta["llm_canonical_target_model"] = str(
+                getattr(settings, "deepseek_model", "") or ""
+            ).strip()
             return synthetic, request_meta
 
         providers.append(

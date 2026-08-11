@@ -12,8 +12,8 @@
 
 | Priority | Path                                       | Typical use                                                       |
 | -------- | ------------------------------------------ | ----------------------------------------------------------------- |
-| 1        | `GMAIL_AGENT_ENV_FILE` (env var → ścieżka) | Jawny override (np. `.env.vps` tylko do testu compose)            |
-| 2        | `tools/gmail_audit/.env`                   | Lokalny override per-tool (opcjonalny)                            |
+| 1        | `GMAIL_AGENT_ENV_FILE` (env var → ścieżka) | Jawny override; **kanoniczna ścieżka AI-OS host-side** to `<repo>/.env.local-vps` |
+| 2        | `tools/gmail_audit/.env`                   | Legacy/local compatibility for non-canonical host runs; nie utrzymuj tu aktywnych sekretów AI |
 | 3        | **`<repo-root>/.env`**                     | Domyślne dev — Gmail, Groq, Daszek, `MAILBOX_MEMORY_DATABASE_URL` |
 | —        | `tools/gmail_audit/.env.local`             | **Nigdy nie ładowany** — scal do `.env` i usuń                    |
 
@@ -34,7 +34,9 @@ Implementacja (2026-05): repo root jest w `default_env_candidates()` obok `CONFI
 | `.env.mailbox-memory`         | Nie (domyślnie)              | Profil DB/docker dla mailbox stack; merge kluczy do `.env` lub osobny URL w głównym `.env`                                               |
 | `.env.mailbox-memory.example` | Nie                          | Szablon                                                                                                                                  |
 
-**VPS worker:** sekrety aplikacji (Gmail/Groq/Daszek/flagi) nadal w **`tools/gmail_audit/.env`** montowanym do kontenera — patrz `docker-compose.vps.yml`. Nie przenoś ich do `.env.vps` „tylko po to, by dodać flagę”.
+**Kanoniczny lokalny SUT / AI-OS:** `.env.local-vps` jest jedynym lokalnym źródłem aktywnych sekretów AI; host-side qualification/judge/Fresh38 powinny ustawiać `GMAIL_AGENT_ENV_FILE=<repo>/.env.local-vps`.
+
+**`tools/gmail_audit/.env`:** zachowaj wyłącznie lokalne ustawienia kompatybilności, które nie konkurują z kanonicznym źródłem sekretów AI.
 
 ---
 
@@ -112,13 +114,14 @@ Smoke: `docs/runbooks/LAST_PROVEN_STATE.md` § Fala B/C (2026-05-30).
 
 | Kontekst        | `MAILBOX_MEMORY_DATABASE_URL` | Env agent (`AGENT_*`)                                     |
 | --------------- | ----------------------------- | --------------------------------------------------------- |
-| Host dev        | `127.0.0.1:54129`             | `tools/gmail_audit/.env`                                  |
+| Host dev (AI-OS canonical) | `127.0.0.1:54129` | `.env.local-vps` przez jawny `GMAIL_AGENT_ENV_FILE`       |
+| Host dev (legacy direct run) | `127.0.0.1:54129` | `tools/gmail_audit/.env` / `<repo-root>/.env` według legacy kolejności |
 | Kontener worker | `mailbox-memory-db:5432`      | `.env.local-vps` → mount `/etc/topinstal/gmail-agent.env` |
 
 **Zasady:**
 
 - Kontener ustawia `GMAIL_AGENT_ENV_FILE=/etc/topinstal/gmail-agent.env` — **wygrywa** nad mounted `tools/gmail_audit/.env` dla zmiennych agent.
-- Po zmianie `AGENT_*` w `tools/gmail_audit/.env` → **zsynchronizuj** do `.env.local-vps` i recreate worker.
+- Nie duplikuj aktywnych sekretów AI między `tools/gmail_audit/.env` i `.env.local-vps`; kanoniczne zmiany wykonuj w `.env.local-vps`.
 - `.env.local-vps` tylko **UTF-8** (bez BOM). PowerShell `Add-Content` może zepsuć encoding → worker crash loop.
 - Worker **nie bind-mountuje** kodu Python — po zmianach w repo: `docker compose build gmail-agent-worker` + `--force-recreate`.
 

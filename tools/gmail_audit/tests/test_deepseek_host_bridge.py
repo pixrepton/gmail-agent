@@ -33,7 +33,16 @@ from config import (  # noqa: E402
     DEEPSEEK_HOSTS,
     DEFAULT_DEEPSEEK_HOST,
 )
-from groq_client import _deepseek_providers, resolve_deepseek_host, deepseek_configured  # noqa: E402
+from groq_client import (  # noqa: E402
+    DEEPSEEK_MODEL_FAMILY,
+    EQUIVALENCE_PROVEN,
+    EQUIVALENCE_UNPROVEN,
+    ROLE_CANONICAL_TARGET,
+    ROLE_TEMPORARY_OPERATIONAL_BRIDGE,
+    _deepseek_providers,
+    deepseek_configured,
+    resolve_deepseek_host,
+)
 
 
 # The bridge has no default model, so tests must state one explicitly -- exactly as an
@@ -65,7 +74,7 @@ def test_default_host_is_the_canonical_target():
     assert DEFAULT_DEEPSEEK_HOST == DEEPSEEK_HOST_DIRECT
     host = resolve_deepseek_host(_settings(DEFAULT_DEEPSEEK_HOST))
     assert host.host == "deepseek_direct"
-    assert host.role == "CANONICAL_TARGET"
+    assert host.role == ROLE_CANONICAL_TARGET
 
 
 def test_canonical_host_keeps_the_historical_telemetry_label():
@@ -76,7 +85,7 @@ def test_canonical_host_keeps_the_historical_telemetry_label():
 def test_bridge_has_a_distinct_identity_and_role():
     host = resolve_deepseek_host(_settings(DEEPSEEK_HOST_NVIDIA, nvidia_key="nv"))
     assert host.provider == "deepseek_nvidia" != "deepseek"
-    assert host.role == "TEMPORARY_BRIDGE"
+    assert host.role == ROLE_TEMPORARY_OPERATIONAL_BRIDGE
 
 
 def test_switching_host_changes_only_endpoint_credential_and_model():
@@ -208,7 +217,7 @@ def test_env_switch_selects_the_bridge(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_NVIDIA_MODEL", EXPLICIT_BRIDGE_MODEL)
     settings = load_settings(require_groq=False, require_google=False)
     assert settings.deepseek_host == DEEPSEEK_HOST_NVIDIA
-    assert resolve_deepseek_host(settings).role == "TEMPORARY_BRIDGE"
+    assert resolve_deepseek_host(settings).role == ROLE_TEMPORARY_OPERATIONAL_BRIDGE
     assert resolve_deepseek_host(settings).model == EXPLICIT_BRIDGE_MODEL
 
 
@@ -270,11 +279,14 @@ def test_bridge_calls_carry_host_provenance(monkeypatch):
 
     assert meta["llm_logical_model_intent"] == "deepseek"
     assert meta["llm_deepseek_host"] == "deepseek_nvidia"
-    assert meta["llm_provider_role"] == "TEMPORARY_BRIDGE"
+    assert meta["llm_provider_role"] == "TEMPORARY_OPERATIONAL_BRIDGE"
+    assert meta["llm_logical_model_family"] == "DeepSeek V4 Flash"
+    assert meta["llm_exact_model_equivalence"] == "UNPROVEN"
     assert meta["llm_canonical_target"] == "deepseek_direct"
     # and the request genuinely went to the bridge endpoint/model
     assert captured["base_url"].startswith("https://integrate.api.nvidia.com")
-    assert "deepseek" in captured["model"].lower()
+    # family check only - snapshot equivalence is deliberately not asserted anywhere
+    assert captured["model"] == EXPLICIT_BRIDGE_MODEL
 
 
 def test_canonical_calls_are_labelled_canonical(monkeypatch):
@@ -310,6 +322,52 @@ def test_provider_roles_registry_matches_the_runtime():
         )
         assert entry["role"] == resolved.role, host_name
         assert entry["telemetry_provider_label"] == resolved.provider, host_name
+        assert entry["logical_model_family"] == resolved.model_family, host_name
+        assert entry["exact_model_equivalence_to_canonical"] == (
+            resolved.exact_model_equivalence_to_canonical
+        ), host_name
+
+    assert registry["logical_model_family"] == DEEPSEEK_MODEL_FAMILY
+    assert registry["canonical_target_provider"] == DEEPSEEK_HOST_DIRECT
+    assert registry["canonical_target_model"] == "deepseek-v4-flash"
+
+
+# ── the corrected semantics: family preserved, snapshot equivalence not claimed ──────
+
+
+def test_bridge_does_not_claim_proven_model_equivalence():
+    """The bridge is 'same family, unproven snapshot' - asserting more would contaminate every
+    measurement taken while it is active."""
+    bridge = resolve_deepseek_host(_settings(DEEPSEEK_HOST_NVIDIA, nvidia_key="nv"))
+    assert bridge.exact_model_equivalence_to_canonical == EQUIVALENCE_UNPROVEN
+    assert bridge.role == ROLE_TEMPORARY_OPERATIONAL_BRIDGE
+
+
+def test_canonical_host_is_equivalent_to_itself():
+    canonical = resolve_deepseek_host(_settings(DEEPSEEK_HOST_DIRECT))
+    assert canonical.exact_model_equivalence_to_canonical == EQUIVALENCE_PROVEN
+    assert canonical.role == ROLE_CANONICAL_TARGET
+
+
+def test_both_hosts_serve_the_same_declared_family():
+    """What the bridge genuinely preserves, and the only identity claim it may make."""
+    assert (
+        resolve_deepseek_host(_settings(DEEPSEEK_HOST_NVIDIA, nvidia_key="nv")).model_family
+        == resolve_deepseek_host(_settings(DEEPSEEK_HOST_DIRECT)).model_family
+        == DEEPSEEK_MODEL_FAMILY
+    )
+
+
+def test_registry_no_longer_claims_preserved_model_identity():
+    """Regression guard on the withdrawn claim itself.
+
+    The old wording ('preserving the logical model identity') read as a proof that was never
+    performed. If it reappears in the model policy, the correction has been undone.
+    """
+    registry = json.loads((TOOL_DIR / "provider_roles.json").read_text(encoding="utf-8"))
+    bridge = registry["providers"][DEEPSEEK_HOST_NVIDIA]
+    assert "preserving the logical model identity" not in bridge["model_policy"]
+    assert bridge["temporary_model_snapshot"] == "deepseek-ai/deepseek-v4-flash-0731"
 
 
 def test_registry_records_why_the_bridge_exists_and_how_to_leave_it():
