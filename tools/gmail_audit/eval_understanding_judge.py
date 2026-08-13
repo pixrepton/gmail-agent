@@ -20,7 +20,9 @@ from pydantic import BaseModel, Field, ValidationError
 
 from api_key_pool import parse_api_key_pool
 from eval_measurement_scoring import canonical_json_sha256
+from groq_client import _rotate_groq_key_pool
 from llm_client import TopInstalLLMClient, TopInstalLLMError
+from llm_provider_router import LLMProvider, LLMRouter, LLMRouterError
 
 
 JUDGE_CONTRACT_VERSION = "understanding-semantic-judge.v1"
@@ -705,40 +707,77 @@ def _openai_compatible_invoke(system: str, user: str, case_id: str, config: Judg
             {"role": "user", "content": user_content},
         ],
     }
-    response = None
-    last_status = 0
-    last_text = "missing response"
-    for key_index, api_key in enumerate(api_keys):
-        auth_rejected = False
-        for attempt in range(1, max(1, int(config.max_retries)) + 1):
-            response = requests.post(
-                url,
-                headers={"authorization": f"Bearer {api_key}", "content-type": "application/json"},
-                json=body,
-                timeout=config.timeout_sec,
+    if config.provider == GROQ_PROVIDER:
+        providers: list[LLMProvider] = []
+        for api_key in _rotate_groq_key_pool(api_keys):
+            def call_groq_key(_api_key: str = api_key) -> tuple[dict[str, Any], dict[str, Any]]:
+                response = requests.post(
+                    url,
+                    headers={"authorization": f"Bearer {_api_key}", "content-type": "application/json"},
+                    json=body,
+                    timeout=config.timeout_sec,
+                )
+                if response.status_code >= 400:
+                    raise TopInstalLLMError(
+                        f"OpenAI judge HTTP {response.status_code}: {_sanitize_error(response.text[:500])}",
+                        details={
+                            "status_code": int(response.status_code),
+                            "case_id": case_id,
+                            "key_pool_size": len(api_keys),
+                        },
+                    )
+                return response.json(), {}
+
+            providers.append(
+                LLMProvider(
+                    provider=GROQ_PROVIDER,
+                    backend="openai_chat_completions",
+                    model=config.model,
+                    call=call_groq_key,
+                )
             )
-            last_status = int(response.status_code)
-            last_text = response.text
-            if response.status_code == 429 and attempt < int(config.max_retries):
-                time.sleep(_retry_after_seconds(response.text))
-                continue
-            if response.status_code in {401, 403}:
-                auth_rejected = True
+        try:
+            data, _request_meta = LLMRouter(providers=providers).run()
+        except LLMRouterError as exc:
+            details = dict(exc.details or {})
+            details.setdefault("case_id", case_id)
+            details.setdefault("key_pool_size", len(api_keys))
+            raise TopInstalLLMError(_sanitize_error(str(exc)), details=details) from exc
+    else:
+        response = None
+        last_status = 0
+        last_text = "missing response"
+        for key_index, api_key in enumerate(api_keys):
+            auth_rejected = False
+            for attempt in range(1, max(1, int(config.max_retries)) + 1):
+                response = requests.post(
+                    url,
+                    headers={"authorization": f"Bearer {api_key}", "content-type": "application/json"},
+                    json=body,
+                    timeout=config.timeout_sec,
+                )
+                last_status = int(response.status_code)
+                last_text = response.text
+                if response.status_code == 429 and attempt < int(config.max_retries):
+                    time.sleep(_retry_after_seconds(response.text))
+                    continue
+                if response.status_code in {401, 403}:
+                    auth_rejected = True
+                    break
                 break
+            if response is not None and response.status_code < 400:
+                break
+            if auth_rejected and key_index + 1 < len(api_keys):
+                continue
             break
-        if response is not None and response.status_code < 400:
-            break
-        if auth_rejected and key_index + 1 < len(api_keys):
-            continue
-        break
-    if response is None or response.status_code >= 400:
-        status_code = response.status_code if response is not None else last_status
-        text = response.text if response is not None else last_text
-        raise TopInstalLLMError(
-            f"OpenAI judge HTTP {status_code}: {_sanitize_error(text[:500])}",
-            details={"status_code": status_code, "case_id": case_id, "key_pool_size": len(api_keys)},
-        )
-    data = response.json()
+        if response is None or response.status_code >= 400:
+            status_code = response.status_code if response is not None else last_status
+            text = response.text if response is not None else last_text
+            raise TopInstalLLMError(
+                f"OpenAI judge HTTP {status_code}: {_sanitize_error(text[:500])}",
+                details={"status_code": status_code, "case_id": case_id, "key_pool_size": len(api_keys)},
+            )
+        data = response.json()
     choices = data.get("choices") if isinstance(data.get("choices"), list) else []
     if not choices:
         raise TopInstalLLMError("OpenAI judge response missing choices.")

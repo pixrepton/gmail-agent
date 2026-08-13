@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 TOOL_DIR = Path(__file__).resolve().parent.parent
 if str(TOOL_DIR) not in sys.path:
     sys.path.insert(0, str(TOOL_DIR))
@@ -126,6 +128,9 @@ def test_secret_value_prefers_gmail_agent_env_file(monkeypatch, tmp_path: Path) 
 
 
 def test_openai_compatible_invoke_rotates_groq_keys_on_401(monkeypatch) -> None:
+    import groq_client
+
+    groq_client.reset_groq_key_rotation_counter_for_tests()
     calls: list[str] = []
 
     class _Resp:
@@ -176,6 +181,140 @@ def test_openai_compatible_invoke_rotates_groq_keys_on_401(monkeypatch) -> None:
 
     assert calls == ["gsk_bad", "gsk_good"]
     assert payload["case_id"] == "FU-05"
+
+
+def test_openai_compatible_invoke_uses_next_groq_key_on_429(monkeypatch) -> None:
+    import groq_client
+
+    groq_client.reset_groq_key_rotation_counter_for_tests()
+    calls: list[str] = []
+    bodies: list[dict] = []
+
+    class _Resp:
+        def __init__(self, status_code: int, text: str = "", payload: dict | None = None):
+            self.status_code = status_code
+            self.text = text
+            self._payload = payload or {}
+
+        def json(self):
+            return self._payload
+
+    def fake_post(url, headers=None, json=None, timeout=None):  # noqa: A002
+        del url, timeout
+        key = (headers or {}).get("authorization", "").replace("Bearer ", "")
+        calls.append(key)
+        bodies.append(json)
+        if key == "gsk_limited":
+            return _Resp(429, '{"error":{"message":"rate limit exceeded"}}')
+        return _Resp(
+            200,
+            payload={
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"case_id":"FU-05","dimensions":{"essence":{"applicable":true,'
+                                '"verdict":"PASS","reason_code":"ok","evidence":"e"}},'
+                                '"overall_verdict":"CLEAR_PASS","unsafe_misinterpretation":false}'
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    import requests
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(judge_module, "_groq_key_pool", lambda: ("gsk_limited", "gsk_good"))
+    monkeypatch.setattr(judge_module.time, "sleep", lambda _seconds: None)
+
+    payload = judge_module._openai_compatible_invoke(
+        "system",
+        "user",
+        "FU-05",
+        judge_module.JudgeConfig(provider=GROQ_PROVIDER, model="llama-3.3-70b-versatile"),
+    )
+
+    assert calls == ["gsk_limited", "gsk_good"]
+    assert bodies[0] == bodies[1]
+    assert bodies[0]["model"] == "llama-3.3-70b-versatile"
+    assert bodies[0]["temperature"] == 0.0
+    assert payload["case_id"] == "FU-05"
+
+
+def test_openai_compatible_invoke_rotates_groq_starting_key_between_calls(monkeypatch) -> None:
+    import groq_client
+    import requests
+
+    groq_client.reset_groq_key_rotation_counter_for_tests()
+    calls: list[str] = []
+
+    class _Resp:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"case_id":"FU-05","dimensions":{"essence":{"applicable":true,'
+                                '"verdict":"PASS","reason_code":"ok","evidence":"e"}},'
+                                '"overall_verdict":"CLEAR_PASS","unsafe_misinterpretation":false}'
+                            )
+                        }
+                    }
+                ]
+            }
+
+    def fake_post(url, headers=None, json=None, timeout=None):  # noqa: A002
+        del url, json, timeout
+        calls.append((headers or {}).get("authorization", "").replace("Bearer ", ""))
+        return _Resp()
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(judge_module, "_groq_key_pool", lambda: ("gsk_one", "gsk_two", "gsk_three"))
+    config = judge_module.JudgeConfig(provider=GROQ_PROVIDER, model="llama-3.3-70b-versatile")
+
+    judge_module._openai_compatible_invoke("system", "user", "FU-05", config)
+    judge_module._openai_compatible_invoke("system", "user", "FU-05", config)
+
+    assert calls == ["gsk_one", "gsk_two"]
+
+
+def test_openai_compatible_invoke_fails_closed_after_all_groq_keys_are_limited(monkeypatch) -> None:
+    import groq_client
+    import requests
+
+    groq_client.reset_groq_key_rotation_counter_for_tests()
+    calls: list[str] = []
+
+    class _Resp:
+        status_code = 429
+        text = '{"error":{"message":"rate limit exceeded"}}'
+
+    def fake_post(url, headers=None, json=None, timeout=None):  # noqa: A002
+        del url, json, timeout
+        calls.append((headers or {}).get("authorization", "").replace("Bearer ", ""))
+        return _Resp()
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(judge_module, "_groq_key_pool", lambda: ("gsk_one", "gsk_two", "gsk_three"))
+
+    with pytest.raises(judge_module.TopInstalLLMError) as exc_info:
+        judge_module._openai_compatible_invoke(
+            "system",
+            "user",
+            "FU-05",
+            judge_module.JudgeConfig(provider=GROQ_PROVIDER, model="llama-3.3-70b-versatile"),
+        )
+
+    assert calls == ["gsk_one", "gsk_two", "gsk_three"]
+    assert exc_info.value.details["key_pool_size"] == 3
+    assert exc_info.value.details["terminal_failure_reason"] == "provider_chain_failed"
 
 
 def test_judge_input_excludes_human_labels_and_old_scores() -> None:
