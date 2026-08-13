@@ -314,13 +314,12 @@ def infer_applicable_dimensions(case: dict[str, Any], actual_understanding: dict
 def _backfill_redundant_top_level_verdict(payload: Any) -> Any:
     """`normalize_judge_result` ALWAYS recomputes `overall_verdict` deterministically from
     `dimensions` (see below: `out["overall_verdict"] = overall`) -- the raw top-level
-    `overall_verdict`/`unsafe_misinterpretation` from the LLM are discarded and overwritten
-    regardless of what they contain. Occasionally the provider omits these vestigial fields
-    while still returning complete, usable per-dimension verdicts (observed:
-    ValidationError "overall_verdict Field required" on an otherwise well-formed payload).
-    Backfilling a placeholder here only relaxes the SCHEMA acceptance of a field whose
-    value is never actually used -- it cannot change any judged verdict, since the
-    aggregation always runs against `dimensions` after this. Never invents dimensions.
+    `overall_verdict` from the LLM is discarded regardless of its value. Providers can omit
+    this vestigial field or emit the dimension vocabulary (`FAIL`) instead of the aggregate
+    vocabulary (`CLEAR_FAIL`) while still returning complete per-dimension verdicts.
+    Replacing it with a conservative placeholder only relaxes schema acceptance for a field
+    whose value is never used; aggregation still runs against `dimensions`. Never invents
+    or changes dimensions.
 
     Guarded against degrading into a false pass: requires `dimensions` to be non-empty AND
     contain at least one recognized dimension name with an actual `verdict` value -- an
@@ -341,7 +340,7 @@ def _backfill_redundant_top_level_verdict(payload: Any) -> Any:
     if not has_real_dimension:
         return payload
     out = dict(payload)
-    out.setdefault("overall_verdict", "CLEAR_FAIL")
+    out["overall_verdict"] = "CLEAR_FAIL"
     out.setdefault("unsafe_misinterpretation", False)
     return out
 

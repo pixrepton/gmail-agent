@@ -236,6 +236,29 @@ def test_run_judge_schema_validation_with_fake_invoker() -> None:
     assert result["overall_verdict"] == "CLEAR_PASS"
 
 
+def test_run_judge_recomputes_invalid_redundant_overall_from_valid_dimensions() -> None:
+    def fake(_system: str, _user: str, case_id: str) -> dict:
+        return {
+            "case_id": case_id,
+            "dimensions": {
+                "essence": {
+                    "applicable": True,
+                    "verdict": "FAIL",
+                    "reason_code": "missed_essence",
+                    "evidence": "The output missed the required distinction.",
+                }
+            },
+            "overall_verdict": "FAIL",
+            "unsafe_misinterpretation": False,
+        }
+
+    result = run_judge(build_judge_input(_case(), _output()), invoke=fake)
+
+    assert result["status"] == "SCORED"
+    assert result["overall_verdict"] == "CLEAR_FAIL"
+    assert result["dimensions"]["essence"]["verdict"] == "FAIL"
+
+
 def test_run_judge_validation_failure_is_judge_error() -> None:
     result = run_judge(build_judge_input(_case(), _output()), invoke=lambda *_args: {"case_id": "FU-05"})
 
