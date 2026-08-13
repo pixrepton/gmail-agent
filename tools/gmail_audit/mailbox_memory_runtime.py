@@ -2360,6 +2360,43 @@ def facts_from_hvac_signals(
                 metadata,
             )
         )
+    floor_heating = hvac_signals.get("floor_heating_existing")
+    if isinstance(floor_heating, bool):
+        normalized_floor_heating = str(floor_heating)
+        facts.append(
+            _build_fact(
+                case_id,
+                message_id,
+                document_id,
+                entity_scope,
+                "floor_heating_existing",
+                normalized_floor_heating,
+                normalized_floor_heating,
+                0.85,
+                observed_at,
+                source_type,
+                source_ref,
+                metadata,
+            )
+        )
+    floor_heating_scope = str(hvac_signals.get("floor_heating_scope") or "").strip()
+    if floor_heating_scope:
+        facts.append(
+            _build_fact(
+                case_id,
+                message_id,
+                document_id,
+                entity_scope,
+                "floor_heating_scope",
+                floor_heating_scope,
+                floor_heating_scope,
+                0.8,
+                observed_at,
+                source_type,
+                source_ref,
+                metadata,
+            )
+        )
     return dedupe_fact_rows(facts)
 
 

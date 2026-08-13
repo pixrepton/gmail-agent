@@ -81,7 +81,7 @@ def build_understanding_output(
 
     intent = _customer_intent_pl(cu, business, intake)
 
-    prior_state_rows = _prior_known_state_rows(pack)
+    prior_state_rows = _prior_known_state_rows(pack, current_signal_id=source_signal_id)
     prior_state_pl = _prior_known_state_pl(prior_state_rows)
     pending_outcome_gaps = _pending_outcome_gaps_pl(
         prior_state_rows,
@@ -545,6 +545,56 @@ def _evidence_matches_current_signal(evidence_refs: list[dict[str, Any]], *, cur
     return False
 
 
+def _fact_matches_current_signal(fact: dict[str, Any], *, current_signal_id: str) -> bool:
+    if not current_signal_id:
+        return False
+    for key in ("message_id", "source_id", "source_ref"):
+        if str(fact.get(key) or "").strip() == current_signal_id:
+            return True
+    refs = normalize_evidence_refs(fact.get("evidence_refs") or fact.get("source_refs") or [])
+    return _evidence_matches_current_signal(refs, current_signal_id=current_signal_id)
+
+
+def _current_signal_fact_delta_rows(pack: dict[str, Any], *, current_signal_id: str) -> list[dict[str, Any]]:
+    facts = pack.get("active_facts") if isinstance(pack.get("active_facts"), list) else []
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for fact in facts:
+        if not isinstance(fact, dict) or not _fact_matches_current_signal(fact, current_signal_id=current_signal_id):
+            continue
+        status = str(fact.get("status") or "active").strip().lower()
+        if status in {"superseded", "rejected", "stale", "invalidated", "disputed"}:
+            continue
+        key = str(fact.get("fact_key") or fact.get("key") or "").strip()
+        value = fact.get("value")
+        if value is None:
+            value = fact.get("normalized_value")
+        if not key or key in seen or value in (None, "", [], {}):
+            continue
+        seen.add(key)
+        value_pl = "tak" if value is True else "nie" if value is False else str(value)
+        refs = normalize_evidence_refs(fact.get("evidence_refs") or fact.get("source_refs") or [])
+        if not refs:
+            refs = normalize_evidence_refs([
+                {
+                    "source_type": str(fact.get("source_type") or "gmail_message"),
+                    "source_id": str(fact.get("source_ref") or current_signal_id),
+                    "message_id": str(fact.get("message_id") or current_signal_id),
+                    "evidence_role": "supports",
+                    "confidence": float(fact.get("confidence") or 0.7),
+                }
+            ])
+        out.append(
+            {
+                "change_type": "new_or_updated_fact",
+                "field": key[:120],
+                "summary_pl": f"Biezaca wiadomosc wnosi fakt: {_fact_label_pl(key)}: {value_pl}."[:240],
+                "evidence_refs": refs[:8],
+            }
+        )
+    return out
+
+
 def _conflict_delta_rows(pack: dict[str, Any], *, current_signal_id: str) -> list[dict[str, Any]]:
     """Conflicting facts introduced or reinforced by the CURRENT signal only.
 
@@ -590,6 +640,8 @@ _FACT_LABEL_PL = {
     "requested_document": "poproszony dokument",
     "agreed_visit_date": "ustalony termin wizyty",
     "order_in_progress": "zamowienie w realizacji",
+    "floor_heating_existing": "ogrzewanie podlogowe istnieje",
+    "floor_heating_scope": "zakres ogrzewania podlogowego",
 }
 
 
@@ -743,7 +795,7 @@ def _humanize_signal_pl(text: str) -> str:
     return _SIGNAL_LABEL_PL.get(t.lower(), t)
 
 
-def _prior_known_state_rows(pack: dict[str, Any]) -> list[dict[str, Any]]:
+def _prior_known_state_rows(pack: dict[str, Any], *, current_signal_id: str = "") -> list[dict[str, Any]]:
     """RC-U-STATE (Wave 2): grounded prior/accumulated case facts from the
     CaseContextPack. These are state the case already carries into this turn
     (provenance = ``pack.active_facts``), surfaced so the Understanding explicitly
@@ -762,6 +814,8 @@ def _prior_known_state_rows(pack: dict[str, Any]) -> list[dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for f in facts:
         if not isinstance(f, dict):
+            continue
+        if _fact_matches_current_signal(f, current_signal_id=current_signal_id):
             continue
         status = str(f.get("status") or "active").strip().lower()
         if status in {"superseded", "rejected", "stale", "invalidated", "disputed"}:
@@ -817,11 +871,10 @@ def _thread_delta(
 ) -> dict[str, Any]:
     """Materialize what actually CHANGED in the case BECAUSE OF THE CURRENT SIGNAL.
 
-    Two real per-turn sources are used: (1) conflicting facts whose evidence
-    actually references this signal (see ``_conflict_delta_rows``); (2)
-    attachment findings, which ``attachment_intelligence`` computes fresh from
-    THIS signal's own attachments only (no case-wide accumulation) and are
-    therefore already correctly turn-scoped.
+    Three real per-turn sources are used: (1) active facts whose direct source
+    provenance identifies this signal; (2) conflicting facts whose evidence
+    references this signal; (3) attachment findings computed from this signal's
+    own attachments only.
 
     KNOWN ARCHITECTURAL LIMITATION (not faked): ``case_understanding.key_facts_hot``
     and ``thread_memory.commitments_made`` are whole-case accumulated lists (both
@@ -830,15 +883,25 @@ def _thread_delta(
     per-item provenance tying an entry to a specific turn. Materializing them
     here as "new fact"/"new commitment" changes would reproduce exactly the same
     non-idempotent replay defect just fixed for conflicts. Until either exposes
-    real per-item turn/signal attribution, they are correctly left out of
-    ``changes`` — they remain visible elsewhere as current case state (thread_delta's
-    own ``new_facts``, and the top-level ``commitments`` field), never
-    mis-labeled as this turn's delta.
+    real per-item turn/signal attribution, those accumulated lists stay out of
+    ``changes`` and ``new_facts``; they remain visible on their original case
+    state and commitments surfaces.
+
+    Active facts in ``CaseContextPack`` are different: each row carries direct
+    message/source provenance, so facts owned by the current signal can be
+    materialized without relabeling accumulated state.
 
     The canned "new operational topic" string is only used when no concrete,
     current-signal-attributable change can be established (true last resort).
     """
-    changes: list[dict[str, Any]] = _conflict_delta_rows(pack, current_signal_id=current_signal_id)
+    conflict_changes = _conflict_delta_rows(pack, current_signal_id=current_signal_id)
+    conflict_fields = {str(row.get("field") or "") for row in conflict_changes}
+    fact_changes = [
+        row
+        for row in _current_signal_fact_delta_rows(pack, current_signal_id=current_signal_id)
+        if str(row.get("field") or "") not in conflict_fields
+    ]
+    changes: list[dict[str, Any]] = [*conflict_changes, *fact_changes]
     for flag in (ai.get("combined_risk_flags") or [])[:4]:
         # RC-IQ-R5: humanize internal attachment/document signal tokens before they
         # reach the operator-visible delta.
@@ -849,7 +912,6 @@ def _thread_delta(
     new_conflicts = [row["summary_pl"] for row in changes if row["change_type"] == "changed_or_conflicting_fact"][:8]
     prior_rows = prior_state_rows if isinstance(prior_state_rows, list) else []
     prior_state_pl = _prior_known_state_pl(prior_rows)
-    conflict_changes = [row for row in changes if row["change_type"] == "changed_or_conflicting_fact"]
     if conflict_changes:
         # A genuine current-vs-prior fact conflict IS the state-change signal —
         # no need to additionally ground it in prior_known_state.
@@ -900,7 +962,7 @@ def _thread_delta(
             # last-resort behavior (canned string) rather than emptying the field.
             delta_summary = raw_change
     return {
-        "new_facts": [operator_feed_plain_summary(x, fallback="")[:240] for x in (cu.get("key_facts_hot") or []) if str(x).strip()][:8],
+        "new_facts": [row["summary_pl"] for row in fact_changes[:8]],
         "new_missing_info": missing_fields[:12],
         "new_conflicts": new_conflicts,
         "changes": changes[:12],
@@ -990,6 +1052,9 @@ def _customer_intent_pl(cu: dict[str, Any], business: dict[str, Any], intake: di
     interpretation = operator_feed_plain_summary(business.get("business_interpretation") or "", fallback="")
     if interpretation and interpretation.strip().lower() not in _BUSINESS_REASONING_UNAVAILABLE_MARKERS:
         return interpretation[:300]
+    summary = operator_feed_plain_summary(cu.get("summary_short") or "", fallback="")
+    if summary and summary.strip().lower() not in _BUSINESS_REASONING_UNAVAILABLE_MARKERS:
+        return summary[:300]
     label = _CUSTOMER_STATE_INTENT_PL.get(str(business.get("customer_state_guess") or "").strip())
     if label:
         return label

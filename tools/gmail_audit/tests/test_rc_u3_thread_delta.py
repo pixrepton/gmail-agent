@@ -114,6 +114,30 @@ class SemanticThreadDelta(unittest.TestCase):
         types = {str(c.get("change_type") or "") for c in uo["thread_delta"].get("changes") or []}
         self.assertIn("new_document_signal", types)
 
+    def test_current_signal_active_fact_is_delta_not_prior_state(self) -> None:
+        uo = _uo(pack={
+            "source_refs": [],
+            "vector_retrieval": {},
+            "relevant_chunks": [],
+            "active_facts": [
+                {
+                    "fact_key": "floor_heating_existing",
+                    "value": True,
+                    "normalized_value": "True",
+                    "status": "active",
+                    "message_id": "msg_rcu3",
+                    "source_type": "message",
+                    "source_ref": "msg_rcu3",
+                }
+            ],
+        })
+
+        delta = uo["thread_delta"]
+        types = {str(c.get("change_type") or "") for c in delta.get("changes") or []}
+        self.assertIn("new_or_updated_fact", types)
+        self.assertEqual([], delta["prior_known_state"])
+        self.assertTrue(any("ogrzewanie" in item.lower() for item in delta["new_facts"]))
+
     def test_no_meaningful_delta_falls_back_to_canned(self) -> None:
         uo = _uo(pack={"source_refs": [], "vector_retrieval": {}, "relevant_chunks": []})
         delta = uo["thread_delta"]

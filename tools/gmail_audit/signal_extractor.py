@@ -26,7 +26,9 @@ SIGNAL_EXTRACTION_INSTRUCTIONS = (
     # an unknown. General instruction; do not fabricate a source when genuinely unstated.
     "If the building is described as new construction or currently being built with no "
     "existing heating installation, set current_heating_source explicitly to describe that "
-    "(e.g. 'brak / nowy budynek w budowie') rather than leaving it null."
+    "(e.g. 'brak / nowy budynek w budowie') rather than leaving it null. "
+    "When the message explicitly says installed floor heating exists, preserve both the "
+    "boolean fact and its stated scope; leave either field null when it is not evidenced."
 )
 
 

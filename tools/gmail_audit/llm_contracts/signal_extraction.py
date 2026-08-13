@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SignalExtractionResult(BaseModel):
@@ -15,6 +15,14 @@ class SignalExtractionResult(BaseModel):
     heated_area_m2: float | None = None
     construction_year: int | None = None
     current_heating_source: str | None = None
+    floor_heating_existing: bool | None = Field(
+        default=None,
+        description="Whether installed floor heating already exists; null when not stated.",
+    )
+    floor_heating_scope: str | None = Field(
+        default=None,
+        description="Explicit area covered by existing floor heating, for example parter; null when not stated.",
+    )
     budget_pln_estimated: float | None = None
     price_sensitivity: str | None = None
     raw_geographic_signal: str | None = None

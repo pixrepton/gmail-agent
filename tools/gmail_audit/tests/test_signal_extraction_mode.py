@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from mailbox_memory_runtime import MailboxMemoryRuntime, facts_from_hvac_signals
+from mailbox_memory_runtime import MailboxMemoryRuntime, build_case_context_pack, facts_from_hvac_signals
 from mailbox_memory_store import InMemoryMailboxMemoryStore
+from llm_contracts.signal_extraction import SignalExtractionResult
 from pathlib import Path
 
 
@@ -21,6 +22,57 @@ def test_facts_from_hvac_signals_maps_building_and_area() -> None:
     keys = {row["fact_key"] for row in rows}
     assert "building_type" in keys
     assert "heated_area_m2" in keys
+
+
+def test_floor_heating_signal_is_retained_and_materialized_as_case_facts() -> None:
+    signals = SignalExtractionResult.model_validate(
+        {"floor_heating_existing": True, "floor_heating_scope": "parter"}
+    ).model_dump()
+    rows = facts_from_hvac_signals(
+        signals,
+        case_id="c1",
+        message_id="m1",
+        observed_at="2026-01-01T00:00:00+00:00",
+        source_type="message",
+        source_ref="m1",
+        entity_scope="case",
+        metadata={"extraction_path": "llm_intake"},
+    )
+
+    by_key = {row["fact_key"]: row for row in rows}
+    assert by_key["floor_heating_existing"]["normalized_value"] == "True"
+    assert by_key["floor_heating_scope"]["normalized_value"] == "parter"
+
+
+def test_current_floor_heating_signal_supersedes_prior_case_fact_with_source_provenance() -> None:
+    store = InMemoryMailboxMemoryStore()
+    common = {
+        "case_id": "c1",
+        "observed_at": "2026-01-01T00:00:00+00:00",
+        "source_type": "message",
+        "entity_scope": "case",
+        "metadata": {"extraction_path": "llm_intake"},
+    }
+    store.append_facts_with_supersession(
+        facts_from_hvac_signals(
+            {"floor_heating_existing": False}, message_id="m0", source_ref="m0", **common
+        )
+    )
+    stats = store.append_facts_with_supersession(
+        facts_from_hvac_signals(
+            {"floor_heating_existing": True, "floor_heating_scope": "parter"},
+            message_id="m1",
+            source_ref="m1",
+            **common,
+        )
+    )
+
+    pack = build_case_context_pack(store=store, case_id="c1").to_dict()
+    by_key = {row["fact_key"]: row for row in pack["active_facts"]}
+    assert stats["superseded"] == 1
+    assert by_key["floor_heating_existing"]["normalized_value"] == "True"
+    assert by_key["floor_heating_existing"]["source_ref"] == "m1"
+    assert by_key["floor_heating_scope"]["normalized_value"] == "parter"
 
 
 def test_message_source_facts_llm_skips_regex_when_signals_present() -> None:

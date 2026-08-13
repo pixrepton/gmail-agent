@@ -96,6 +96,45 @@ class CustomerIntentSemantics(unittest.TestCase):
         })
         self.assertIn("faktur", uo["customer_intent_pl"].lower())
 
+    def test_safe_multi_intent_summary_survives_phoneish_date_redaction(self) -> None:
+        uo = _uo(business={
+            "business_interpretation": (
+                "Klient zaakceptowal oferte i chce przelozyc wizyte z 23.07.2026 "
+                "na piatek; pyta tez o wywoz starego pieca."
+            ),
+            "business_summary_short": (
+                "Klient akceptuje oferte, prosi o przeniesienie wizyty na piatek "
+                "i pyta o wywoz starego pieca."
+            ),
+            "customer_state_guess": "post_offer",
+            "recommended_next_action": "escalate_review",
+            "urgency": "high",
+        })
+
+        intent = uo["customer_intent_pl"].lower()
+        self.assertIn("akceptuje oferte", intent)
+        self.assertIn("piatek", intent)
+        self.assertIn("wywoz starego pieca", intent)
+
+    def test_safe_fact_update_summary_survives_phoneish_date_redaction(self) -> None:
+        uo = _uo(business={
+            "business_interpretation": (
+                "Klient koryguje zalozenie z 2026-07-10: na parterze ma juz "
+                "zamontowane ogrzewanie podlogowe."
+            ),
+            "business_summary_short": (
+                "Klient poprawia wczesniejsze zalozenie: na parterze istnieje "
+                "ogrzewanie podlogowe."
+            ),
+            "customer_state_guess": "active_case",
+            "recommended_next_action": "update_case",
+            "urgency": "normal",
+        })
+
+        intent = uo["customer_intent_pl"].lower()
+        self.assertIn("poprawia wczesniejsze zalozenie", intent)
+        self.assertIn("ogrzewanie podlogowe", intent)
+
     def test_state_guess_label_used_when_interpretation_unavailable(self) -> None:
         uo = _uo(business={
             "business_interpretation": "Business interpretation unavailable.",
