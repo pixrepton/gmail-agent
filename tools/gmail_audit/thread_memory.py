@@ -30,7 +30,6 @@ def build_thread_memory(
     unresolved = _detect_unresolved_questions(
         source_message=source_message,
         context_messages=context_messages,
-        business_result=business_result or {},
         existing_unresolved=list(existing.get("unresolved_questions") or []),
     )
     commitments = _detect_commitments(
@@ -101,15 +100,9 @@ def _detect_unresolved_questions(
     *,
     source_message: dict[str, Any],
     context_messages: list[dict[str, Any]],
-    business_result: dict[str, Any],
     existing_unresolved: list[str],
 ) -> list[str]:
     questions: list[str] = list(existing_unresolved)
-    missing = business_result.get("missing_information") or []
-    for item in missing:
-        text = str(item).strip()
-        if text and text not in questions:
-            questions.append(text)
 
     body = str(source_message.get("body") or "").strip()
     if "?" in body:

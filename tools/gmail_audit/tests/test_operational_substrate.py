@@ -13,6 +13,7 @@ if str(TOOL_DIR) not in sys.path:
 from action_planner import plan_actions
 from attachment_intelligence import build_attachment_intelligence
 from case_intelligence import build_case_intelligence
+from case_intelligence.risks import build_risk_assessment
 from confidence_review import apply_confidence_to_intelligence, build_confidence_domains, route_review
 from event_memory import EventLog, emit_case_intelligence, emit_desk_note_event, emit_feedback_event, emit_signal_received
 from intake_schema import validate_business_reasoning_result, validate_case_link_result, validate_intake_result, validate_reply_draft_result
@@ -152,6 +153,41 @@ class ThreadMemoryTests(unittest.TestCase):
         thread = build_thread_memory(snapshot)
         self.assertTrue(thread["has_unanswered_question"])
         self.assertGreaterEqual(len(thread["unresolved_questions"]), 1)
+
+    def test_missing_business_information_is_not_an_unanswered_customer_question(self) -> None:
+        snapshot = build_fixture_snapshot({
+            "mailbox": "ops@topinstal.local",
+            "source_message": {
+                "message_id": "thr-gap-001",
+                "thread_id": "thr-thread-gap-001",
+                "date": "2026-04-02T11:00:00+02:00",
+                "from": "client@example.com",
+                "to": ["ops@topinstal.local"],
+                "subject": "Prosba o wycene",
+                "snippet": "Prosze przygotowac wycene instalacji.",
+                "body": "Prosze przygotowac wycene instalacji dla domu jednorodzinnego.",
+                "labels": ["INBOX"],
+            },
+            "context_messages": [],
+        })
+
+        thread = build_thread_memory(
+            snapshot,
+            business_result={"missing_information": ["OZC", "adres instalacji"]},
+        )
+
+        self.assertEqual(thread["unresolved_questions"], [])
+        self.assertFalse(thread["has_unanswered_question"])
+        self.assertEqual(thread["thread_state"], "active")
+
+        risk_assessment = build_risk_assessment(
+            intake_result={"priority": "medium", "case_assessment": {"case_family": "lead_opportunity"}},
+            business_result={"missing_information": ["OZC", "adres instalacji"], "risks": []},
+            missing_info={"critical": []},
+            current_note_state={},
+            thread_memory=thread,
+        )
+        self.assertEqual(risk_assessment["risks"], [])
 
     def test_commitment_detected_in_thread(self) -> None:
         snapshot = build_fixture_snapshot({
