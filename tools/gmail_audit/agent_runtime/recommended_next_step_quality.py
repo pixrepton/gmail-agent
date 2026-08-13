@@ -17,6 +17,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from llm_contracts.case_lifecycle import is_terminal
+
 _VAGUE = re.compile(
     r"(r[eę]czna\s+ocena|manual\s+review|escalate_internal|escalate_review|"
     r"wymaga\s+decyzji|wymaga\s+oceny|przeka[zż]\s+operatorowi|human\s+review|"
@@ -96,6 +98,34 @@ def is_vague_next_step(text: str) -> bool:
     return bool(_VAGUE.search(str(text or "")))
 
 
+def _is_terminal_lifecycle_hint(value: str) -> bool:
+    normalized = str(value or "").strip().lower()
+    return is_terminal(normalized) or normalized in {
+        "closed",
+        "merged",
+        "cancelled",
+        "terminal",
+        "archived",
+    }
+
+
+def _has_terminal_action_text(value: str) -> bool:
+    text = str(value or "").lower()
+    return any(
+        marker in text
+        for marker in (
+            "zamknij spraw",
+            "zaproponuj jej zamknięcie",
+            "zaproponuj jej zamkniecie",
+            "zaproponuj zamknięcie",
+            "zaproponuj zamkniecie",
+            "archiwizuj",
+            "close case",
+            "archive_case",
+        )
+    )
+
+
 def normalize_case_kind(*, case_kind: str = "", business_area: str = "", case_family: str = "") -> str:
     raw = " ".join(
         str(x or "").strip().lower() for x in (case_kind, business_area, case_family) if x
@@ -121,6 +151,8 @@ def planner_action_hint(
     text = str(sharpened_pl or "").lower()
     kind = normalize_case_kind(case_kind=case_kind)
     missing = [str(x).strip() for x in (missing_critical_fields or []) if str(x).strip()]
+    if _has_terminal_action_text(text):
+        return "archive_case"
     if "report_gaps" in text or (missing and "tylko o" in text):
         if "generate_draft" in text or "draft" in text:
             return "generate_draft_reply"
@@ -241,9 +273,7 @@ def classify_decision_state(
     missing = [str(x).strip() for x in (missing_critical_fields or []) if str(x).strip()]
     life = str(lifecycle_hint or "").strip().lower()
 
-    if life in {"closed", "merged", "cancelled", "terminal"} or any(
-        t in text for t in ("zamknij spraw", "close case", "archiwizuj")
-    ):
+    if _is_terminal_lifecycle_hint(life) or _has_terminal_action_text(text):
         return DECISION_STATE_CLOSE
 
     if life in {"waiting_client", "waiting"} or any(
@@ -347,6 +377,7 @@ def sharpen_recommended_next_step(
     open_loops: list[Any] | None = None,
     thread_delta: dict[str, Any] | None = None,
     later_missing_fields: list[str] | None = None,
+    lifecycle_hint: str = "",
 ) -> str:
     title = str(title_pl or "").strip()
     reason = str(reason_pl or "").strip()
@@ -363,6 +394,22 @@ def sharpen_recommended_next_step(
         return ""
 
     combined = f"{title} {reason} {action} {essence_pl}"
+    lifecycle = str(lifecycle_hint or "").strip().lower()
+    if _is_terminal_lifecycle_hint(lifecycle):
+        if lifecycle == "lost":
+            return (
+                "Zweryfikuj powiązanie sprawy, następnie zaproponuj jej zamknięcie lub "
+                "archiwizację jako utraconej; bez dalszej sprzedaży ani wyceny."
+            )
+        return (
+            "Potwierdź stan terminalny i zaproponuj zamknięcie lub archiwizację sprawy; "
+            "bez ponownego uruchamiania obsługi."
+        )
+    if _has_terminal_action_text(combined):
+        if reason and reason.lower() not in title.lower():
+            return f"{title}. {reason}"[:400] if title else reason[:400]
+        return (title or reason)[:400]
+
     technical_question = kind in _TECHNICAL_KINDS or any(
         marker in combined.lower()
         for marker in ("kompatybil", "technicz", "karta katalog", "dokument", "aquarea")
@@ -586,6 +633,13 @@ def evaluate_understanding_to_decision_quality(
         or ""
     )
     area = str(business_area or ss.get("business_area") or cu.get("business_area") or "")
+    lifecycle = str(
+        lifecycle_hint
+        or ss.get("current_state")
+        or cu.get("current_state")
+        or uo.get("current_state")
+        or ""
+    )
     missing = [str(x) for x in (uo.get("missing_critical_fields") or []) if str(x).strip()]
     risks = list(uo.get("risks") or [])
     open_loops = list(uo.get("open_loops") or [])
@@ -605,6 +659,7 @@ def evaluate_understanding_to_decision_quality(
         open_loops=open_loops,
         thread_delta=delta,
         later_missing_fields=_later_missing_fields(uo),
+        lifecycle_hint=lifecycle,
     )
     gaps_vs_risks = separate_gaps_vs_risks(
         missing_critical_fields=missing,
@@ -624,7 +679,7 @@ def evaluate_understanding_to_decision_quality(
         missing_critical_fields=missing,
         risks=risks,
         open_loops=open_loops,
-        lifecycle_hint=lifecycle_hint,
+        lifecycle_hint=lifecycle,
         policy_allowed=policy_allowed,
         hitl_required=hitl_required,
         draft_ready=draft_ready,
@@ -708,6 +763,12 @@ def apply_nba_quality_to_understanding(
         or ""
     )
     area = str(business_area or ss.get("business_area") or cu.get("business_area") or "")
+    lifecycle = str(
+        ss.get("current_state")
+        or cu.get("current_state")
+        or uo.get("current_state")
+        or ""
+    )
     missing = [str(x) for x in (uo.get("missing_critical_fields") or [])[:6]]
     risks = list(uo.get("risks") or [])
     open_loops = list(uo.get("open_loops") or [])
@@ -727,6 +788,7 @@ def apply_nba_quality_to_understanding(
         open_loops=open_loops,
         thread_delta=delta,
         later_missing_fields=_later_missing_fields(uo),
+        lifecycle_hint=lifecycle,
     )
     decision_state = classify_decision_state(
         sharpened_pl=sharpened,
@@ -735,6 +797,7 @@ def apply_nba_quality_to_understanding(
         missing_critical_fields=missing,
         risks=risks,
         open_loops=open_loops,
+        lifecycle_hint=lifecycle,
     )
     gaps_vs_risks = separate_gaps_vs_risks(
         missing_critical_fields=list(uo.get("missing_critical_fields") or []),

@@ -177,6 +177,40 @@ class RecommendationCoherence(unittest.TestCase):
         rec = uo.get("next_best_action_recommendation") or {}
         self.assertNotEqual(str(rec.get("action_type") or ""), "wait")
 
+    def test_terminal_lost_state_is_preserved_and_blocks_further_sales(self) -> None:
+        uo = _uo(
+            business={
+                "business_interpretation": "Klient wybral innego wykonawce i rezygnuje z oferty.",
+                "customer_state_guess": "post_offer",
+                "recommended_next_action": "escalate_review",
+                "recommended_action_reason": "Najpierw potwierdz powiazanie z wlasciwa sprawa.",
+                "missing_information": ["Potwierdzenie tozsamosci klienta"],
+                "urgency": "normal",
+            },
+            intake={
+                "decision": {"action": "review"},
+                "business_area": "sales",
+                "priority": "medium",
+                "case_assessment": {
+                    "case_family": "lead_opportunity",
+                    "state_detected": "lost",
+                    "interpretation": "Klient odrzucil oferte.",
+                },
+                "thread": {"thread_id": "thread_rcu1"},
+                "review": {"required": True, "flags": ["possible_existing_case_but_no_match"]},
+            },
+        )
+
+        self.assertEqual(uo["situation_summary"]["current_state"], "lost")
+        rec = uo["next_best_action_recommendation"]
+        title = rec["title_pl"].lower()
+        self.assertTrue("zamkn" in title or "archiw" in title)
+        self.assertNotIn("call_kalk", title)
+        self.assertNotIn("generate_draft", title)
+        self.assertNotIn("dopytaj", title)
+        self.assertEqual(rec["quality"]["decision_state"], "close")
+        self.assertEqual(rec["quality"]["planner_action_hint"], "archive_case")
+
 
 class HonestConfidence(unittest.TestCase):
     """confidence must come from a real confidence-bearing signal, never be

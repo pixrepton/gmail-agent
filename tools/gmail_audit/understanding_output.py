@@ -182,6 +182,7 @@ def build_understanding_output(
         "situation_summary": {
             "case_family": case_family,
             "business_area": business_area,
+            "current_state": str(cu.get("current_state") or ""),
             "case_link_decision": str((case_link_result or {}).get("decision") or ""),
             "intake_action": str((intake.get("decision") or {}).get("action") or ""),
         },

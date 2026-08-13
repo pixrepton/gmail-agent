@@ -22,6 +22,7 @@ from agent_runtime.recommended_next_step_quality import (
     evaluate_understanding_to_decision_quality,
     is_meaningful_follow_up_delta,
     is_vague_next_step,
+    planner_action_hint,
     separate_gaps_vs_risks,
     sharpen_recommended_next_step,
 )
@@ -87,6 +88,47 @@ def test_fu07_follow_up_change_maps_to_reply() -> None:
         missing_critical_fields=[],
     )
     assert state == DECISION_STATE_REPLY
+
+
+def test_terminal_lost_state_overrides_sales_gap_completion() -> None:
+    out = apply_nba_quality_to_understanding(
+        {
+            "situation_summary": {
+                "case_family": "lead_opportunity",
+                "business_area": "sales",
+                "current_state": "lost",
+            },
+            "missing_critical_fields": ["Potwierdzenie tozsamosci klienta"],
+            "operator_explanation": {
+                "essence_pl": "Klient wybral innego wykonawce po otrzymaniu oferty."
+            },
+            "next_best_action_recommendation": {
+                "title_pl": "Wymagana reczna ocena",
+                "reason_pl": "Trzeba potwierdzic powiazanie z wlasciwa sprawa.",
+                "action_type": "review_required",
+                "kind": "recommendation",
+            },
+        },
+        case_kind="lead_opportunity",
+    )
+
+    nba = out["next_best_action_recommendation"]
+    title = nba["title_pl"].lower()
+    assert "zamkn" in title or "archiw" in title
+    assert "call_kalk" not in title
+    assert "generate_draft" not in title
+    assert "dopytaj" not in title
+    assert nba["quality"]["decision_state"] == DECISION_STATE_CLOSE
+    assert nba["quality"]["planner_action_hint"] == "archive_case"
+
+
+def test_terminal_hint_does_not_treat_negated_close_as_archive_command() -> None:
+    hint = planner_action_hint(
+        sharpened_pl="Nie zamykaj sprawy; przygotuj generate_draft_reply do HITL.",
+        case_kind="lead_opportunity",
+    )
+
+    assert hint == "generate_draft_reply"
 
 
 def test_gaps_vs_risks_rejects_question_in_gaps() -> None:
