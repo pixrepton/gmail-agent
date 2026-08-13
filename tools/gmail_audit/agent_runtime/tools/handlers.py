@@ -15,6 +15,7 @@ from agent_runtime.cp2025 import check_cp2025_eligibility
 from agent_runtime.draft_identity import compute_body_hash, compute_draft_id
 from agent_runtime.kalk_top_client import (
     KalkTopClientError,
+    KalkTopInvalidResponseError,
     KalkTopUnreachableError,
     build_calc_request_from_profile,
     call_calculate_offer,
@@ -722,6 +723,18 @@ def call_kalk_top_quote(_plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolR
                 tool_name="call_kalk_top_quote",
                 summary=str(exc),
                 status="node_a_error",
+            ),
+        )
+    except KalkTopInvalidResponseError as exc:
+        return attach_attribution(
+            ToolResult(status="error", turn_summary_pl=str(exc)),
+            attribution(
+                failure_class="DOWNSTREAM_RESULT_INVALID",
+                owner="infra",
+                stage="tool_execution",
+                retryable=False,
+                safe_next_step="escalate_downstream_contract",
+                detail="call_kalk_top_quote: downstream response invalid",
             ),
         )
     except KalkTopClientError as exc:

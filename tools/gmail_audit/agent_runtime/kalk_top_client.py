@@ -18,6 +18,10 @@ class KalkTopUnreachableError(KalkTopClientError):
     """Network / 5xx — map to node_a_error in agent graph."""
 
 
+class KalkTopInvalidResponseError(KalkTopClientError):
+    """The downstream endpoint responded, but violated its JSON contract."""
+
+
 def build_calc_request_from_profile(snapshot_data: dict[str, Any]) -> dict[str, Any]:
     profile = snapshot_data.get("hvac_profile") if isinstance(snapshot_data.get("hvac_profile"), dict) else {}
     location = profile.get("location") if isinstance(profile.get("location"), dict) else {}
@@ -76,9 +80,14 @@ def call_calculate_offer(
                 raise KalkTopClientError(
                     f"kalk-top HTTP {response.status_code}: {response.text[:500]}"
                 )
-            data = response.json()
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise KalkTopInvalidResponseError(
+                    "kalk-top returned non-JSON response"
+                ) from exc
             if not isinstance(data, dict):
-                raise KalkTopClientError("kalk-top returned non-object JSON")
+                raise KalkTopInvalidResponseError("kalk-top returned non-object JSON")
             return data
         except httpx.TimeoutException as exc:
             last_error = KalkTopUnreachableError(f"kalk-top timeout after {timeout}s: {exc}")
