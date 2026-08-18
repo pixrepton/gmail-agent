@@ -191,6 +191,7 @@ from intake_schema import (
 from mailbox_memory_runtime import build_mailbox_memory_runtime
 from preclassifier import preclassify_snapshot as run_preclassifier
 from reply_drafter import (
+    annotate_reply_causal_observability,
     build_skipped_reply_draft,
     fallback_reply_drafter,
     run_reply_drafter as run_shadow_reply_drafter,
@@ -2857,13 +2858,31 @@ def draft_reply(
     """Run reply drafting in shadow mode with safe no-draft fallbacks."""
     lane = str((config.get("preclassification_result") or {}).get("lane") or "intake_llm")
     lane_plan = config.get("lane_stage_plan") or {}
+    run_state = config.get("run_state") if isinstance(config.get("run_state"), dict) else {}
+    run_id = str(config.get("run_id") or run_state.get("run_id") or "")
     if not bool(lane_plan.get("run_reply_drafter", True)):
-        return build_skipped_reply_draft(
-            lane=lane,
-            reason=f"reply_drafter_skipped_for_{lane}_lane",
+        return annotate_reply_causal_observability(
+            build_skipped_reply_draft(
+                lane=lane,
+                reason=f"reply_drafter_skipped_for_{lane}_lane",
+            ),
+            snapshot=snapshot,
+            intake_result=intake_result,
+            business_result=business_result,
+            context_bundle=context_bundle,
+            lane_plan=lane_plan,
+            run_id=run_id,
         )
     if business_result is None:
-        return fallback_reply_drafter(reason="business_reasoning_missing")
+        return annotate_reply_causal_observability(
+            fallback_reply_drafter(reason="business_reasoning_missing"),
+            snapshot=snapshot,
+            intake_result=intake_result,
+            business_result=business_result,
+            context_bundle=context_bundle,
+            lane_plan=lane_plan,
+            run_id=run_id,
+        )
 
     business_context_bundle = build_business_context_bundle(
         snapshot,
@@ -2880,6 +2899,7 @@ def draft_reply(
         context_bundle=effective_context_bundle,
         model=config["model"],
         verbose=config["verbose"],
+        run_id=run_id,
     )
 
 

@@ -302,7 +302,25 @@ def run_shared_downstream_stages(
 
         # Stage 2: draft_reply (LLM) — zalezy od business_result
         if opts.skip_draft_reply:
-            reply_result = {"draft_enabled": False, "drafts": [], "skipped": "drive_signal"}
+            from reply_drafter import annotate_reply_causal_observability
+
+            run_id = str(
+                ((opts.run_state or {}).get("run_id") if isinstance(opts.run_state, dict) else "")
+                or stage_config.get("run_id")
+                or ""
+            )
+            reply_result = annotate_reply_causal_observability(
+                {"draft_enabled": False, "drafts": [], "skipped": "drive_signal"},
+                snapshot=snapshot,
+                intake_result=intake_result,
+                business_result=business_result,
+                context_bundle=context_bundle,
+                lane_plan=stage_config.get("lane_stage_plan")
+                if isinstance(stage_config.get("lane_stage_plan"), dict)
+                else {},
+                skip_draft_reply=True,
+                run_id=run_id,
+            )
         else:
             _t = time.monotonic()
             reply_future = _pool.submit(draft_reply, snapshot, intake_result, business_result, context_bundle, stage_config)

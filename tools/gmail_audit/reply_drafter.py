@@ -6,8 +6,17 @@ import json
 import re
 from typing import Any
 
-from central_llm_stage import resolve_case_id, run_central_structured_stage
+from central_llm_stage import resolve_case_id, resolve_engagement_id, run_central_structured_stage
 from config import Settings
+from draft_path_observability import (
+    attach_causal_observability,
+    classify_drafter_failure,
+    evaluate_draft_gate,
+    evaluate_draft_postcheck,
+    evaluate_drafter_execution,
+    execution_from_stage_call,
+    lineage_from_context,
+)
 from groq_client import GroqClientError, extract_json_candidate
 from log_config import get_logger
 from signal_extractor import build_signal_extraction_query
@@ -55,16 +64,48 @@ def should_draft_reply(
     business_result: dict[str, Any] | None,
 ) -> bool:
     """Return True when drafting a reply is useful enough to justify shadow generation."""
-    action = str(intake_result.get("decision", {}).get("action") or "")
-    business_action = str((business_result or {}).get("recommended_next_action") or "")
-    if action in {"ignore", "mark_watchlist"}:
-        return False
-    if intake_result.get("review_required") and business_action not in {"reply", "collect_data"}:
-        return False
-    sender = str(snapshot.get("source_message", {}).get("sender") or "").lower()
-    if any(token in sender for token in ("noreply", "no-reply", "mailer-daemon")):
-        return False
-    return business_action in {"reply", "collect_data", "call"} or bool((business_result or {}).get("reply_recommended"))
+    return evaluate_draft_gate(snapshot, intake_result, business_result)["decision"] == "RUN"
+
+
+def annotate_reply_causal_observability(
+    product_result: dict[str, Any],
+    *,
+    snapshot: dict[str, Any] | None,
+    intake_result: dict[str, Any] | None,
+    business_result: dict[str, Any] | None,
+    context_bundle: dict[str, Any] | None = None,
+    lane_plan: dict[str, Any] | None = None,
+    skip_draft_reply: bool = False,
+    run_id: str = "",
+    gate: dict[str, Any] | None = None,
+    execution: dict[str, Any] | None = None,
+    postcheck: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Attach draft-path evidence without changing product draft fields."""
+    resolved_gate = gate or evaluate_draft_gate(
+        snapshot,
+        intake_result,
+        business_result,
+        lane_plan=lane_plan,
+        skip_draft_reply=skip_draft_reply,
+    )
+    lineage = lineage_from_context(
+        snapshot,
+        context_bundle,
+        run_id=run_id,
+        case_id=resolve_case_id(context_bundle=context_bundle or {}),
+        engagement_id=resolve_engagement_id(context_bundle=context_bundle or {}),
+    )
+    return attach_causal_observability(
+        product_result,
+        snapshot=snapshot,
+        intake_result=intake_result,
+        business_result=business_result,
+        gate=resolved_gate,
+        execution=execution,
+        postcheck=postcheck,
+        lineage=lineage,
+    )
 
 
 def build_reply_draft_prompt_input(
@@ -94,10 +135,21 @@ def run_reply_drafter(
     context_bundle: dict[str, Any] | None = None,
     model: str | None = None,
     verbose: bool = False,
+    run_id: str = "",
 ) -> dict[str, Any]:
     """Run reply drafting in shadow mode with a safe fallback."""
-    if not should_draft_reply(snapshot, intake_result, business_result):
-        return fallback_reply_drafter(reason="reply_not_recommended")
+    gate = evaluate_draft_gate(snapshot, intake_result, business_result)
+    if gate["decision"] != "RUN":
+        return annotate_reply_causal_observability(
+            fallback_reply_drafter(reason="reply_not_recommended"),
+            snapshot=snapshot,
+            intake_result=intake_result,
+            business_result=business_result,
+            context_bundle=context_bundle,
+            run_id=run_id,
+            gate=gate,
+            execution=evaluate_drafter_execution(status="NOT_STARTED"),
+        )
 
     prompt_input = build_reply_draft_prompt_input(
         snapshot,
@@ -107,6 +159,25 @@ def run_reply_drafter(
         context_bundle,
     )
     instructions = load_prompt_text("reply_drafter_system_prompt.md")
+
+    def _failed(reason: str, *, exc: BaseException | None = None) -> dict[str, Any]:
+        status, reason_code = classify_drafter_failure(reason=reason, exc=exc)
+        return annotate_reply_causal_observability(
+            fallback_reply_drafter(reason=reason),
+            snapshot=snapshot,
+            intake_result=intake_result,
+            business_result=business_result,
+            context_bundle=context_bundle,
+            run_id=run_id,
+            gate=gate,
+            execution=evaluate_drafter_execution(
+                status=status,
+                draft_present=False,
+                reason_code=reason_code,
+                fallback_used=True,
+            ),
+            postcheck=evaluate_draft_postcheck(None, execution_status=status),
+        )
 
     try:
         case_id = resolve_case_id(context_bundle=context_bundle or {})
@@ -127,7 +198,7 @@ def run_reply_drafter(
             correlation_id=str((snapshot.get("source_message") or {}).get("message_id") or "").strip() or None,
         )
         if stage_call is None:
-            return fallback_reply_drafter(reason="central_llm_stage_unavailable")
+            return _failed("central_llm_stage_unavailable")
         if str(stage_call.get("parse_status") or "") == "pydantic_failed":
             errors = (stage_call.get("request_meta") or {}).get("pydantic_errors")
             logger.warning("[reply_drafter] Pydantic ValidationError: %s", errors)
@@ -141,10 +212,22 @@ def run_reply_drafter(
             snapshot=snapshot,
             intent=str((business_result or {}).get("recommended_next_action") or "").strip(),
         )
+        execution = execution_from_stage_call(stage_call, parsed)
+        postcheck = evaluate_draft_postcheck(parsed, execution_status=str(execution.get("status") or ""))
         parsed["execution_metadata"] = stage_call
-        return parsed
+        return annotate_reply_causal_observability(
+            parsed,
+            snapshot=snapshot,
+            intake_result=intake_result,
+            business_result=business_result,
+            context_bundle=context_bundle,
+            run_id=run_id,
+            gate=gate,
+            execution=execution,
+            postcheck=postcheck,
+        )
     except GroqClientError as exc:
-        return fallback_reply_drafter(reason=sanitize_text(str(exc)))
+        return _failed(sanitize_text(str(exc)), exc=exc)
 
 
 def _active_fact_present(context_bundle: dict[str, Any] | None, *, fact_key: str) -> bool:
@@ -459,6 +542,7 @@ def build_skipped_reply_draft(*, lane: str, reason: str) -> dict[str, Any]:
 
 
 __all__ = [
+    "annotate_reply_causal_observability",
     "build_skipped_reply_draft",
     "build_reply_draft_prompt_input",
     "fallback_reply_drafter",
