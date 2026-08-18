@@ -136,7 +136,12 @@ def load_agent_runtime_settings() -> AgentRuntimeSettings:
         ).strip()
         or DEFAULT_AGENT_OPENAI_BASE_URL,
         kalk_top_base_url=(os.getenv("KALK_TOP_BASE_URL") or "").strip().rstrip("/"),
-        kalk_top_agent_key=(os.getenv("KALK_TOP_AGENT_KEY") or os.getenv("TOPINSTAL_CALC_AGENT_API_KEY") or "").strip(),
+        kalk_top_agent_key=(
+            os.getenv("KALK_TOP_AGENT_KEY")
+            or os.getenv("KALKTOP_AGENT_KEY")
+            or os.getenv("TOPINSTAL_CALC_AGENT_API_KEY")
+            or ""
+        ).strip(),
         kalk_top_timeout_sec=_parse_positive_int(
             os.getenv("KALK_TOP_TIMEOUT_SEC"),
             default=DEFAULT_KALK_TOP_TIMEOUT_SEC,

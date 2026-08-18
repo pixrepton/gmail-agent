@@ -194,6 +194,10 @@ class OpenAIToolPlanner:
             )
         from agent_runtime.effective_tools import compute_effective_available_tools
 
+        # Graph already applied the eligibility gate with authoritative
+        # decision_context. Re-evaluating here without that context would
+        # fail-closed eligible quote-ready cases. This layer only reapplies
+        # the config/freeze filter on the already-scoped offered set.
         effective = compute_effective_available_tools(
             available_tools,
             constitution=constitution,

@@ -708,6 +708,52 @@ def call_kalk_top_quote(_plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolR
         classify_tool_handler_error,
     )
 
+    # P1.4A fail-closed secondary defence: a direct or unexpected invocation must
+    # not reach the endpoint when the case is not eligible / not technically
+    # ready. Zero HTTP calls for ineligible cases is a hard contract.
+    from agent_runtime.kalk_eligibility import decision_from_snapshot
+
+    signal_payload = getattr(ctx, "signal_payload", None)
+    decision_context = (
+        signal_payload.get("decision_comparison_inputs")
+        if isinstance(signal_payload, dict)
+        else None
+    )
+    case_id = str(getattr(ctx.snapshot, "case_id", "") or "").strip()
+    if not case_id:
+        return attach_attribution(
+            ToolResult(
+                status="error",
+                turn_summary_pl="kalk-top wymaga tożsamości sprawy (case_id)",
+            ),
+            attribution(
+                failure_class="KALK_TOP_NOT_ELIGIBLE",
+                owner="policy",
+                stage="tool_eligibility",
+                retryable=False,
+                safe_next_step="proceed_without_calculation",
+                detail="case_identity_missing",
+            ),
+        )
+
+    decision = decision_from_snapshot(ctx.snapshot, decision_context=decision_context)
+    if not decision.offered:
+        reason = ";".join(decision.reasons) or "not eligible"
+        return attach_attribution(
+            ToolResult(
+                status="error",
+                turn_summary_pl=f"kalk-top nie jest dozwolony dla tej sprawy: {reason}",
+            ),
+            attribution(
+                failure_class="KALK_TOP_NOT_ELIGIBLE",
+                owner="policy",
+                stage="tool_eligibility",
+                retryable=False,
+                safe_next_step="proceed_without_calculation",
+                detail=reason,
+            ),
+        )
+
     payload = build_calc_request_from_profile(ctx.snapshot.model_dump(mode="python"))
     try:
         offer = call_calculate_offer(payload, settings=ctx.settings)

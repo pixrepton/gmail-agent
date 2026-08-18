@@ -150,8 +150,18 @@ def test_kalk_top_unreachable_maps_node_a_error() -> None:
     from agent_runtime.tools.handlers import call_kalk_top_quote
 
     ctx = ToolExecutionContext.from_snapshot(
-        _snapshot(hvac_profile={"heated_area_m2": 100, "location": {"city": "Radlin"}}),
+        _snapshot(
+            case_kind="wycena_oferta",
+            hvac_profile={"heated_area_m2": 100, "location": {"city": "Radlin"}},
+        ),
         settings=settings,
+        signal_payload={
+            "decision_comparison_inputs": {
+                "business_recommended_action": "reply",
+                "action_planner_primary_action": "prepare_reply",
+                "next_best_action_type": "answer_customer",
+            }
+        },
     )
     result = call_kalk_top_quote(ToolCallPlan(tool_name="call_kalk_top_quote"), ctx)
     assert result.status == "node_a_error"

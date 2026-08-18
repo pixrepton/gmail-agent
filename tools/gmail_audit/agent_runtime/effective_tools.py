@@ -86,6 +86,8 @@ def compute_effective_available_tools(
     settings: AgentRuntimeSettings | None = None,
     mutation_frozen: bool = True,
     send_frozen: bool = True,
+    snapshot: Any | None = None,
+    decision_context: dict[str, Any] | None = None,
 ) -> EffectiveToolAvailability:
     """Intersect constitution allowlist with runtime executability.
 
@@ -99,6 +101,15 @@ def compute_effective_available_tools(
 
     write_tools = frozenset({"propose_mutation", "propose_plan"})
     send_tools = frozenset({"send_email", "auto_send"})
+
+    kalk_decision = None
+    if snapshot is not None and "call_kalk_top_quote" in base:
+        from agent_runtime.kalk_eligibility import decision_from_snapshot
+
+        kalk_decision = decision_from_snapshot(
+            snapshot,
+            decision_context=decision_context,
+        )
 
     for name in base:
         if name in send_tools and send_frozen:
@@ -122,6 +133,19 @@ def compute_effective_available_tools(
             filtered.append(decision)
             notes.append(f"{name}: MUTATION_FREEZE")
             continue
+        if name == "call_kalk_top_quote" and kalk_decision is not None:
+            if not kalk_decision.offered:
+                decision = ToolAvailabilityDecision(
+                    tool_name=name,
+                    offered=False,
+                    reason_code="KALK_TOP_NOT_ELIGIBLE",
+                    detail=";".join(kalk_decision.reasons) or "not eligible",
+                )
+                filtered.append(decision)
+                notes.append(f"{name}: {decision.detail}")
+                continue
+            # Eligible: fall through to the config gate below so a missing
+            # KALK_TOP_BASE_URL still removes the tool from the offered set.
         gated = config_gate_reason(name, settings=settings)
         if gated is not None:
             filtered.append(gated)

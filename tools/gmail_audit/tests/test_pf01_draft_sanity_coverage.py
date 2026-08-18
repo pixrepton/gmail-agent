@@ -68,9 +68,22 @@ def _transport(*, body: str) -> dict:
 
 
 def test_kalk_path_placeholder_not_enabled() -> None:
+    from llm_contracts.engagement_snapshot_v2 import HvacProfile
+
     snap = build_initial_snapshot(case_id="c1", engagement_id="e1", trace_id="t1")
-    snap = snap.model_copy(update={"case_kind": "wycena_oferta"})
-    ctx = ToolExecutionContext.from_snapshot(snap, settings=_settings())
+    snap = snap.model_copy(
+        update={
+            "case_kind": "wycena_oferta",
+            "hvac_profile": HvacProfile(heated_area_m2=100),
+        }
+    )
+    ctx = ToolExecutionContext.from_snapshot(
+        snap,
+        settings=_settings(),
+        signal_payload={
+            "decision_comparison_inputs": {"business_recommended_action": "reply"}
+        },
+    )
     poisoned = {
         "pricing": {"totals": {"note": "[TODO] internal placeholder", "gross": 1}},
     }
@@ -91,9 +104,22 @@ def test_kalk_path_placeholder_not_enabled() -> None:
 
 
 def test_kalk_path_forbidden_promise_not_enabled() -> None:
+    from llm_contracts.engagement_snapshot_v2 import HvacProfile
+
     snap = build_initial_snapshot(case_id="c1", engagement_id="e1", trace_id="t1")
-    snap = snap.model_copy(update={"case_kind": "wycena_oferta"})
-    ctx = ToolExecutionContext.from_snapshot(snap, settings=_settings())
+    snap = snap.model_copy(
+        update={
+            "case_kind": "wycena_oferta",
+            "hvac_profile": HvacProfile(heated_area_m2=100),
+        }
+    )
+    ctx = ToolExecutionContext.from_snapshot(
+        snap,
+        settings=_settings(),
+        signal_payload={
+            "decision_comparison_inputs": {"business_recommended_action": "reply"}
+        },
+    )
     poisoned = {
         "pricing": {
             "totals": {
@@ -115,9 +141,22 @@ def test_kalk_path_forbidden_promise_not_enabled() -> None:
 
 
 def test_kalk_path_clean_totals_enabled() -> None:
+    from llm_contracts.engagement_snapshot_v2 import HvacProfile
+
     snap = build_initial_snapshot(case_id="c1", engagement_id="e1", trace_id="t1")
-    snap = snap.model_copy(update={"case_kind": "wycena_oferta"})
-    ctx = ToolExecutionContext.from_snapshot(snap, settings=_settings())
+    snap = snap.model_copy(
+        update={
+            "case_kind": "wycena_oferta",
+            "hvac_profile": HvacProfile(heated_area_m2=100),
+        }
+    )
+    ctx = ToolExecutionContext.from_snapshot(
+        snap,
+        settings=_settings(),
+        signal_payload={
+            "decision_comparison_inputs": {"business_recommended_action": "reply"}
+        },
+    )
     clean = {"pricing": {"totals": {"net": 12000, "gross": 14760}}}
     with patch(
         "agent_runtime.tools.handlers.call_calculate_offer",

@@ -27,19 +27,33 @@ def build_calc_request_from_profile(snapshot_data: dict[str, Any]) -> dict[str, 
     location = profile.get("location") if isinstance(profile.get("location"), dict) else {}
     heated = profile.get("heated_area_m2")
     ozc_kw = profile.get("thermal_demand_kw")
+    building: dict[str, Any] = {"heated_area": heated}
+    city = location.get("city")
+    postal_code = location.get("postal_code")
+    if city:
+        building["city"] = city
+    if postal_code:
+        building["postal_code"] = postal_code
+    known_building_type = profile.get("building_type")
+    if known_building_type:
+        # Only a real case fact; no fabricated "single_family" default.
+        building["building_type"] = known_building_type
+    # DHW is only asserted when a real case fact exists. The kalk-top validator
+    # requires persons > 0 when dhw.enabled=true; with no known persons we send
+    # no DHW assertion at all (domain applies its own documented default).
+    dhw: dict[str, Any] = {}
+    known_persons = profile.get("dhw_persons")
+    if known_persons is not None:
+        dhw["enabled"] = True
+        dhw["persons"] = known_persons
     payload: dict[str, Any] = {
         "schemaVersion": "1.0",
         "traceId": str(snapshot_data.get("trace_id") or snapshot_data.get("engagement_id") or "")[:128],
         "lead": {"source": "gmail-agent", "channel": "agent_runtime"},
-        "building": {
-            "heated_area": heated,
-            "city": location.get("city"),
-            "postal_code": location.get("postal_code"),
-            "building_type": profile.get("building_type") or "single_family",
-        },
+        "building": building,
         "preferences": {
             "heating": {"enabled": True},
-            "dhw": {"enabled": True, "persons": 4},
+            "dhw": dhw,
         },
     }
     if ozc_kw is not None and heated:
@@ -53,6 +67,19 @@ def build_calc_request_from_profile(snapshot_data: dict[str, Any]) -> dict[str, 
     return payload
 
 
+def build_calculate_offer_url(base: str) -> str:
+    """Build the calculate-offer URL for the current WordPress REST contract.
+
+    Pretty permalinks (`/wp-json/topinstal/v1/calculate-offer`) require a front
+    controller that maps `/wp-json/*` onto `rest_route`. The local PHP built-in
+    server historically served the WordPress HTML shell instead, producing
+    HTTP 200 + `text/html` + non-JSON. The explicit REST query form works on
+    php -S and on Apache/nginx permalink installs.
+    """
+    normalized = str(base or "").strip().rstrip("/")
+    return f"{normalized}/index.php?rest_route=/topinstal/v1/calculate-offer"
+
+
 def call_calculate_offer(
     payload: dict[str, Any],
     *,
@@ -61,7 +88,7 @@ def call_calculate_offer(
     base = str(settings.kalk_top_base_url or "").strip().rstrip("/")
     if not base:
         raise KalkTopClientError("KALK_TOP_BASE_URL is not configured")
-    url = f"{base}/wp-json/topinstal/v1/calculate-offer"
+    url = build_calculate_offer_url(base)
     headers = {"Content-Type": "application/json"}
     key = str(settings.kalk_top_agent_key or "").strip()
     if key:

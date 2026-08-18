@@ -228,6 +228,12 @@ class AgentGraphEngine:
                 available_tools,
                 constitution=self._constitution,
                 settings=getattr(ctx, "settings", None),
+                snapshot=current,
+                decision_context=(
+                    ctx.signal_payload.get("decision_comparison_inputs")
+                    if isinstance(getattr(ctx, "signal_payload", None), dict)
+                    else None
+                ),
             )
             available_tools = effective.offered
             try:

@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import httpx
 import pytest
+
+TOOL_DIR = Path(__file__).resolve().parent.parent
+if str(TOOL_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOL_DIR))
 
 from agent_runtime.kalk_top_client import KalkTopClientError, call_calculate_offer
 from agent_runtime.settings import AgentRuntimeSettings
@@ -49,6 +56,14 @@ class _NonJsonClient:
         return _NonJsonResponse()
 
 
+def test_calculate_offer_url_uses_wordpress_rest_route_form() -> None:
+    from agent_runtime.kalk_top_client import build_calculate_offer_url
+
+    url = build_calculate_offer_url("http://127.0.0.1:8091/")
+    assert url == "http://127.0.0.1:8091/index.php?rest_route=/topinstal/v1/calculate-offer"
+    assert "wp-json" not in url
+
+
 def test_non_json_success_is_a_typed_kalk_top_client_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -67,7 +82,22 @@ def test_non_json_success_cannot_escape_the_planner_tool_boundary(
         engagement_id="eng-kalk-invalid-response",
         trace_id="trace-kalk-invalid-response",
     )
+    from llm_contracts.engagement_snapshot_v2 import HvacProfile
+
+    snapshot = snapshot.model_copy(
+        update={
+            "case_kind": "wycena_oferta",
+            "hvac_profile": HvacProfile(heated_area_m2=100),
+        }
+    )
     context = ToolExecutionContext.from_snapshot(snapshot, settings=_settings())
+    context.signal_payload = {
+        "decision_comparison_inputs": {
+            "business_recommended_action": "reply",
+            "action_planner_primary_action": "prepare_reply",
+            "next_best_action_type": "answer_customer",
+        }
+    }
 
     result = AgentToolRegistry().execute(
         ToolCallPlan(tool_name="call_kalk_top_quote", arguments={}),
