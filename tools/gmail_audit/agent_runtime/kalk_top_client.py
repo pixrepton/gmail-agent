@@ -68,16 +68,43 @@ def build_calc_request_from_profile(snapshot_data: dict[str, Any]) -> dict[str, 
 
 
 def build_calculate_offer_url(base: str) -> str:
-    """Build the calculate-offer URL for the current WordPress REST contract.
+    """Canonical calculate-offer URL shared with other kalk-top consumers.
 
-    Pretty permalinks (`/wp-json/topinstal/v1/calculate-offer`) require a front
-    controller that maps `/wp-json/*` onto `rest_route`. The local PHP built-in
-    server historically served the WordPress HTML shell instead, producing
-    HTTP 200 + `text/html` + non-JSON. The explicit REST query form works on
-    php -S and on Apache/nginx permalink installs.
+    Contract: `{base}/wp-json/topinstal/v1/calculate-offer` (pretty permalink).
+    The WordPress query form `index.php?rest_route=...` is an equivalent REST
+    dispatcher, not the product canonical URL. Local php -S mapping of
+    `/wp-json/*` is a local-runtime owner concern.
     """
     normalized = str(base or "").strip().rstrip("/")
-    return f"{normalized}/index.php?rest_route=/topinstal/v1/calculate-offer"
+    return f"{normalized}/wp-json/topinstal/v1/calculate-offer"
+
+
+def interpret_calculate_offer_success(data: object) -> dict[str, Any]:
+    """Fail closed unless the payload is the current calculate-offer success contract.
+
+    Does not invent an OfferDTO. Validates only the documented success envelope
+    and the fields consumed by `call_kalk_top_quote` (`pricing.totals`).
+    """
+    if not isinstance(data, dict):
+        raise KalkTopInvalidResponseError("kalk-top returned non-object JSON")
+    error_code = str(data.get("errorCode") or "").strip()
+    if error_code:
+        raise KalkTopInvalidResponseError(
+            f"kalk-top returned error envelope: {error_code}"
+        )
+    schema_version = str(data.get("schemaVersion") or "").strip()
+    if not schema_version:
+        raise KalkTopInvalidResponseError("kalk-top success payload missing schemaVersion")
+    engineering = data.get("engineering")
+    if not isinstance(engineering, dict) or not engineering:
+        raise KalkTopInvalidResponseError("kalk-top success payload missing engineering")
+    pricing = data.get("pricing")
+    if not isinstance(pricing, dict):
+        raise KalkTopInvalidResponseError("kalk-top success payload missing pricing")
+    totals = pricing.get("totals")
+    if not isinstance(totals, dict) or not totals:
+        raise KalkTopInvalidResponseError("kalk-top success payload missing pricing.totals")
+    return data
 
 
 def call_calculate_offer(
@@ -113,9 +140,7 @@ def call_calculate_offer(
                 raise KalkTopInvalidResponseError(
                     "kalk-top returned non-JSON response"
                 ) from exc
-            if not isinstance(data, dict):
-                raise KalkTopInvalidResponseError("kalk-top returned non-object JSON")
-            return data
+            return interpret_calculate_offer_success(data)
         except httpx.TimeoutException as exc:
             last_error = KalkTopUnreachableError(f"kalk-top timeout after {timeout}s: {exc}")
         except httpx.TransportError as exc:

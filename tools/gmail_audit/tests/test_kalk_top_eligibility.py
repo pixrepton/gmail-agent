@@ -274,6 +274,80 @@ def test_handler_fail_closed_missing_case_id(monkeypatch: pytest.MonkeyPatch) ->
     assert calls["n"] == 0
 
 
+def test_anti_overrestriction_boundary_cohort() -> None:
+    """KEEP_AND_RESTRICT: block overuse without converting the tool into REMOVE.
+
+    Authoritative quote-intent signal in the current case model is CaseKindLiteral:
+    `wycena_oferta` = quote/offer request; `zapytanie_klienta` = pre-offer inquiry.
+    There is no second quote-intent field. Scenario C is therefore a documented
+    model limitation, not a new ontology.
+    """
+    # A. wycena_oferta + ready -> YES
+    snapshot_a = _snapshot(case_kind="wycena_oferta", heated_area_m2=150)
+    assert decision_from_snapshot(snapshot_a, decision_context=_context("reply")).offered is True
+    assert "call_kalk_top_quote" in _effective(snapshot_a, _context("reply"))
+
+    # B. zapytanie_klienta + pure technical question -> NO
+    snapshot_b = _snapshot(case_kind="zapytanie_klienta", heated_area_m2=120)
+    decision_b = decision_from_snapshot(snapshot_b, decision_context=_context("reply"))
+    assert decision_b.offered is False
+    assert any("quote_intent_missing" in r for r in decision_b.reasons)
+
+    # C. zapytanie_klienta + BR clearly requests calculation/offer
+    # Current contract cannot express this without changing CaseKindLiteral.
+    snapshot_c = _snapshot(case_kind="zapytanie_klienta", heated_area_m2=150)
+    decision_c = decision_from_snapshot(snapshot_c, decision_context=_context("reply"))
+    assert decision_c.offered is False
+    assert any("quote_intent_missing" in r for r in decision_c.reasons)
+
+    # D. wycena_oferta + collect_data -> NO
+    snapshot_d = _snapshot(case_kind="wycena_oferta", heated_area_m2=150)
+    decision_d = decision_from_snapshot(snapshot_d, decision_context=_context("collect_data"))
+    assert decision_d.offered is False
+    assert "business_not_quote_ready:collect_data" in decision_d.reasons
+
+    # E. wycena_oferta + technically missing heated area -> NO
+    snapshot_e = _snapshot(case_kind="wycena_oferta", heated_area_m2=None)
+    decision_e = decision_from_snapshot(snapshot_e, decision_context=_context("reply"))
+    assert decision_e.offered is False
+    assert decision_e.business_eligible is True
+    assert "required_input_missing:heated_area_m2" in decision_e.reasons
+
+    # F. quote-ready + unrelated non-blocking information gap -> YES
+    snapshot_f = _snapshot(case_kind="wycena_oferta", heated_area_m2=150)
+    decision_f = decision_from_snapshot(snapshot_f, decision_context=_context("reply"))
+    assert decision_f.offered is True
+    payload = build_calc_request_from_profile(snapshot_f.model_dump(mode="python"))
+    assert "city" not in payload["building"]
+
+
+def test_low_severity_contradiction_does_not_remove_kalk() -> None:
+    risks = [
+        UnderstandingRiskItem(
+            risk_type="contradiction",
+            severity="low",
+            summary_pl="Drobna niespójność adresu",
+        )
+    ]
+    snapshot = _snapshot(risks=risks)
+    decision = decision_from_snapshot(snapshot, decision_context=_context("reply"))
+    assert decision.offered is True
+
+
+def test_unrelated_high_conflict_fail_closed_without_relevance_metadata() -> None:
+    risks = [
+        UnderstandingRiskItem(
+            risk_type="conflict",
+            severity="high",
+            summary_pl="Konflikt niezwiązany z metrażem",
+        )
+    ]
+    snapshot = _snapshot(risks=risks)
+    decision = decision_from_snapshot(snapshot, decision_context=_context("reply"))
+    assert decision.offered is False
+    assert any("blocking_contradiction" in r for r in decision.reasons)
+
+
 def test_payload_has_no_fabricated_defaults() -> None:
     payload = build_calc_request_from_profile(
         {
