@@ -11,6 +11,7 @@ import unittest
 from case_intelligence.risks import build_risk_assessment, _risk_item, _dedupe_risk_items
 from case_intelligence.missing_info import build_missing_info
 from case_intelligence.next_best_action import build_next_best_action, _action_item
+from case_intelligence.orchestrator import merge_data
 
 
 class TestRiskAssessment(unittest.TestCase):
@@ -232,6 +233,90 @@ class TestLifecycle(unittest.TestCase):
             current_note_state={},
         )
         self.assertIn("lifecycle_intent", result)
+
+
+class TestMergeData(unittest.TestCase):
+    def test_conflicting_fact_values_are_not_resolved_by_newer_timestamp(self):
+        result = merge_data(
+            {
+                "case_id": "case-old",
+                "facts": [
+                    {
+                        "fact_key": "heated_area_m2",
+                        "normalized_value": "120",
+                        "observed_at": "2026-08-20T10:00:00Z",
+                    }
+                ],
+            },
+            {
+                "case_id": "case-new",
+                "facts": [
+                    {
+                        "fact_key": "heated_area_m2",
+                        "normalized_value": "150",
+                        "observed_at": "2026-08-20T11:00:00Z",
+                    }
+                ],
+            },
+        )
+
+        facts = result["merged"]["facts"]
+        values = {item.get("normalized_value") for item in facts}
+        self.assertEqual(values, {"120", "150"})
+        self.assertEqual(result["merged_facts"], 2)
+        self.assertTrue(result["conflicts"])
+        self.assertNotIn("zachowano nowsza", " ".join(result["conflicts"]))
+
+    def test_fact_conflict_result_is_timestamp_permutation_invariant(self):
+        older_first = merge_data(
+            {
+                "case_id": "case-a",
+                "facts": [
+                    {
+                        "fact_key": "city",
+                        "normalized_value": "Krakow",
+                        "observed_at": "2026-08-20T10:00:00Z",
+                    }
+                ],
+            },
+            {
+                "case_id": "case-b",
+                "facts": [
+                    {
+                        "fact_key": "city",
+                        "normalized_value": "Katowice",
+                        "observed_at": "2026-08-20T11:00:00Z",
+                    }
+                ],
+            },
+        )
+        newer_first = merge_data(
+            {
+                "case_id": "case-a",
+                "facts": [
+                    {
+                        "fact_key": "city",
+                        "normalized_value": "Krakow",
+                        "observed_at": "2026-08-20T11:00:00Z",
+                    }
+                ],
+            },
+            {
+                "case_id": "case-b",
+                "facts": [
+                    {
+                        "fact_key": "city",
+                        "normalized_value": "Katowice",
+                        "observed_at": "2026-08-20T10:00:00Z",
+                    }
+                ],
+            },
+        )
+
+        for result in (older_first, newer_first):
+            values = {item.get("normalized_value") for item in result["merged"]["facts"]}
+            self.assertEqual(values, {"Krakow", "Katowice"})
+            self.assertTrue(result["conflicts"])
 
 
 class TestSchemas(unittest.TestCase):

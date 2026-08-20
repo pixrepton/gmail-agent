@@ -136,28 +136,26 @@ def merge_data(
 
     facts_a = list(case_a.get("facts") or case_a.get("key_facts") or [])
     facts_b = list(case_b.get("facts") or case_b.get("key_facts") or [])
-    merged_facts_map: dict[str, dict[str, Any]] = {}
-    for fact in facts_a:
-        key = str(fact.get("fact_key") or fact.get("key") or "").strip()
-        if key:
-            merged_facts_map[key] = dict(fact)
-    for fact in facts_b:
+    merged_facts: list[dict[str, Any]] = []
+    seen_fact_values: set[tuple[str, str]] = set()
+    values_by_key: dict[str, set[str]] = {}
+    for fact in facts_a + facts_b:
         key = str(fact.get("fact_key") or fact.get("key") or "").strip()
         if not key:
             continue
-        existing = merged_facts_map.get(key)
-        if existing is not None:
-            old_val = str(existing.get("normalized_value") or existing.get("value") or "")
-            new_val = str(fact.get("normalized_value") or fact.get("value") or "")
-            if old_val and new_val and old_val != new_val:
-                conflicts.append(f"fact_key={key!r}: '{old_val}' vs '{new_val}' -- zachowano nowsza")
-                old_ts = existing.get("observed_at") or ""
-                new_ts = fact.get("observed_at") or ""
-                if new_ts >= old_ts:
-                    merged_facts_map[key] = dict(fact)
-        else:
-            merged_facts_map[key] = dict(fact)
-    merged_facts_list = sorted(merged_facts_map.values(), key=lambda f: str(f.get("observed_at") or ""), reverse=True)
+        value = str(fact.get("normalized_value") or fact.get("value") or "").strip()
+        identity = (key, value)
+        if identity in seen_fact_values:
+            continue
+        known_values = values_by_key.setdefault(key, set())
+        if value and known_values and value not in known_values:
+            previous = sorted(known_values)[0]
+            conflicts.append(f"fact_key={key!r}: '{previous}' vs '{value}' -- kept both as conflict")
+        if value:
+            known_values.add(value)
+        seen_fact_values.add(identity)
+        merged_facts.append(dict(fact))
+    merged_facts_list = sorted(merged_facts, key=lambda f: str(f.get("observed_at") or ""), reverse=True)
 
     docs_a = list(case_a.get("documents") or case_a.get("docs") or [])
     docs_b = list(case_b.get("documents") or case_b.get("docs") or [])
