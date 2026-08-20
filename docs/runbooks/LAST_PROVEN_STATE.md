@@ -1,12 +1,23 @@
 # Last Proven State
 
 **Status:** aktywny runbook proof  
-**Ostatnia aktualizacja:** 2026-07-17 (`EVAL-RECOVERY-1`)  
+**Ostatnia aktualizacja:** 2026-08-20 (`SVC-05` BusinessReasoning fix)
 **Zakres:** lokalny Docker Compose; bez deployu na VPS/produkcję
 
 ## Executive verdict
 
 Lokalny baseline stabilizacji AI-OS TOP-INSTAL ma status **PASS**. Faza 0 (Final Foundation Closeout) zamknięta 2026-07-15 z werdyktem `PASS — FOUNDATION CLOSED` (`knowledge/memory/OPERATOR_DECISIONS.md`); general stabilization jako program jest zamknięty, następny kierunek to Intelligence Evolution — obecnie w toku (`A1 → X1 v0 → EVAL-1 → Roadmap Checkpoint 1 → DELIVERY-1 → EVAL-1.1 rerun → Checkpoint 1.1 → Clean EVAL Rerun → EVAL-RECOVERY-1`).
+
+**`SVC-05` (2026-08-20): FIXED / PROVEN_LOCAL_BOUNDED.** BusinessReasoning
+over-escalował niejednoznaczne zgłoszenie serwisowe
+(`"Cos nie dziala, prosze o pomoc."`) zamiast przygotować prośbę do klienta o
+szczegóły. Naprawa to deterministyczna normalizacja
+`customer_clarification_possible` w `intake_schema`; parser BR otrzymuje
+`intake_result`. Dowód: focused 89 passed + bounded Docker cohort
+SVC-05/SVC-01/SVC-02/MI-03/DEC-01/CTX-05 6/6 QUALIFIED (+ NEW-05).
+SVC-05 po fixie: `collect_data`, `reply_recommended=true`, `draft_enabled=true`,
+`DRAFT_ACCEPTED`. Negative cohort nadal `escalate_review`. Commit
+`gmail-agent:0a407cb3` (LOCAL_ONLY). Bez pełnego Fresh38.
 
 **`EVAL-RECOVERY-1` (2026-07-17): `PARTIAL — measurement infrastructure complete, capacity pending`.** Naprawiono `generate_draft_reply` argument-schema mismatch (root cause: planner prompt bezwarunkowo instruował dryf w stronę `propose_mutation(operation=generate_draft)`, narzędzia niedostępnego dla mail-agenta — poprawka warunkuje instrukcję realną dostępnością narzędzia; Model A dla `generate_draft_reply` potwierdzony jako właściwy, niezmieniony kontrakt). Zamknięto realne luki pomiarowe w eval harnessie: Understanding output i finalna treść draftu są teraz realnie przechwytywane (potwierdzone żywo pod realnym Groq capacity), production-faithful/component-capability tryby rozdzielone, deterministyczny rubric scoring działa. Pełne artefakty: `C:\ai-os-eval-recovery-1-20260717T205123Z\`, `report.md`.
 
@@ -29,6 +40,7 @@ Aktualny werdykt autonomii dla tego obiegu: **YES, WITH EXPLICIT LIMITS**.
 
 | Obszar | Wynik |
 | --- | --- |
+| SVC-05 BusinessReasoning clarification | **PASS** (focused 89 passed; bounded cohort 6/6 QUALIFIED + NEW-05; commit `0a407cb3`) |
 | gmail-agent pełny suite (`tools/gmail_audit/tests`) | `1514 passed, 10 skipped, 24 subtests passed, 0 failed` (2026-07-17, `EVAL-RECOVERY-1`; baseline przed sesją 1508/10 — DELIVERY-1 — 0 nowych skipów, +6 nowych testów `test_generate_draft_reply_contract.py`) |
 | Daszek pytest | `8 passed` (nie re-zweryfikowane w `EVAL-RECOVERY-1`, bez zmian w Daszku tej sesji) |
 | Daszek Node tests (w tym DEC-01) | `13 passed` (jw.) |

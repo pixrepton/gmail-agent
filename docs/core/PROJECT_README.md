@@ -2,7 +2,7 @@
 
 > **Node A canonical:** `../daszek/` + `../wp-bridges/`. **Node B:** repo `gmail-agent`, Postgres mailbox memory i signal runtime.
 
-**Status:** aktywny przewodnik po aplikacji. **Wersja:** 2026-07-13.  
+**Status:** aktywny przewodnik po aplikacji. **Wersja:** 2026-08-20.
 **Stan żywy:** `../../../knowledge/memory/ACTIVE_WORKSPACE.md`  
 **Proof runtime:** [`../runbooks/LAST_PROVEN_STATE.md`](../runbooks/LAST_PROVEN_STATE.md)
 
@@ -182,6 +182,22 @@ Preklasyfikacja (`preclassifier.preclassify_snapshot`, wołana z `gmail_intake.p
 9. **`attach_policy_and_proposals`** (jedyne policy attach w tej ścieżce)
 
 Zwraca `SharedDownstreamResult` (`policy_report`, `policy_action_proposal`, `stage_timings_ms`).
+
+### BusinessReasoning: deterministic clarification signal (2026-08-20)
+
+`run_business_reasoning` przekazuje `intake_result` do
+`parse_and_validate_business_reasoning`, a
+`intake_schema.validate_business_reasoning_result` wylicza deterministyczny
+sygnał `customer_clarification_possible`. Gdy intake już oznaczył sygnał
+serwisowy jako `ambiguous_signal`, review wynika z braków danych klienta, a BR
+nazwał konkretne `missing_information`, walidator normalizuje
+`escalate_review -> collect_data` (tylko dla stanu `unclear`/`waiting_for_data`).
+
+Reguła nie używa `hvac_intent`, case-id ani globalnego promptu. Jest
+jednokierunkowa i nie zmienia intake `review_required`; dzięki temu drafter nie
+jest pomijany dla niejednoznacznych zgłoszeń serwisowych, a prawdziwe
+eskalacje (`SVC-01`, `SVC-02`, `MI-03`, `DEC-01`) pozostają bez zmian.
+Test: `tools/gmail_audit/tests/test_svc05_customer_clarification.py`.
 
 ### Artefakty etapowe (jedna wiadomość / sygnał)
 
