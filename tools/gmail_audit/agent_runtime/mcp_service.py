@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
@@ -39,6 +40,46 @@ DEFAULT_LIST_LIMIT = 25
 MAX_LIST_LIMIT = 100
 DEFAULT_TURNS_LIMIT = 50
 MAX_TURNS_LIMIT = 200
+_EMAIL_RE = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.I)
+
+
+def _first_email(value: str) -> str:
+    match = _EMAIL_RE.search(str(value or ""))
+    return str(match.group(0) if match else "").strip().lower()
+
+
+def _resolve_customer_email_for_case(
+    *,
+    case_id: str,
+    settings: AgentRuntimeSettings,
+    mailbox_store: Any | None = None,
+) -> str:
+    cid = str(case_id or "").strip()
+    if not cid:
+        return ""
+
+    def _from_store(store: Any | None) -> str:
+        fetch = getattr(store, "fetch_case", None)
+        if not callable(fetch):
+            return ""
+        try:
+            row = fetch(cid)
+        except Exception:  # noqa: BLE001
+            return ""
+        if not isinstance(row, Mapping):
+            return ""
+        return _first_email(str(row.get("customer_email") or ""))
+
+    direct = _from_store(mailbox_store)
+    if direct:
+        return direct
+    try:
+        from mailbox_memory_runtime import build_mailbox_memory_runtime
+
+        runtime = build_mailbox_memory_runtime(settings, allow_in_memory=False)
+    except Exception:  # noqa: BLE001
+        return ""
+    return _from_store(getattr(runtime, "store", None) if runtime is not None else None)
 
 
 @dataclass
@@ -49,6 +90,7 @@ class AgentMcpService:
     settings: AgentRuntimeSettings
     turn_journal: AgentTurnJournal | None = None
     run_agent: Callable[..., Any] | None = None
+    mailbox_store: Any | None = None
 
     @classmethod
     def from_env(cls, *, bootstrap_postgres: bool = True) -> AgentMcpService:
@@ -364,6 +406,11 @@ class AgentMcpService:
         receipt_draft_id = ""
         receipt_body_hash = ""
         receipt_draft_origin = "legacy_unknown"
+        receipt_target_email = _resolve_customer_email_for_case(
+            case_id=str(snapshot.case_id or ""),
+            settings=self.settings,
+            mailbox_store=self.mailbox_store,
+        )
         provenance = getattr(snapshot, "draft_lineage_provenance", None)
         if provenance is not None:
             receipt_draft_origin = str(getattr(provenance, "draft_origin", "") or "legacy_unknown")
@@ -385,6 +432,7 @@ class AgentMcpService:
                 draft_id=receipt_draft_id,
                 body_hash=receipt_body_hash,
                 draft_origin=receipt_draft_origin,
+                target_email=receipt_target_email,
             ),
         }
         patched = apply_snapshot_delta(snapshot, delta)

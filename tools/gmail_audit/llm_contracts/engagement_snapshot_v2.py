@@ -349,6 +349,7 @@ class CommunicationReceipt(StrictModel):
     draft_id: str = ""
     body_hash: str = ""
     draft_origin: Literal["brain1", "brain2_fallback", "legacy_unknown"] = "legacy_unknown"
+    target_email: str = ""
 
 
 class DraftLineageProvenance(StrictModel):

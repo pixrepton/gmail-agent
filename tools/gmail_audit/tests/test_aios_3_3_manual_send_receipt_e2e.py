@@ -52,7 +52,7 @@ def _inbound_snapshot(*, message_id: str = "msg-in-33") -> dict:
     }
 
 
-def _outbound_snapshot(*, message_id: str = "msg-out-33") -> dict:
+def _outbound_snapshot(*, message_id: str = "msg-out-33", to_email: str = CUSTOMER_EMAIL) -> dict:
     return {
         "mailbox": MAILBOX,
         "source_message": {
@@ -61,7 +61,7 @@ def _outbound_snapshot(*, message_id: str = "msg-out-33") -> dict:
             "date": "2026-08-04T12:00:00+02:00",
             "from": MAILBOX,
             "sender": MAILBOX,
-            "to": [CUSTOMER_EMAIL],
+            "to": [to_email],
             "subject": "Re: Pytanie o oferte",
             "snippet": "Wysylamy odpowiedz",
             "body": "Dzien dobry, w zalaczeniu oferta.",
@@ -90,6 +90,7 @@ def _seed_ready_for_manual_send(
     case_id: str,
     draft_id: str = "draft-33",
     body_hash: str = "hash-33",
+    target_email: str = CUSTOMER_EMAIL,
 ) -> tuple[InMemoryOperatorEngagementStore, str]:
     row = registry.lookup_by_case_id(case_id)
     assert row is not None, "correlation registry must link case_id to engagement"
@@ -105,7 +106,11 @@ def _seed_ready_for_manual_send(
             operational_status=OperationalStatus(code="ready_for_quote", steps_remaining=0),
             hitl_gate=HitlGate(required=False),
             communication_receipt=CommunicationReceipt(
-                **build_ready_for_manual_send_receipt(draft_id=draft_id, body_hash=body_hash)
+                **build_ready_for_manual_send_receipt(
+                    draft_id=draft_id,
+                    body_hash=body_hash,
+                    target_email=target_email,
+                )
             ),
         )
     )
@@ -126,10 +131,11 @@ def _ingest_outbound(
     op_store: InMemoryOperatorEngagementStore,
     *,
     message_id: str = "msg-out-33",
+    to_email: str = CUSTOMER_EMAIL,
 ) -> None:
     with _operator_store_patch(op_store):
         result = runtime.ingest_message(
-            snapshot=_outbound_snapshot(message_id=message_id),
+            snapshot=_outbound_snapshot(message_id=message_id, to_email=to_email),
             intake_result=INTAKE,
             case_link_result=CASE_LINK,
         )
@@ -164,6 +170,7 @@ class TestManualSendReceiptE2E:
         assert saved.communication_receipt.gmail_message_id == "msg-out-33"
         assert saved.communication_receipt.draft_id == "draft-33"
         assert saved.communication_receipt.body_hash == "hash-33"
+        assert saved.communication_receipt.target_email == CUSTOMER_EMAIL
         assert saved.version == 2
 
     def test_outbound_ingest_is_idempotent_for_events_and_snapshot(self, tmp_path: Path) -> None:
@@ -222,6 +229,32 @@ class TestManualSendReceiptE2E:
         receipt = getattr(saved, "communication_receipt", None)
         state = str(getattr(receipt, "state", "") or "")
         assert state != "communication_sent"
+
+    def test_outbound_ingest_does_not_close_receipt_for_wrong_recipient(self, tmp_path: Path) -> None:
+        runtime, registry = _runtime(tmp_path)
+        inbound = runtime.ingest_message(
+            snapshot=_inbound_snapshot(message_id="msg-in-wrong-recipient"),
+            intake_result=INTAKE,
+            case_link_result=CASE_LINK,
+        )
+        op_store, engagement_id = _seed_ready_for_manual_send(
+            registry=registry,
+            case_id=inbound.case_id,
+            target_email=CUSTOMER_EMAIL,
+        )
+
+        _ingest_outbound(
+            runtime,
+            op_store,
+            message_id="msg-out-wrong-recipient",
+            to_email="inny@example.com",
+        )
+
+        saved = op_store.load_snapshot(engagement_id)
+        assert saved is not None
+        assert saved.communication_receipt.state == "ready_for_manual_send"
+        assert saved.communication_receipt.gmail_message_id == ""
+        assert saved.communication_receipt.target_email == CUSTOMER_EMAIL
 
     def test_outbound_ingest_never_calls_gmail_send(self, tmp_path: Path) -> None:
         runtime, registry = _runtime(tmp_path)

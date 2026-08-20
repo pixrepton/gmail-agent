@@ -61,7 +61,13 @@ def source_kind_for_direction(direction: str) -> str:
     return "gmail_inbound"
 
 
-def build_ready_for_manual_send_receipt(*, draft_id: str = "", body_hash: str = "", draft_origin: str = "") -> dict[str, Any]:
+def build_ready_for_manual_send_receipt(
+    *,
+    draft_id: str = "",
+    body_hash: str = "",
+    draft_origin: str = "",
+    target_email: str = "",
+) -> dict[str, Any]:
     origin = str(draft_origin or "legacy_unknown").strip() or "legacy_unknown"
     return {
         "state": "ready_for_manual_send",
@@ -71,6 +77,7 @@ def build_ready_for_manual_send_receipt(*, draft_id: str = "", body_hash: str = 
         "draft_id": str(draft_id or ""),
         "body_hash": str(body_hash or ""),
         "draft_origin": origin,
+        "target_email": _first_email(str(target_email or "")),
     }
 
 
@@ -81,6 +88,7 @@ def build_communication_sent_receipt(
     sent_at: str = "",
     draft_id: str = "",
     body_hash: str = "",
+    target_email: str = "",
 ) -> dict[str, Any]:
     return {
         "state": "communication_sent",
@@ -89,6 +97,7 @@ def build_communication_sent_receipt(
         "thread_id": str(thread_id or "").strip(),
         "draft_id": str(draft_id or ""),
         "body_hash": str(body_hash or ""),
+        "target_email": _first_email(str(target_email or "")),
     }
 
 
@@ -115,6 +124,7 @@ def try_apply_communication_sent_receipt(
     thread_id: str,
     message_id: str,
     occurred_at: str,
+    observed_target_email: str = "",
     correlation_registry: Any | None,
     database_url: str = "",
     operator_store: Any | None = None,
@@ -157,12 +167,22 @@ def try_apply_communication_sent_receipt(
         return {"ok": False, "reason": "not_awaiting_manual_send"}
 
     prev = getattr(snapshot, "communication_receipt", None)
+    expected_target = _first_email(str(getattr(prev, "target_email", "") or ""))
+    observed_target = _first_email(str(observed_target_email or ""))
+    if expected_target and observed_target != expected_target:
+        return {
+            "ok": False,
+            "reason": "target_email_mismatch",
+            "expected_target_email": expected_target,
+            "observed_target_email": observed_target,
+        }
     receipt = build_communication_sent_receipt(
         gmail_message_id=mid,
         thread_id=thread_id,
         sent_at=occurred_at,
         draft_id=str(getattr(prev, "draft_id", "") or ""),
         body_hash=str(getattr(prev, "body_hash", "") or ""),
+        target_email=expected_target or observed_target,
     )
     try:
         from feed_visibility import clear_execution_attention

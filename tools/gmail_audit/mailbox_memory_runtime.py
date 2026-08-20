@@ -451,6 +451,7 @@ class MailboxMemoryRuntime:
                 thread_id=thread_id,
                 message_id=message_id,
                 occurred_at=str(message.get("date") or now_iso),
+                observed_target_email=counterparty_email,
                 correlation_registry=self.correlation_registry,
                 database_url=db_url,
             )

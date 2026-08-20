@@ -106,7 +106,12 @@ def test_try_apply_communication_sent_updates_snapshot() -> None:
                 operational_status=OperationalStatus(code="ready_for_quote", steps_remaining=0),
                 hitl_gate=HitlGate(required=False),
                 feed_visibility=FeedVisibility(execution_attention=True, execution_attention_reason="outcome_unknown"),
-                communication_receipt=CommunicationReceipt(**build_ready_for_manual_send_receipt(draft_id="d1")),
+                communication_receipt=CommunicationReceipt(
+                    **build_ready_for_manual_send_receipt(
+                        draft_id="d1",
+                        target_email="Klient <klient@example.com>",
+                    )
+                ),
             )
             self.saved = None
 
@@ -129,6 +134,7 @@ def test_try_apply_communication_sent_updates_snapshot() -> None:
         thread_id="thr_1",
         message_id="msg_sent_1",
         occurred_at="2026-08-04T10:00:00+00:00",
+        observed_target_email="klient@example.com",
         correlation_registry=FakeRegistry(),
         database_url="",
         operator_store=store,
@@ -137,4 +143,51 @@ def test_try_apply_communication_sent_updates_snapshot() -> None:
     assert store.saved is not None
     assert store.saved.communication_receipt.state == "communication_sent"
     assert store.saved.communication_receipt.gmail_message_id == "msg_sent_1"
+    assert store.saved.communication_receipt.target_email == "klient@example.com"
     assert store.saved.feed_visibility.execution_attention is False
+
+
+def test_try_apply_communication_sent_rejects_wrong_target_email() -> None:
+    class FakeStore:
+        def __init__(self) -> None:
+            self.snap = EngagementSnapshotV2(
+                engagement_id="eng_x",
+                case_id="case_x",
+                version=3,
+                operational_status=OperationalStatus(code="ready_for_quote", steps_remaining=0),
+                hitl_gate=HitlGate(required=False),
+                communication_receipt=CommunicationReceipt(
+                    **build_ready_for_manual_send_receipt(
+                        draft_id="d1",
+                        target_email="klient@example.com",
+                    )
+                ),
+            )
+            self.saved = None
+
+        def load_snapshot(self, eid: str):
+            assert eid == "eng_x"
+            return self.snap
+
+        def save_snapshot(self, patched, expected_version: int):
+            self.saved = patched
+            return 4
+
+    class FakeRegistry:
+        def lookup_by_case_id(self, case_id: str):
+            return {"engagement_id": "eng_x", "case_id": case_id}
+
+    store = FakeStore()
+    out = try_apply_communication_sent_receipt(
+        case_id="case_x",
+        thread_id="thr_1",
+        message_id="msg_sent_1",
+        occurred_at="2026-08-04T10:00:00+00:00",
+        observed_target_email="inny@example.com",
+        correlation_registry=FakeRegistry(),
+        database_url="",
+        operator_store=store,
+    )
+    assert out["ok"] is False
+    assert out["reason"] == "target_email_mismatch"
+    assert store.saved is None

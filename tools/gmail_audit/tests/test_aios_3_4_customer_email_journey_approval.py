@@ -124,7 +124,7 @@ def test_customer_email_fixture_journey_reaches_ready_for_manual_send(tmp_path: 
     op_store.insert_snapshot(with_draft)
 
     action = with_draft.actions[0]
-    svc = AgentMcpService(settings=_settings(), store=op_store)
+    svc = AgentMcpService(settings=_settings(), store=op_store, mailbox_store=runtime.store)
     approval = svc.approve_hitl_action(
         engagement_id=engagement_id,
         action_id=str(action.id or "draft_reply"),
@@ -140,6 +140,7 @@ def test_customer_email_fixture_journey_reaches_ready_for_manual_send(tmp_path: 
     assert final.communication_receipt.state == "ready_for_manual_send"
     assert final.communication_receipt.draft_id == action.draft_id
     assert final.communication_receipt.body_hash == action.body_hash
+    assert final.communication_receipt.target_email
     assert final.communication_receipt.gmail_message_id == ""
 
     approved_action = next((item for item in final.actions if item.id == action.id), None)
