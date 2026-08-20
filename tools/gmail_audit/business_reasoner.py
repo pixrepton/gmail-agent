@@ -195,7 +195,10 @@ def run_business_reasoning(
             logger.warning("Pydantic ValidationError in business reasoning", extra={"x": {
                 "error": str(errors)[:500],
             }})
-        parsed = parse_and_validate_business_reasoning(stage_call["response_text"])
+        parsed = parse_and_validate_business_reasoning(
+            stage_call["response_text"],
+            intake_result=intake_result,
+        )
         # SLICE-2A: a Brain 1 consumer could not tell a real model result from a repaired,
         # coerced, skipped or fallback one -- every path returned the same schema-valid shape.
         # source_mode/reasoning_status make authorship explicit. Behaviour is unchanged.
@@ -238,13 +241,17 @@ def run_business_reasoning(
         return fallback_business_reasoning(reason=sanitize_text(str(exc)))
 
 
-def parse_and_validate_business_reasoning(raw_text: str) -> dict[str, Any]:
+def parse_and_validate_business_reasoning(
+    raw_text: str,
+    *,
+    intake_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Parse raw model text into a validated business reasoning contract."""
     try:
         candidate = json.loads(extract_json_candidate(raw_text))
     except json.JSONDecodeError as exc:
         raise GroqClientError(f"Business reasoning did not return valid JSON: {exc}") from exc
-    return validate_business_reasoning_result(candidate)
+    return validate_business_reasoning_result(candidate, intake_result=intake_result)
 
 
 def fallback_business_reasoning(*, reason: str) -> dict[str, Any]:

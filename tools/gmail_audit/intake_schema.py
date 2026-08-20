@@ -318,7 +318,56 @@ def validate_case_link_result(obj: dict[str, Any] | None) -> dict[str, Any]:
     return normalized
 
 
-def validate_business_reasoning_result(obj: dict[str, Any] | None) -> dict[str, Any]:
+def _customer_clarification_possible(
+    intake_result: dict[str, Any] | None,
+    *,
+    business_area: str,
+    missing_information: list[str],
+) -> bool:
+    """True when the intake layer already proves the remaining gaps are ordinary
+    customer-supplied details, not a real human decision.
+
+    SVC-05 is not special-cased here. The rule only asks three questions:
+    * is this the service area;
+    * did intake flag the signal as ambiguous (not competing, legal, security,
+      financial or deadline-bearing);
+    * did BusinessReasoning actually name concrete missing information.
+
+    ``ambiguous_signal`` is an existing intake review flag, not ``hvac_intent``
+    and not a case id, so the rule stays general.
+    """
+    if not isinstance(intake_result, dict):
+        return False
+    if str(business_area or "").strip() != "service":
+        return False
+    if not missing_information:
+        return False
+
+    review = intake_result.get("review") if isinstance(intake_result.get("review"), dict) else {}
+    review_required = bool(review.get("required")) or bool(intake_result.get("review_required"))
+    if not review_required:
+        return False
+
+    flags = {str(flag).strip() for flag in (review.get("flags") or []) if str(flag).strip()}
+    flags.update(str(flag).strip() for flag in (intake_result.get("review_reasons") or []) if str(flag).strip())
+    if "ambiguous_signal" not in flags:
+        return False
+
+    forced_human_review = {
+        "multiple_competing_signals",
+        "legal_or_compliance_risk",
+        "security_or_platform_risk",
+        "financial_document_without_payable_context",
+        "deadline_found_without_owner",
+    }
+    return not bool(flags & forced_human_review)
+
+
+def validate_business_reasoning_result(
+    obj: dict[str, Any] | None,
+    *,
+    intake_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Validate the business-reasoning stage contract."""
     if not isinstance(obj, dict):
         raise GroqClientError("BusinessReasoningResult must be a JSON object.")
@@ -343,6 +392,19 @@ def validate_business_reasoning_result(obj: dict[str, Any] | None) -> dict[str, 
         field_name="business_reasoning.customer_state_guess",
         notes=coercion_notes,
     )
+    business_area = _normalize_choice(
+        obj.get("business_area"),
+        BUSINESS_REASONING_AREAS,
+        default="unknown",
+        field_name="business_reasoning.business_area",
+        notes=coercion_notes,
+    )
+    missing_information = _normalize_string_list_contract(obj.get("missing_information"))
+    customer_clarification_possible = _customer_clarification_possible(
+        intake_result,
+        business_area=business_area,
+        missing_information=missing_information,
+    )
     # CLOSEOUT-01 Phase 4 — deterministic decision-class consistency normalization.
     # `collect_data` is a pre-offer data-gathering action; it is contract-incoherent once the
     # customer is already `post_offer` (the offer is out, so the operative blocker is an
@@ -356,16 +418,36 @@ def validate_business_reasoning_result(obj: dict[str, Any] | None) -> dict[str, 
     # byte-identical production-faithful BusinessReasoning input (DEC-02).
     if customer_state_guess == "post_offer" and recommended_next_action == "collect_data":
         recommended_next_action = "escalate_review"
+    # SVC-05 / general service clarification: when intake already proved the
+    # ambiguity is ordinary missing customer data, prefer collect_data over
+    # escalate_review. This only rewrites a conservative recommendation and can
+    # never turn an escalation into an unsafe live action; the intake review
+    # gate itself is left unchanged.
+    if (
+        customer_clarification_possible
+        and customer_state_guess in {"unclear", "waiting_for_data"}
+        and recommended_next_action == "escalate_review"
+    ):
+        recommended_next_action = "collect_data"
+        coercion_notes.append(
+            {
+                "field_name": "recommended_next_action",
+                "reason_code": "customer_clarification_possible",
+                "from": "escalate_review",
+                "to": "collect_data",
+            }
+        )
     normalized = {
         "business_interpretation": business_interpretation,
-        "business_area": _normalize_choice(obj.get("business_area"), BUSINESS_REASONING_AREAS, default="unknown", field_name="business_reasoning.business_area", notes=coercion_notes),
+        "business_area": business_area,
         "customer_state_guess": customer_state_guess,
         "recommended_next_action": recommended_next_action,
+        "customer_clarification_possible": customer_clarification_possible,
         "recommended_action_reason": _string_or_default(
             obj.get("recommended_action_reason"),
             default="Manual review recommended until business reasoning is confirmed.",
         ),
-        "missing_information": _normalize_string_list_contract(obj.get("missing_information")),
+        "missing_information": missing_information,
         "risks": _normalize_string_list_contract(obj.get("risks")),
         "urgency": _normalize_choice(obj.get("urgency"), BUSINESS_URGENCY_LEVELS, default="normal", field_name="business_reasoning.urgency", notes=coercion_notes),
         "operator_note": _string_or_default(obj.get("operator_note"), default="Manual review recommended."),
