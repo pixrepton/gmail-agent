@@ -21,6 +21,15 @@ ACTION_INTENT_TOOL_MAPPING_CLASSIFICATION = "NO_SAFE_MAPPING_EXISTS"
 # These tools are formally proven to materialize an operator/execution action.
 # This is not an action_type -> tool mapping.
 _ACTION_PRODUCING_TOOLS = frozenset({"generate_draft_reply", "propose_mutation"})
+_SEMANTIC_ACTION_TOOLS = frozenset(
+    {
+        "generate_draft_reply",
+        "request_operator_clarification",
+        "call_kalk_top_quote",
+        "propose_mutation",
+        "propose_plan",
+    }
+)
 _STALE_PROPOSAL_STATUSES = frozenset({"expired", "stale", "superseded"})
 _CUSTOMER_MAIL_TOOLS = ("generate_draft_reply",)
 _OPERATOR_CLARIFICATION_TOOL = "request_operator_clarification"
@@ -53,13 +62,17 @@ def _semantic_tool_constraints(
         return {
             "action_target": "customer",
             "action_channel": channel or "mail",
-            "allowed_tools": list(_CUSTOMER_MAIL_TOOLS),
+            # allowed_tools is a full planner-turn whitelist. Keep it empty here
+            # so safe read-only helpers are not accidentally hidden.
+            "allowed_tools": [],
+            "allowed_action_tools": list(_CUSTOMER_MAIL_TOOLS),
             "forbidden_tools": [_OPERATOR_CLARIFICATION_TOOL],
         }
     return {
         "action_target": "",
         "action_channel": channel,
         "allowed_tools": [],
+        "allowed_action_tools": [],
         "forbidden_tools": [],
     }
 
@@ -332,6 +345,7 @@ def project_policy_action_envelope(
         action_target=str(raw_json.get("action_target") or ""),
         action_channel=str(raw_json.get("action_channel") or ""),
         allowed_tools=_string_list(raw_json.get("allowed_tools")),
+        allowed_action_tools=_string_list(raw_json.get("allowed_action_tools")),
         forbidden_tools=_string_list(raw_json.get("forbidden_tools")),
         allowed_by_policy=bool(proposal.get("allowed_by_policy")),
         requires_operator_approval=bool(
@@ -417,6 +431,11 @@ def evaluate_semantic_policy_plan_consistency(
 
     forbidden_tools = {str(item).strip() for item in envelope.forbidden_tools if str(item).strip()}
     allowed_tools = {str(item).strip() for item in envelope.allowed_tools if str(item).strip()}
+    allowed_action_tools = {
+        str(item).strip()
+        for item in envelope.allowed_action_tools
+        if str(item).strip()
+    }
     if plan.tool_name in forbidden_tools:
         return _consistency(
             "conflicting",
@@ -435,6 +454,20 @@ def evaluate_semantic_policy_plan_consistency(
         return _consistency(
             "consistent",
             ["semantic_tool_allowed_for_action_intent"],
+            envelope,
+            plan,
+        )
+    if allowed_action_tools and plan.tool_name in _SEMANTIC_ACTION_TOOLS:
+        if plan.tool_name not in allowed_action_tools:
+            return _consistency(
+                "conflicting",
+                ["semantic_tool_not_allowed_for_action_intent"],
+                envelope,
+                plan,
+            )
+        return _consistency(
+            "consistent",
+            ["semantic_action_tool_allowed_for_action_intent"],
             envelope,
             plan,
         )

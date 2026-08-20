@@ -260,7 +260,8 @@ def test_customer_missing_data_envelope_compiles_customer_mail_tool_constraints(
     assert envelope.freshness == "current"
     assert envelope.action_target == "customer"
     assert envelope.action_channel == "mail"
-    assert envelope.allowed_tools == ["generate_draft_reply"]
+    assert envelope.allowed_tools == []
+    assert envelope.allowed_action_tools == ["generate_draft_reply"]
     assert envelope.forbidden_tools == ["request_operator_clarification"]
 
     snapshot = build_initial_snapshot(
@@ -279,10 +280,10 @@ def test_customer_missing_data_envelope_compiles_customer_mail_tool_constraints(
         snapshot=snapshot,
     )
 
-    assert effective.offered == ("generate_draft_reply",)
+    assert effective.offered == ("generate_draft_reply", "search_gmail_thread")
     filtered = {item.tool_name: item.reason_code for item in effective.filtered}
     assert filtered["request_operator_clarification"] == "SEMANTIC_TOOL_FORBIDDEN"
-    assert filtered["search_gmail_thread"] == "SEMANTIC_TOOL_NOT_ALLOWED"
+    assert filtered["search_gmail_thread"] == "AVAILABLE"
 
 
 def test_customer_missing_data_envelope_blocks_operator_clarification_substitute() -> None:
@@ -328,6 +329,21 @@ def test_customer_missing_data_envelope_blocks_operator_clarification_substitute
     assert "semantic_tool_forbidden_for_action_intent" in (
         result.snapshot.semantic_policy_plan_consistency.reason_codes
     )
+
+
+def test_customer_missing_data_envelope_marks_customer_draft_action_consistent() -> None:
+    store = InMemoryMailboxMemoryStore()
+    _persist(store, _customer_missing_data_intelligence())
+    envelope = _current_envelope(store)
+    plan = correlate_tool_plan(
+        ToolCallPlan(tool_name="generate_draft_reply", arguments={"intent": "missing_info"}),
+        envelope,
+    )
+
+    consistency = evaluate_semantic_policy_plan_consistency(envelope, plan)
+
+    assert consistency.status == "consistent"
+    assert "semantic_action_tool_allowed_for_action_intent" in consistency.reason_codes
 
 
 def test_later_decision_replaces_the_earlier_envelope_for_the_same_source() -> None:

@@ -19,6 +19,16 @@ _CONFIG_GATED_TOOLS: dict[str, str] = {
     "call_kalk_top_quote": "kalk_top_base_url",
 }
 
+_ENVELOPE_ACTION_TOOLS = frozenset(
+    {
+        "generate_draft_reply",
+        "request_operator_clarification",
+        "call_kalk_top_quote",
+        "propose_mutation",
+        "propose_plan",
+    }
+)
+
 
 @dataclass(frozen=True)
 class ToolAvailabilityDecision:
@@ -114,6 +124,21 @@ def semantic_envelope_gate_reason(tool_name: str, *, snapshot: Any | None) -> To
             detail=(
                 f"action_intent={getattr(envelope, 'action_intent', '')}; "
                 f"allowed_tools={','.join(sorted(allowed))}"
+            ),
+        )
+    allowed_action = {
+        str(item).strip()
+        for item in (getattr(envelope, "allowed_action_tools", None) or [])
+        if str(item).strip()
+    }
+    if allowed_action and name in _ENVELOPE_ACTION_TOOLS and name not in allowed_action:
+        return ToolAvailabilityDecision(
+            tool_name=name,
+            offered=False,
+            reason_code="SEMANTIC_ACTION_TOOL_NOT_ALLOWED",
+            detail=(
+                f"action_intent={getattr(envelope, 'action_intent', '')}; "
+                f"allowed_action_tools={','.join(sorted(allowed_action))}"
             ),
         )
     return None
