@@ -13,7 +13,9 @@ from mailbox_memory.active_facts import (
     fetch_current_facts_for_case,
 )
 from mailbox_memory.inmemory import InMemoryMailboxMemoryStore
-from mailbox_memory_runtime import split_conflicting_facts
+from mailbox_memory_models import CaseContextPack
+from mailbox_memory_runtime import build_case_context_pack, split_conflicting_facts
+from case_context_contract import build_case_context_pack_vnext
 
 
 def _fact(
@@ -109,3 +111,47 @@ def test_conflicted_critical_fact_blocks_only_dependent_action() -> None:
         "blocked_fact_keys": [],
         "decision_block_reason": None,
     }
+
+
+def test_case_context_vnext_preserves_decision_safety_metadata() -> None:
+    pack = CaseContextPack(
+        case_id="case_contract_fact_use",
+        active_facts=[
+            _fact(value="180", fact_id="winner", observed_at="2026-08-20T09:00:00Z")
+        ],
+        conflicting_facts=[
+            {"entity_scope": "building", "fact_key": "heated_area_m2", "values": ["180", "220"]}
+        ],
+    )
+
+    contract = build_case_context_pack_vnext(pack)
+    fact = contract["facts"][0]
+
+    assert fact["predicate"] == "heated_area_m2"
+    assert fact["trust_state"] == "conflicted"
+    assert fact["decision_usable"] is False
+    assert fact["decision_block_reason"] == "fact_conflict"
+
+
+def test_production_case_context_pack_preserves_decision_safety_metadata() -> None:
+    store = InMemoryMailboxMemoryStore()
+    store.upsert_case({"case_id": "case_pack_fact_use", "status": "open"})
+    store.facts["msg_conflict"] = [
+        {
+            **_fact(value="180", fact_id="f_body", observed_at="2026-08-20T08:00:00Z"),
+            "case_id": "case_pack_fact_use",
+            "message_id": "msg_conflict",
+        },
+        {
+            **_fact(value="220", fact_id="f_doc", observed_at="2026-08-20T09:00:00Z"),
+            "case_id": "case_pack_fact_use",
+            "message_id": "msg_conflict",
+        },
+    ]
+
+    pack = build_case_context_pack(store=store, case_id="case_pack_fact_use")
+
+    area = next(f for f in pack.active_facts if f.get("fact_key") == "heated_area_m2")
+    assert area["trust_state"] == "conflicted"
+    assert area["decision_usable"] is False
+    assert area["decision_block_reason"] == "fact_conflict"

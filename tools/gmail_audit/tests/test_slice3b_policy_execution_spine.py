@@ -331,6 +331,47 @@ def test_customer_missing_data_envelope_blocks_operator_clarification_substitute
     )
 
 
+def test_allowed_action_tools_mismatch_blocks_non_forbidden_action_tool() -> None:
+    class _WrongActionPlanner:
+        def plan_next_tool(self, *, snapshot, available_tools, constitution):
+            assert "call_kalk_top_quote" not in available_tools
+            return ToolCallPlan(tool_name="call_kalk_top_quote", arguments={})
+
+    store = InMemoryMailboxMemoryStore()
+    _persist(store, _customer_missing_data_intelligence())
+    envelope = _current_envelope(store)
+    assert "call_kalk_top_quote" not in envelope.forbidden_tools
+    assert envelope.allowed_action_tools == ["generate_draft_reply"]
+    constitution = load_constitution()
+    snapshot = build_initial_snapshot(
+        case_id="case_3b",
+        engagement_id="eng_3b_allowed_action_block",
+        signal_id="sig_3b_1",
+        trace_id="trace_3b",
+    )
+
+    result = AgentGraphEngine(
+        planner=_WrongActionPlanner(),
+        constitution=constitution,
+        tool_registry=MockToolRegistry(),
+    ).run(
+        snapshot,
+        context=ToolExecutionContext.from_snapshot(
+            snapshot,
+            signal_payload={"policy_action_envelope": envelope.model_dump(mode="python")},
+            constitution=constitution,
+        ),
+    )
+
+    assert result.turns[0].tool_name == "call_kalk_top_quote"
+    assert result.turns[0].tool_status == "error"
+    assert result.snapshot.hitl_gate.reason == "semantic_tool_mismatch:call_kalk_top_quote"
+    assert result.snapshot.semantic_policy_plan_consistency.status == "conflicting"
+    assert "semantic_tool_not_allowed_for_action_intent" in (
+        result.snapshot.semantic_policy_plan_consistency.reason_codes
+    )
+
+
 def test_customer_missing_data_envelope_marks_customer_draft_action_consistent() -> None:
     store = InMemoryMailboxMemoryStore()
     _persist(store, _customer_missing_data_intelligence())

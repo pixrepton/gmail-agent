@@ -141,6 +141,28 @@ def evaluate_technical_readiness(*, heated_area_m2: Any) -> tuple[bool, tuple[st
     return True, ()
 
 
+def _decision_fact_block_reasons(
+    decision_context: dict[str, Any] | None,
+    *,
+    action_type: str,
+) -> tuple[str, ...]:
+    context = decision_context if isinstance(decision_context, dict) else {}
+    blocks = context.get("decision_fact_blocks")
+    blocks = blocks if isinstance(blocks, dict) else {}
+    block = blocks.get(action_type)
+    block = block if isinstance(block, dict) else {}
+    if not bool(block.get("blocked")):
+        return ()
+    keys = [
+        str(item).strip()
+        for item in list(block.get("blocked_fact_keys") or [])
+        if str(item).strip()
+    ]
+    if not keys:
+        return ("decision_fact_conflict",)
+    return tuple(f"decision_fact_conflict:{key}" for key in sorted(keys))
+
+
 def decision_from_snapshot(
     snapshot: EngagementSnapshotV2,
     *,
@@ -173,20 +195,31 @@ def decision_from_snapshot(
     technical_ready, technical_reasons = evaluate_technical_readiness(
         heated_area_m2=snapshot.hvac_profile.heated_area_m2,
     )
+    fact_block_reasons = _decision_fact_block_reasons(
+        decision_context,
+        action_type="call_kalk_top_quote",
+    )
 
     if not business_ready:
         return KalkEligibilityDecision(
             offered=False,
             business_eligible=False,
             technically_ready=technical_ready,
-            reasons=business_reasons + technical_reasons,
+            reasons=business_reasons + technical_reasons + fact_block_reasons,
         )
     if not technical_ready:
         return KalkEligibilityDecision(
             offered=False,
             business_eligible=True,
             technically_ready=False,
-            reasons=technical_reasons,
+            reasons=technical_reasons + fact_block_reasons,
+        )
+    if fact_block_reasons:
+        return KalkEligibilityDecision(
+            offered=False,
+            business_eligible=True,
+            technically_ready=False,
+            reasons=fact_block_reasons,
         )
     return KalkEligibilityDecision(
         offered=True,

@@ -38,7 +38,7 @@ from mailbox_memory_health import (
 )
 from mailbox_memory_models import CaseContextPack, MailboxMemoryIngestResult
 from correlation_registry.service import CorrelationRegistryService, build_correlation_registry_service
-from mailbox_memory.active_facts import fetch_current_facts_for_case
+from mailbox_memory.active_facts import annotate_decision_fact_use, fetch_current_facts_for_case
 from mailbox_memory_store import (
     InMemoryMailboxMemoryStore,
     MailboxMemoryStore,
@@ -1825,12 +1825,15 @@ def build_case_context_pack(
         import logging
         logging.getLogger(__name__).warning("Coherence validator error (non-blocking): %s", exc)
 
+    pack_conflicts = conflicting_facts + drive_conflicts
+    pack_active_facts = annotate_decision_fact_use(active_facts + drive_active_facts, pack_conflicts)
+
     return CaseContextPack(
         case_id=case_id,
         snapshot=snapshot,
         recent_events=events,
-        active_facts=active_facts + drive_active_facts,
-        conflicting_facts=conflicting_facts + drive_conflicts,
+        active_facts=pack_active_facts,
+        conflicting_facts=pack_conflicts,
         latest_documents=documents,
         drive_documents_summary=drive_documents,
         completeness_gaps=list(drive_enrichment.get("completeness_gaps") or []),

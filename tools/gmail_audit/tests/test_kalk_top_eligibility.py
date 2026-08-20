@@ -20,6 +20,7 @@ if str(TOOL_DIR) not in sys.path:
 
 from agent_runtime.constitution import load_constitution
 from agent_runtime.constitution_mail import MAIL_AGENT_TOOL_ALLOWLIST, MAIL_AGENT_TOOL_BUDGET
+from agent_runtime.decision_divergence import build_decision_comparison_inputs
 from agent_runtime.effective_tools import compute_effective_available_tools
 from agent_runtime.kalk_eligibility import (
     decision_from_snapshot,
@@ -87,6 +88,39 @@ def _context(business_recommended_action: str) -> dict[str, object]:
     }
 
 
+def _conflicted_area_context() -> dict[str, object]:
+    pack = {
+        "active_facts": [
+            {
+                "fact_key": "heated_area_m2",
+                "normalized_value": "180",
+                "trust_state": "conflicted",
+                "decision_usable": False,
+                "decision_block_reason": "fact_conflict",
+            }
+        ],
+        "conflicting_facts": [
+            {"entity_scope": "building", "fact_key": "heated_area_m2", "values": ["180", "220"]}
+        ],
+    }
+    context = build_decision_comparison_inputs(
+        {
+            "understanding_output": {"source_signal_id": "msg-conflict"},
+            "execution_metadata": {
+                "input_business_next_action": "reply",
+                "input_primary_action": "prepare_reply",
+                "input_reply_draft_enabled": True,
+            },
+            "case_understanding": {"case_family": "lead_opportunity"},
+            "next_best_action": {"primary_next_action": {"action_type": "answer_customer"}},
+            "mailbox_memory_context_pack": pack,
+        },
+        message_id="msg-conflict",
+    )
+    assert context is not None
+    return context
+
+
 def _effective(snapshot: object, decision_context: dict[str, object] | None) -> tuple[str, ...]:
     constitution = load_constitution()
     assert "call_kalk_top_quote" in constitution.tool_allowlist
@@ -111,6 +145,32 @@ def test_positive_eligible_case_offers_kalk() -> None:
     # unrelated tools unchanged
     for tool in ("search_gmail_thread", "generate_draft_reply", "request_operator_clarification"):
         assert tool in offered
+
+
+def test_conflicted_area_blocks_kalk_but_not_independent_action() -> None:
+    snapshot = _snapshot(case_kind="wycena_oferta", heated_area_m2=180)
+    context = _conflicted_area_context()
+
+    assert context["decision_fact_blocks"]["call_kalk_top_quote"] == {
+        "blocked": True,
+        "blocked_fact_keys": ["heated_area_m2"],
+        "decision_block_reason": "fact_conflict",
+    }
+    assert context["decision_fact_blocks"]["acknowledge_documents"] == {
+        "blocked": False,
+        "blocked_fact_keys": [],
+        "decision_block_reason": None,
+    }
+
+    decision = decision_from_snapshot(snapshot, decision_context=context)
+    assert decision.offered is False
+    assert decision.business_eligible is True
+    assert decision.technically_ready is False
+    assert "decision_fact_conflict:heated_area_m2" in decision.reasons
+
+    offered = _effective(snapshot, context)
+    assert "call_kalk_top_quote" not in offered
+    assert "generate_draft_reply" in offered
 
 
 @pytest.mark.parametrize(
@@ -238,6 +298,42 @@ def test_handler_fail_closed_zero_http(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.status == "error"
     assert result.failure_class == "KALK_TOP_NOT_ELIGIBLE"
     assert result.retryable is False
+    assert calls["n"] == 0
+
+
+def test_handler_fail_closed_conflicted_decision_fact(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"n": 0}
+
+    class _SpyClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> _SpyClient:
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+        def post(self, *args: object, **kwargs: object) -> object:
+            calls["n"] += 1
+            raise AssertionError("HTTP client must not be called for conflicted decision fact")
+
+    monkeypatch.setattr(httpx, "Client", _SpyClient)
+    context = ToolExecutionContext.from_snapshot(
+        _snapshot(case_kind="wycena_oferta", heated_area_m2=180),
+        settings=_settings(),
+        signal_payload={"decision_comparison_inputs": _conflicted_area_context()},
+    )
+    result = AgentToolRegistry().execute(
+        ToolCallPlan(tool_name="call_kalk_top_quote", arguments={}),
+        context=context,
+    )
+
+    assert result.status == "error"
+    assert result.failure_class == "KALK_TOP_NOT_ELIGIBLE"
+    assert result.retryable is False
+    detail = (result.snapshot_delta.get("execution_attribution") or {}).get("detail")
+    assert "decision_fact_conflict:heated_area_m2" in str(detail)
     assert calls["n"] == 0
 
 

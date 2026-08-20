@@ -6,6 +6,23 @@ from typing import Any
 
 from agent_runtime.tool_result import ToolCallPlan
 from llm_contracts.engagement_snapshot_v2 import DecisionDivergenceObservationV1
+from mailbox_memory.active_facts import action_conflict_block
+
+
+_DECISION_FACT_DEPENDENT_ACTIONS = (
+    "call_kalk_top_quote",
+    "prepare_offer",
+    "acknowledge_documents",
+)
+
+
+def _decision_fact_blocks(case_context_pack: Any) -> dict[str, dict[str, Any]]:
+    pack = case_context_pack if isinstance(case_context_pack, dict) else {}
+    facts = pack.get("active_facts") if isinstance(pack.get("active_facts"), list) else []
+    return {
+        action_type: action_conflict_block(action_type=action_type, facts=facts)
+        for action_type in _DECISION_FACT_DEPENDENT_ACTIONS
+    }
 
 
 def build_decision_comparison_inputs(
@@ -50,6 +67,7 @@ def build_decision_comparison_inputs(
         if "input_reply_draft_enabled" in metadata
         else None
     )
+    case_context_pack = intelligence.get("mailbox_memory_context_pack")
 
     return {
         "schema_version": "decision_comparison_inputs.v1",
@@ -65,6 +83,7 @@ def build_decision_comparison_inputs(
         ).strip(),
         "reply_draft_enabled": draft_enabled,
         "case_family": str(case_understanding.get("case_family") or "").strip(),
+        "decision_fact_blocks": _decision_fact_blocks(case_context_pack),
     }
 
 

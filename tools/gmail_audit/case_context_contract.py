@@ -629,24 +629,29 @@ def normalize_facts(facts: Any, *, case_id: str) -> list[dict[str, Any]]:
         observed_at = str(item.get("observed_at") or item.get("created_at") or "")
         notes = str(item.get("notes") or item.get("note") or "").strip()
         refs = _source_refs_for_item(item)
-        out.append(
-            {
-                "fact_id": fact_id,
-                "case_id": str(item.get("case_id") or case_id),
-                "subject": str(item.get("subject") or item.get("entity_scope") or "case"),
-                "predicate": predicate,
-                "value": value,
-                "confidence": _bounded_float(item.get("confidence")),
-                "status": status,
-                "source_refs": refs,
-                "valid_from": str(item.get("valid_from") or observed_at or ""),
-                "valid_to": item.get("valid_to"),
-                "observed_at": observed_at,
-                "created_by": str(item.get("created_by") or "extractor"),
-                "last_reviewed_by": str(item.get("last_reviewed_by") or "system"),
-                "notes": notes,
-            }
-        )
+        row = {
+            "fact_id": fact_id,
+            "case_id": str(item.get("case_id") or case_id),
+            "subject": str(item.get("subject") or item.get("entity_scope") or "case"),
+            "predicate": predicate,
+            "value": value,
+            "confidence": _bounded_float(item.get("confidence")),
+            "status": status,
+            "source_refs": refs,
+            "valid_from": str(item.get("valid_from") or observed_at or ""),
+            "valid_to": item.get("valid_to"),
+            "observed_at": observed_at,
+            "created_by": str(item.get("created_by") or "extractor"),
+            "last_reviewed_by": str(item.get("last_reviewed_by") or "system"),
+            "notes": notes,
+        }
+        if "trust_state" in item:
+            row["trust_state"] = str(item.get("trust_state") or "provisional")
+        if "decision_usable" in item:
+            row["decision_usable"] = bool(item.get("decision_usable"))
+        if "decision_block_reason" in item:
+            row["decision_block_reason"] = item.get("decision_block_reason")
+        out.append(row)
     return out
 
 
