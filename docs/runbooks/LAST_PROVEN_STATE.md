@@ -1,33 +1,25 @@
 # Last Proven State
 
 **Status:** aktywny runbook proof  
-**Ostatnia aktualizacja:** 2026-08-20 (`SVC-05` final live proof)
+**Ostatnia aktualizacja:** 2026-08-20 (`SVC-05` final live proof + AI-OS truth sync)
 **Zakres:** lokalny Docker Compose; bez deployu na VPS/produkcję
 
 ## Executive verdict
 
 Lokalny baseline stabilizacji AI-OS TOP-INSTAL ma status **PASS**. Faza 0 (Final Foundation Closeout) zamknięta 2026-07-15 z werdyktem `PASS — FOUNDATION CLOSED` (`knowledge/memory/OPERATOR_DECISIONS.md`); general stabilization jako program jest zamknięty, następny kierunek to Intelligence Evolution — obecnie w toku (`A1 → X1 v0 → EVAL-1 → Roadmap Checkpoint 1 → DELIVERY-1 → EVAL-1.1 rerun → Checkpoint 1.1 → Clean EVAL Rerun → EVAL-RECOVERY-1`).
 
-**`SVC-05` (2026-08-20): FIXED / PROVEN_LOCAL_BOUNDED.** BusinessReasoning
-over-escalował niejednoznaczne zgłoszenie serwisowe
-(`"Cos nie dziala, prosze o pomoc."`) zamiast przygotować prośbę do klienta o
-szczegóły. Naprawa to deterministyczna normalizacja
-`customer_clarification_possible` w `intake_schema`; parser BR otrzymuje
-`intake_result`. Dowód: focused 89 passed + bounded Docker cohort
-SVC-05/SVC-01/SVC-02/MI-03/DEC-01/CTX-05 6/6 QUALIFIED (+ NEW-05).
-SVC-05 po fixie: `collect_data`, `reply_recommended=true`, `draft_enabled=true`,
-`DRAFT_ACCEPTED`. Negative cohort nadal `escalate_review`. Commit
-`gmail-agent:0a407cb3` (LOCAL_ONLY). Bez pełnego Fresh38.
-
-**`SVC-05` downstream closeout (2026-08-20): CLOSED / PASS.** Finalny
-provider-live bounded proof na kodzie po downstream fixie potwierdził spójny
-łańcuch: `collect_data` -> customer-facing draft -> `prepare_reply` ->
-`ask_for_missing_data` / `mail` -> planner `generate_draft_reply`; brak
-wykonanego `request_operator_clarification` jako substytutu pytania do klienta.
-HITL pozostał wymagany przed wysyłką. Proof:
-`.artifacts\svc05-final-live-proof-fix-20260820T113843\recovery-attempt-2`,
-`SVC-05`, `SVC-02`, `MI-03` = 3/3 `QUALIFIED`; negative cohort bez
-`unsafe_non_escalation`. Bez pełnego Fresh38.
+**`SVC-05` (2026-08-20): CLOSED / PASS.** Product fix
+`gmail-agent:0a407cb3` naprawił BusinessReasoning/draft path dla
+niejednoznacznego zgłoszenia serwisowego; downstream fix `gmail-agent:78603fb`
+zachował customer-facing `collect_data` przez ActionPlan/Case Intelligence
+zamiast zamieniać go na review-only lub `request_operator_clarification`.
+Finalny provider-live proof na commit
+`gmail-agent:70c3d94efa41f6b46a87fbd4b1c07d96ca3e6d66`:
+`.artifacts\svc05-final-live-proof-fix-20260820T113843\recovery-attempt-2`.
+`SVC-05`, `SVC-02`, `MI-03` = 3/3 `QUALIFIED`. Finalny SVC-05 chain:
+`collect_data -> DRAFT_ACCEPTED -> prepare_reply -> ask_for_missing_data/mail
+-> generate_draft_reply -> HITL`; `operator_clarification_requested=false`;
+no executed `request_operator_clarification` substitute. Bez pełnego Fresh38.
 
 **`EVAL-RECOVERY-1` (2026-07-17): `PARTIAL — measurement infrastructure complete, capacity pending`.** Naprawiono `generate_draft_reply` argument-schema mismatch (root cause: planner prompt bezwarunkowo instruował dryf w stronę `propose_mutation(operation=generate_draft)`, narzędzia niedostępnego dla mail-agenta — poprawka warunkuje instrukcję realną dostępnością narzędzia; Model A dla `generate_draft_reply` potwierdzony jako właściwy, niezmieniony kontrakt). Zamknięto realne luki pomiarowe w eval harnessie: Understanding output i finalna treść draftu są teraz realnie przechwytywane (potwierdzone żywo pod realnym Groq capacity), production-faithful/component-capability tryby rozdzielone, deterministyczny rubric scoring działa. Pełne artefakty: `C:\ai-os-eval-recovery-1-20260717T205123Z\`, `report.md`.
 
@@ -50,19 +42,20 @@ Aktualny werdykt autonomii dla tego obiegu: **YES, WITH EXPLICIT LIMITS**.
 
 | Obszar | Wynik |
 | --- | --- |
-| SVC-05 BusinessReasoning clarification | **PASS** (focused 89 passed; bounded cohort 6/6 QUALIFIED + NEW-05; commit `0a407cb3`) |
-| SVC-05 downstream/final provider-live proof | **PASS / CLOSED** (`collect_data` -> draft -> `prepare_reply` -> `ask_for_missing_data`/mail -> `generate_draft_reply`; SVC-05/SVC-02/MI-03 3/3 `QUALIFIED`; no full Fresh38) |
+| SVC-05 product fix | **PASS / CLOSED** (`customer_clarification_possible`; commit `0a407cb3`) |
+| SVC-05 downstream/final provider-live proof | **PASS / CLOSED** (`collect_data` -> `DRAFT_ACCEPTED` -> `prepare_reply` -> `ask_for_missing_data`/mail -> `generate_draft_reply` -> HITL; SVC-05/SVC-02/MI-03 3/3 `QUALIFIED`; commit `70c3d94`; no full Fresh38) |
 | gmail-agent pełny suite (`tools/gmail_audit/tests`) | `1514 passed, 10 skipped, 24 subtests passed, 0 failed` (2026-07-17, `EVAL-RECOVERY-1`; baseline przed sesją 1508/10 — DELIVERY-1 — 0 nowych skipów, +6 nowych testów `test_generate_draft_reply_contract.py`) |
 | Daszek pytest | `8 passed` (nie re-zweryfikowane w `EVAL-RECOVERY-1`, bez zmian w Daszku tej sesji) |
 | Daszek Node tests (w tym DEC-01) | `13 passed` (jw.) |
 | JavaScript / PHP syntax (kalk-top `npm run verify` pełny łańcuch) | PASS (potwierdzone `EVAL-RECOVERY-1`, `scripts\verify-local-gates.ps1` uruchomiony bezpośrednio przez agenta) |
 | Workspace gate (`scripts\verify-local-gates.ps1`) | `exit 0` — uruchomiony bezpośrednio przez agenta 2026-07-17 (`EVAL-RECOVERY-1`), zakończone `[OK] verify-local-gates complete` |
-| Node B API health | `ok=true` (potwierdzone 2026-07-17 po rebuild/recreate) |
+| Node B API health | `ok=true` (potwierdzone lokalnie 2026-08-20 na `127.0.0.1:8766/health`) |
 | Worker health | `ok=true`, świeży kontener po rebuild/recreate 2026-07-17 |
-| Postgres / Neo4j / Ollama | running, healthy, nietknięte przez rebuild Node B 2026-07-17 |
+| Postgres mailbox memory | running, healthy (potwierdzone lokalnie 2026-08-20) |
+| RAG backend / core preflight | **not current PASS**: `127.0.0.1:8000/health` nie odpowiada; canonical `rag-chat-asystent` compose start 2026-08-20 utknął w build/compose bez utworzenia kontenerów RAG |
 | API / worker restart count | `0 / 0` (po rebuildzie 2026-07-17: `generate_draft_reply` prompt-contract fix) |
 | Host/container SHA-256 | zgodne 2026-07-17 dla zmienionych plików (`agent_runtime/openai_agent_client.py`, `agent_runtime/tool_schemas.py`) |
-| FullStack preflight (`-FullStack`) | nie uruchamiany w `EVAL-RECOVERY-1`; ostatni znany wynik `7/7 OK` z 2026-07-13, nie re-zweryfikowany od tego czasu |
+| FullStack preflight (`-FullStack`) | nie jest bieżącym PASS; core preflight 2026-08-20 blokuje brak zdrowego RAG backendu |
 
 Liczby są snapshotem tego proofu, nie obietnicą dla przyszłych zmian. Po zmianie chronionego runtime należy wykonać świeżą regresję i zaktualizować ten dokument.
 
