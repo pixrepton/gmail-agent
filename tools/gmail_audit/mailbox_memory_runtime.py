@@ -2039,16 +2039,32 @@ def split_conflicting_facts(facts: list[dict[str, Any]]) -> tuple[list[dict[str,
     """Rank facts per (entity_scope, fact_key) into one active value plus any
     genuine conflicts.
 
-    `append_facts_with_supersession` (RP-29) already resolves a
-    (entity_scope, fact_key) update by writing the prior row's `status` as
-    `"superseded"` instead of leaving two competing `"active"` rows. A
-    superseded row is a settled fact, not a live disagreement -- it must not
-    re-enter ranking here, or a stale row with incidentally higher confidence
-    or a newer `observed_at` could silently outrank the row the write path
-    already declared current. Rows with no `status` at all (older producers,
-    most existing tests) are treated as active, matching the schema default.
+    `append_facts_with_supersession` (RP-29) writes a replaced row's `status`
+    as `"superseded"`, so a stale row can never outrank the live value for the
+    active selection below.
+
+    CTX-03 (operator decision): a superseded value is a real disagreement when
+    the supersession reason is `replace_message_facts` (a new customer message
+    changed a value without declaring the old one wrong). That value still
+    contributes to the conflict value set, so 120 vs 160 surfaces as a
+    `conflicting_facts` entry instead of being hidden. All other supersession
+    reasons (authoritative append, identity reconciliation, explicit
+    correction) are settled and excluded. Repeating the same value produces a
+    single-value set and no conflict.
     """
     live_facts = [fact for fact in facts if str(fact.get("status") or "active") != "superseded"]
+    superseded_values: dict[tuple[str, str], set[str]] = {}
+    for fact in facts:
+        if str(fact.get("status") or "active") != "superseded":
+            continue
+        meta = fact.get("metadata") if isinstance(fact.get("metadata"), dict) else {}
+        if str(meta.get("supersede_reason") or "") != "replace_message_facts":
+            continue
+        value = str(fact.get("normalized_value") or "").strip()
+        if not value:
+            continue
+        key = (str(fact.get("entity_scope") or "case"), str(fact.get("fact_key") or ""))
+        superseded_values.setdefault(key, set()).add(value)
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for fact in live_facts:
         grouped.setdefault((str(fact.get("entity_scope") or "case"), str(fact.get("fact_key") or "")), []).append(fact)
@@ -2063,6 +2079,7 @@ def split_conflicting_facts(facts: list[dict[str, Any]]) -> tuple[list[dict[str,
         if ranked:
             active.append(ranked[0])
         values = {str(item.get("normalized_value") or "").strip() for item in items if str(item.get("normalized_value") or "").strip()}
+        values.update(superseded_values.get((entity_scope, fact_key), set()))
         if len(values) > 1:
             conflicts.append({"entity_scope": entity_scope, "fact_key": fact_key, "values": sorted(values)})
     return active, conflicts
