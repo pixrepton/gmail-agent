@@ -813,6 +813,39 @@ def _policy_enforcement_block(
     if str(consistency.status or "") != "conflicting":
         return None
     reasons = {str(item) for item in (consistency.reason_codes or [])}
+    semantic_reasons = {
+        "semantic_tool_forbidden_for_action_intent",
+        "semantic_tool_not_allowed_for_action_intent",
+    }
+    if reasons & semantic_reasons:
+        return attach_attribution(
+            ToolResult(
+                status="error",
+                turn_summary_pl=(
+                    "Wybrane narzedzie zmienialoby adresata lub kanal decyzji - "
+                    "zablokowano przed wykonaniem."
+                ),
+                snapshot_delta={
+                    "operational_status": {"code": "pending_operator", "blocking": True},
+                    "hitl_gate": {
+                        "required": True,
+                        "reason": f"semantic_tool_mismatch:{plan.tool_name}",
+                    },
+                },
+            ),
+            attribution(
+                failure_class="SEMANTIC_TOOL_MISMATCH",
+                owner="policy",
+                stage="policy_enforcement",
+                retryable=False,
+                safe_next_step="use_allowed_customer_facing_tool",
+                correlation={
+                    "policy_decision_id": str(consistency.policy_decision_id or ""),
+                    "action_proposal_id": str(consistency.action_proposal_id or ""),
+                },
+                detail=",".join(sorted(reasons & semantic_reasons)),
+            ),
+        )
     if "policy_blocks_actionable_tool" not in reasons:
         return None
     return attach_attribution(

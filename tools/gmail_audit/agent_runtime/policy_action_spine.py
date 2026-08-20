@@ -22,6 +22,57 @@ ACTION_INTENT_TOOL_MAPPING_CLASSIFICATION = "NO_SAFE_MAPPING_EXISTS"
 # This is not an action_type -> tool mapping.
 _ACTION_PRODUCING_TOOLS = frozenset({"generate_draft_reply", "propose_mutation"})
 _STALE_PROPOSAL_STATUSES = frozenset({"expired", "stale", "superseded"})
+_CUSTOMER_MAIL_TOOLS = ("generate_draft_reply",)
+_OPERATOR_CLARIFICATION_TOOL = "request_operator_clarification"
+
+
+def _next_best_action_dict(candidate: dict[str, Any]) -> dict[str, Any]:
+    value = candidate.get("next_best_action")
+    return value if isinstance(value, dict) else {}
+
+
+def _semantic_tool_constraints(
+    *,
+    proposal_action_type: str,
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    """Compile the narrow customer-mail action semantics currently proven by Brain 1.
+
+    This is intentionally smaller than a general action-to-tool vocabulary. The
+    first supported invariant is customer missing-data collection: asking the
+    customer for missing data must materialize as a draft to the customer, never
+    as an operator clarification request.
+    """
+    proposal_action = str(proposal_action_type or "").strip()
+    nba = _next_best_action_dict(candidate)
+    nba_action = str(nba.get("action_type") or candidate.get("next_best_action") or "").strip()
+    channel = str(nba.get("suggested_channel") or "").strip()
+
+    customer_missing_data = nba_action == "ask_for_missing_data" or proposal_action == "request_missing_info"
+    if customer_missing_data:
+        return {
+            "action_target": "customer",
+            "action_channel": channel or "mail",
+            "allowed_tools": list(_CUSTOMER_MAIL_TOOLS),
+            "forbidden_tools": [_OPERATOR_CLARIFICATION_TOOL],
+        }
+    return {
+        "action_target": "",
+        "action_channel": channel,
+        "allowed_tools": [],
+        "forbidden_tools": [],
+    }
+
+
+def _proposal_raw_json(proposal: dict[str, Any]) -> dict[str, Any]:
+    raw = proposal.get("raw_json")
+    return raw if isinstance(raw, dict) else {}
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def _candidate_from_intelligence(case_intelligence_result: dict[str, Any]) -> dict[str, Any]:
@@ -153,6 +204,10 @@ def persist_policy_action_spine(
             or not str(raw.get("proposal_id") or "").strip()
         ):
             continue
+        semantic = _semantic_tool_constraints(
+            proposal_action_type=str(raw.get("action_type") or ""),
+            candidate=candidate,
+        )
         proposal_row = {
             "proposal_id": str(raw.get("proposal_id") or "").strip(),
             "policy_decision_id": policy_id,
@@ -172,7 +227,7 @@ def persist_policy_action_spine(
             "evidence_refs": list(raw.get("evidence_refs") or [])[:24],
             "generated_at": str(raw.get("created_at") or ""),
             "expires_at": str(raw.get("expires_at") or ""),
-            "raw_json": dict(raw),
+            "raw_json": {**dict(raw), **semantic},
         }
         inserted += int(bool(store.append_action_proposal_v2(proposal_row)))
     result["action_proposals_v2_inserted"] = inserted
@@ -265,6 +320,7 @@ def project_policy_action_envelope(
         if "proposal_expired" not in reason_codes:
             reason_codes.append("proposal_expired")
 
+    raw_json = _proposal_raw_json(proposal)
     return PolicyActionEnvelopeV1(
         decision_candidate_id=str(proposal.get("decision_candidate_id") or ""),
         policy_decision_id=policy_id,
@@ -273,6 +329,10 @@ def project_policy_action_envelope(
         source_message_id=message_id,
         policy_status=str(policy.get("status") or ""),
         action_intent=str(proposal.get("action_type") or ""),
+        action_target=str(raw_json.get("action_target") or ""),
+        action_channel=str(raw_json.get("action_channel") or ""),
+        allowed_tools=_string_list(raw_json.get("allowed_tools")),
+        forbidden_tools=_string_list(raw_json.get("forbidden_tools")),
         allowed_by_policy=bool(proposal.get("allowed_by_policy")),
         requires_operator_approval=bool(
             proposal.get("requires_operator_approval")
@@ -354,6 +414,30 @@ def evaluate_semantic_policy_plan_consistency(
         mismatches.append("action_proposal_id_mismatch")
     if mismatches:
         return _consistency("conflicting", mismatches, envelope, plan)
+
+    forbidden_tools = {str(item).strip() for item in envelope.forbidden_tools if str(item).strip()}
+    allowed_tools = {str(item).strip() for item in envelope.allowed_tools if str(item).strip()}
+    if plan.tool_name in forbidden_tools:
+        return _consistency(
+            "conflicting",
+            ["semantic_tool_forbidden_for_action_intent"],
+            envelope,
+            plan,
+        )
+    if allowed_tools:
+        if plan.tool_name not in allowed_tools:
+            return _consistency(
+                "conflicting",
+                ["semantic_tool_not_allowed_for_action_intent"],
+                envelope,
+                plan,
+            )
+        return _consistency(
+            "consistent",
+            ["semantic_tool_allowed_for_action_intent"],
+            envelope,
+            plan,
+        )
 
     blocked = envelope.policy_status in {
         "blocked",

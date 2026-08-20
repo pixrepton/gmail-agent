@@ -79,6 +79,46 @@ def config_gate_reason(
     )
 
 
+def semantic_envelope_gate_reason(tool_name: str, *, snapshot: Any | None) -> ToolAvailabilityDecision | None:
+    """Filter tools that would change the target/channel of a fresh action envelope."""
+    envelope = getattr(snapshot, "policy_action_envelope", None) if snapshot is not None else None
+    if envelope is None or str(getattr(envelope, "freshness", "") or "") != "current":
+        return None
+    name = str(tool_name or "").strip()
+    forbidden = {
+        str(item).strip()
+        for item in (getattr(envelope, "forbidden_tools", None) or [])
+        if str(item).strip()
+    }
+    if name in forbidden:
+        return ToolAvailabilityDecision(
+            tool_name=name,
+            offered=False,
+            reason_code="SEMANTIC_TOOL_FORBIDDEN",
+            detail=(
+                f"action_intent={getattr(envelope, 'action_intent', '')}; "
+                f"target={getattr(envelope, 'action_target', '')}; "
+                f"channel={getattr(envelope, 'action_channel', '')}"
+            ),
+        )
+    allowed = {
+        str(item).strip()
+        for item in (getattr(envelope, "allowed_tools", None) or [])
+        if str(item).strip()
+    }
+    if allowed and name not in allowed:
+        return ToolAvailabilityDecision(
+            tool_name=name,
+            offered=False,
+            reason_code="SEMANTIC_TOOL_NOT_ALLOWED",
+            detail=(
+                f"action_intent={getattr(envelope, 'action_intent', '')}; "
+                f"allowed_tools={','.join(sorted(allowed))}"
+            ),
+        )
+    return None
+
+
 def compute_effective_available_tools(
     available_tools: Iterable[str],
     *,
@@ -146,6 +186,11 @@ def compute_effective_available_tools(
                 continue
             # Eligible: fall through to the config gate below so a missing
             # KALK_TOP_BASE_URL still removes the tool from the offered set.
+        semantic = semantic_envelope_gate_reason(name, snapshot=snapshot)
+        if semantic is not None:
+            filtered.append(semantic)
+            notes.append(f"{name}: {semantic.reason_code}")
+            continue
         gated = config_gate_reason(name, settings=settings)
         if gated is not None:
             filtered.append(gated)
@@ -168,4 +213,5 @@ __all__ = [
     "ToolAvailabilityDecision",
     "compute_effective_available_tools",
     "config_gate_reason",
+    "semantic_envelope_gate_reason",
 ]

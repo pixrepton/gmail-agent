@@ -180,6 +180,10 @@ class PolicyActionEnvelopeV1(StrictModel):
     source_message_id: str = ""
     policy_status: str = ""
     action_intent: str = ""
+    action_target: str = ""
+    action_channel: str = ""
+    allowed_tools: list[str] = Field(default_factory=list)
+    forbidden_tools: list[str] = Field(default_factory=list)
     allowed_by_policy: bool | None = None
     requires_operator_approval: bool | None = None
     freshness: Literal["current", "stale", "unavailable"] = "unavailable"

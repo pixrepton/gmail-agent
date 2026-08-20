@@ -14,6 +14,7 @@ if str(TOOL_DIR) not in sys.path:
 from action_proposal_v2 import build_action_proposals_v2
 from agent_runtime.agent_reconcile import build_policy_action_envelope_handoff
 from agent_runtime.constitution import load_constitution
+from agent_runtime.effective_tools import compute_effective_available_tools
 from agent_runtime.graph import AgentGraphEngine, _apply_tool_result, _ground_current_signal
 from agent_runtime.mcp_service import AgentMcpService
 from agent_runtime.openai_agent_client import _compact_view
@@ -84,6 +85,47 @@ def _case_intelligence(
     decision["created_at"] = created_at
     proposal["created_at"] = created_at
     proposal["expires_at"] = expires_at
+    return {
+        "decision_candidate": candidate,
+        "policy_decision": decision,
+        "action_proposals_v2": [proposal],
+    }
+
+
+def _customer_missing_data_intelligence() -> dict:
+    candidate = {
+        "schema_version": "decision_candidate.v1",
+        "decision_candidate_id": "dc_3b_missing",
+        "case_id": "case_3b",
+        "source_signal_id": "msg_3b_1",
+        "next_best_action": {
+            "action_type": "ask_for_missing_data",
+            "suggested_channel": "mail",
+        },
+        "evidence_refs": [{"evidence_id": "ev_missing", "source_ref": "msg_3b_1"}],
+    }
+    report = {
+        "status": "APPROVED",
+        "effective_risk_class": "low",
+        "policy_basis": ["policy_test_basis"],
+        "failed_rules": [],
+        "warnings": [],
+        "requires_review": True,
+    }
+    decision = build_policy_decision(
+        policy_report=report,
+        decision_candidate_id=candidate["decision_candidate_id"],
+        decision_candidate=candidate,
+        dry_run_only=False,
+    )
+    proposal = build_action_proposals_v2(
+        decision_candidate=candidate,
+        policy_decision=decision,
+        primary_action_type="prepare_reply",
+        dry_run_only=False,
+    )[0]
+    decision["created_at"] = "2026-07-27T12:00:00Z"
+    proposal["created_at"] = "2026-07-27T12:00:00Z"
     return {
         "decision_candidate": candidate,
         "policy_decision": decision,
@@ -208,6 +250,84 @@ def test_projection_distinguishes_current_stale_and_unavailable() -> None:
     assert unavailable.freshness == "unavailable"
     assert unavailable.action_intent == ""
     assert "canonical_action_proposal_v2_not_found" in unavailable.reason_codes
+
+
+def test_customer_missing_data_envelope_compiles_customer_mail_tool_constraints() -> None:
+    store = InMemoryMailboxMemoryStore()
+    _persist(store, _customer_missing_data_intelligence())
+    envelope = _current_envelope(store)
+
+    assert envelope.freshness == "current"
+    assert envelope.action_target == "customer"
+    assert envelope.action_channel == "mail"
+    assert envelope.allowed_tools == ["generate_draft_reply"]
+    assert envelope.forbidden_tools == ["request_operator_clarification"]
+
+    snapshot = build_initial_snapshot(
+        case_id="case_3b",
+        engagement_id="eng_3b_missing",
+        signal_id="sig_3b_1",
+        trace_id="trace_3b",
+    ).model_copy(update={"policy_action_envelope": envelope})
+    effective = compute_effective_available_tools(
+        (
+            "generate_draft_reply",
+            "request_operator_clarification",
+            "search_gmail_thread",
+        ),
+        constitution=load_constitution(),
+        snapshot=snapshot,
+    )
+
+    assert effective.offered == ("generate_draft_reply",)
+    filtered = {item.tool_name: item.reason_code for item in effective.filtered}
+    assert filtered["request_operator_clarification"] == "SEMANTIC_TOOL_FORBIDDEN"
+    assert filtered["search_gmail_thread"] == "SEMANTIC_TOOL_NOT_ALLOWED"
+
+
+def test_customer_missing_data_envelope_blocks_operator_clarification_substitute() -> None:
+    class _OperatorSubstitutePlanner:
+        def plan_next_tool(self, *, snapshot, available_tools, constitution):
+            assert "request_operator_clarification" not in available_tools
+            return ToolCallPlan(
+                tool_name="request_operator_clarification",
+                arguments={"ask_pl": "Jaki jest opis usterki?"},
+            )
+
+    store = InMemoryMailboxMemoryStore()
+    _persist(store, _customer_missing_data_intelligence())
+    envelope = _current_envelope(store)
+    constitution = load_constitution()
+    snapshot = build_initial_snapshot(
+        case_id="case_3b",
+        engagement_id="eng_3b_missing_block",
+        signal_id="sig_3b_1",
+        trace_id="trace_3b",
+    )
+
+    result = AgentGraphEngine(
+        planner=_OperatorSubstitutePlanner(),
+        constitution=constitution,
+        tool_registry=MockToolRegistry(),
+    ).run(
+        snapshot,
+        context=ToolExecutionContext.from_snapshot(
+            snapshot,
+            signal_payload={
+                "policy_action_envelope": envelope.model_dump(mode="python"),
+            },
+            constitution=constitution,
+        ),
+    )
+
+    assert result.turns[0].tool_name == "request_operator_clarification"
+    assert result.turns[0].tool_status == "error"
+    assert result.snapshot.hitl_gate.required is True
+    assert result.snapshot.hitl_gate.reason == "semantic_tool_mismatch:request_operator_clarification"
+    assert result.snapshot.semantic_policy_plan_consistency.status == "conflicting"
+    assert "semantic_tool_forbidden_for_action_intent" in (
+        result.snapshot.semantic_policy_plan_consistency.reason_codes
+    )
 
 
 def test_later_decision_replaces_the_earlier_envelope_for_the_same_source() -> None:
