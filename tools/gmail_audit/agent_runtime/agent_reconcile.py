@@ -187,6 +187,8 @@ def build_case_understanding_projection(
         sharpened_pl=sharpened,
         case_kind=case_kind_uo,
         missing_critical_fields=missing_fields,
+        action_type=str(nba.get("action_type") or nba.get("recommended_action") or ""),
+        suggested_channel=str(nba.get("suggested_channel") or ""),
     )
     return {
         "source_signal_id": source_signal_id,

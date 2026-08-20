@@ -131,6 +131,28 @@ def test_terminal_hint_does_not_treat_negated_close_as_archive_command() -> None
     assert hint == "generate_draft_reply"
 
 
+def test_customer_missing_data_mail_prefers_draft_path_not_operator_clarification() -> None:
+    out = apply_nba_quality_to_understanding(
+        {
+            "situation_summary": {"case_family": "unknown", "business_area": "service"},
+            "missing_critical_fields": [],
+            "operator_explanation": {"essence_pl": "Niejednoznaczne zgloszenie serwisowe"},
+            "next_best_action_recommendation": {
+                "action_type": "ask_for_missing_data",
+                "title_pl": "Popros klienta o brakujace dane",
+                "reason_pl": "Brakuje opisu objawow, urzadzenia i danych kontaktowych.",
+                "suggested_channel": "mail",
+                "optional_draft_pointer": "customer_friendly",
+                "whether_human_review_required": True,
+            },
+        }
+    )
+
+    nba = out["next_best_action_recommendation"]
+    assert nba["quality"]["decision_state"] == DECISION_STATE_REPLY
+    assert nba["quality"]["planner_action_hint"] == "generate_draft_reply"
+
+
 def test_gaps_vs_risks_rejects_question_in_gaps() -> None:
     sep = separate_gaps_vs_risks(
         missing_critical_fields=["Jakie jest ciśnienie w instalacji?"],

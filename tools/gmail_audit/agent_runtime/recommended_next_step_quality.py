@@ -146,11 +146,17 @@ def planner_action_hint(
     sharpened_pl: str,
     case_kind: str = "",
     missing_critical_fields: list[str] | None = None,
+    action_type: str = "",
+    suggested_channel: str = "",
 ) -> str:
     """Map sharpened next step to a preferred tool class (not a hard tool binding)."""
     text = str(sharpened_pl or "").lower()
     kind = normalize_case_kind(case_kind=case_kind)
     missing = [str(x).strip() for x in (missing_critical_fields or []) if str(x).strip()]
+    action = str(action_type or "").strip().lower()
+    channel = str(suggested_channel or "").strip().lower()
+    if action == "ask_for_missing_data" and channel in {"mail", "email", "customer", "customer/mail"}:
+        return "generate_draft_reply"
     if _has_terminal_action_text(text):
         return "archive_case"
     if "report_gaps" in text or (missing and "tylko o" in text):
@@ -735,6 +741,8 @@ def evaluate_understanding_to_decision_quality(
             sharpened_pl=sharpened,
             case_kind=family,
             missing_critical_fields=missing[:6],
+            action_type=str(nba.get("action_type") or nba.get("recommended_action") or ""),
+            suggested_channel=str(nba.get("suggested_channel") or ""),
         ),
     }
 
@@ -811,6 +819,8 @@ def apply_nba_quality_to_understanding(
             sharpened_pl=sharpened or raw_title,
             case_kind=family,
             missing_critical_fields=missing,
+            action_type=str(nba.get("action_type") or nba.get("recommended_action") or ""),
+            suggested_channel=str(nba.get("suggested_channel") or ""),
         ),
         "decision_state": decision_state,
         "gaps_vs_risks_separated": bool(gaps_vs_risks.get("separated")),
