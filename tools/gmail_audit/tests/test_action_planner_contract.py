@@ -22,6 +22,36 @@ class ActionPlannerContractTests(unittest.TestCase):
         result = run_fixture("urgent_service")
         self.assertEqual(result["action_plan"]["primary_action"], "create_review")
 
+    def test_customer_clarification_collect_data_keeps_reply_action_under_review_gate(self) -> None:
+        result = plan_actions(
+            {
+                "decision": {"action": "review"},
+                "review_required": True,
+                "review": {"required": True, "flags": ["ambiguous_signal", "insufficient_thread_context"]},
+                "business_area": "service",
+                "confidence": {"decision_confidence": 0.4, "case_link_confidence": 0.1},
+            },
+            {"decision": "no_link", "confidence": 0.1},
+            {
+                "recommended_next_action": "collect_data",
+                "reply_recommended": True,
+                "customer_clarification_possible": True,
+                "business_area": "service",
+                "customer_state_guess": "unclear",
+                "missing_information": ["opis usterki/objawow", "telefon kontaktowy"],
+                "confidence": {"action_confidence": 0.3},
+            },
+            {"draft_enabled": True, "recommended_variant": "short_operational"},
+        )
+
+        self.assertEqual(result["primary_action"], "prepare_reply")
+        self.assertIn("review draft before sending", result["operator_checklist"])
+        self.assertIn("review intake flags and rationale", result["operator_checklist"])
+        self.assertNotIn(
+            "review gate takes precedence over reply preparation",
+            result["why_not_other_actions"],
+        )
+
     def test_document_and_calendar_blockers_raise_review_priority(self) -> None:
         result = plan_actions(
             {

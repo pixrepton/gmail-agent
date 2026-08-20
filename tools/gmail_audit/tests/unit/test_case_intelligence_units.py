@@ -115,6 +115,73 @@ class TestNextBestAction(unittest.TestCase):
         )
         self.assertEqual(result["primary_next_action"]["action_type"], "answer_customer")
 
+    def test_customer_clarification_collect_data_asks_customer_with_review_approval(self):
+        result = build_next_best_action(
+            intake_result={
+                "review_required": True,
+                "review": {"required": True, "flags": ["ambiguous_signal", "insufficient_thread_context"]},
+                "business_area": "service",
+                "case_assessment": {"case_family": "unknown"},
+            },
+            case_link_result={"decision": "no_link"},
+            business_result={
+                "recommended_next_action": "collect_data",
+                "reply_recommended": True,
+                "customer_clarification_possible": True,
+                "business_area": "service",
+                "urgency": "normal",
+                "missing_information": ["opis usterki/objawow", "telefon kontaktowy"],
+                "confidence": {"action_confidence": 0.3},
+            },
+            reply_result={"draft_enabled": True, "recommended_variant": "short_operational"},
+            action_plan_result={
+                "primary_action": "prepare_reply",
+                "why_this_action": "Business reasoning recommends a reply or data collection and a draft is available.",
+                "confidence": 0.35,
+            },
+            missing_info={"important": ["opis usterki/objawow"], "critical": []},
+            merge_split_suggestions={},
+        )
+
+        primary = result["primary_next_action"]
+        self.assertEqual(primary["action_type"], "ask_for_missing_data")
+        self.assertEqual(primary["suggested_channel"], "mail")
+        self.assertEqual(primary["optional_draft_pointer"], "short_operational")
+        self.assertTrue(primary["whether_human_review_required"])
+
+    def test_collect_data_prepare_reply_path_does_not_escalate_internal(self):
+        result = build_next_best_action(
+            intake_result={
+                "review_required": False,
+                "review": {"required": False, "flags": []},
+                "business_area": "service",
+                "case_assessment": {"case_family": "platform_service_security"},
+            },
+            case_link_result={"decision": "no_link"},
+            business_result={
+                "recommended_next_action": "collect_data",
+                "reply_recommended": True,
+                "customer_clarification_possible": False,
+                "business_area": "service",
+                "urgency": "high",
+                "missing_information": ["opis usterki", "lokalizacja instalacji"],
+                "confidence": {"action_confidence": 0.85},
+            },
+            reply_result={"draft_enabled": True, "recommended_variant": "customer_friendly"},
+            action_plan_result={
+                "primary_action": "prepare_reply",
+                "why_this_action": "Business reasoning recommends a reply or data collection and a draft is available.",
+                "confidence": 0.85,
+            },
+            missing_info={"important": ["opis usterki"], "critical": []},
+            merge_split_suggestions={},
+        )
+
+        primary = result["primary_next_action"]
+        self.assertEqual(primary["action_type"], "ask_for_missing_data")
+        self.assertEqual(primary["suggested_channel"], "mail")
+        self.assertEqual(primary["optional_draft_pointer"], "customer_friendly")
+
 
 class TestDeskComposition(unittest.TestCase):
     def test_merge_case_guidance(self):

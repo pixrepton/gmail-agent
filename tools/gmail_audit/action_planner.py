@@ -34,6 +34,26 @@ def _is_blocking(item: dict[str, Any]) -> bool:
     return str(item.get("severity") or "").lower() != "low"
 
 
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes"}
+    return bool(value)
+
+
+def _has_customer_clarification_reply_path(
+    business_result: dict[str, Any] | None,
+    reply_result: dict[str, Any] | None,
+) -> bool:
+    business = business_result or {}
+    return (
+        str(business.get("recommended_next_action") or "").strip() == "collect_data"
+        and _truthy(business.get("customer_clarification_possible"))
+        and _truthy((reply_result or {}).get("draft_enabled"))
+    )
+
+
 def plan_actions(
     intake_result: dict[str, Any],
     case_link_result: dict[str, Any] | None,
@@ -93,6 +113,8 @@ def select_primary_action(
     business_action = str((business_result or {}).get("recommended_next_action") or "")
     case_link_decision = str((case_link_result or {}).get("decision") or "")
 
+    if _has_customer_clarification_reply_path(business_result, reply_result):
+        return "prepare_reply"
     if intake_result.get("review_required"):
         return "create_review"
     if intake_action == "ignore":

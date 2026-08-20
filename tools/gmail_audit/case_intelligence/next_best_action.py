@@ -7,6 +7,30 @@ from .missing_info import _has_actionable_current_step, _is_service_context, _is
 from .validators import _action_item, _bounded_float, _normalize_urgency, _string_or_default
 
 
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes"}
+    return bool(value)
+
+
+def _has_customer_clarification_reply_path(
+    business_result: dict[str, Any],
+    reply_result: dict[str, Any],
+    *,
+    primary_action_plan: str = "",
+) -> bool:
+    return (
+        str(business_result.get("recommended_next_action") or "").strip() == "collect_data"
+        and _truthy(reply_result.get("draft_enabled"))
+        and (
+            _truthy(business_result.get("customer_clarification_possible"))
+            or str(primary_action_plan or "").strip() == "prepare_reply"
+        )
+    )
+
+
 def _soft_review_from_action_plan(intake_result: dict[str, Any], primary_action_plan: str) -> bool:
     review_obj_present = isinstance(intake_result.get("review"), dict)
     review = intake_result.get("review") if review_obj_present else {}
@@ -42,9 +66,16 @@ def build_next_best_action(
         and _has_actionable_current_step(intake_result, business_result)
     )
     review_required = hard_review_required or (soft_review_required and not current_action_ready)
+    customer_clarification_ready = _has_customer_clarification_reply_path(
+        business_result,
+        reply_result,
+        primary_action_plan=primary_action_plan,
+    )
 
     action_type = "wait"
-    if review_required:
+    if customer_clarification_ready:
+        action_type = "ask_for_missing_data"
+    elif review_required:
         action_type = "review_required"
     elif business_action == "wait":
         action_type = "wait"
