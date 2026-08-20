@@ -67,6 +67,73 @@ def _uo(*, business: dict, intake: dict | None = None, case_context_pack: dict |
 
 
 class CustomerIntentSemantics(unittest.TestCase):
+    def test_multi_intent_questions_enumerated_when_business_interpretation_missing(self) -> None:
+        # P4-A MI-02 regression: three intents (accept + reschedule + furnace scope)
+        # must not collapse into a single state-guess label when BusinessReasoning
+        # produced no usable interpretation. The three intents live in
+        # thread_memory.unresolved_questions and must surface in customer_intent_pl.
+        snapshot = _snapshot()
+        snapshot["source_message"].update({
+            "message_id": "msg_mi02",
+            "subject": "Re: Oferta i wizja lokalna",
+        })
+        intake_result = {
+            "decision": {"action": "review"},
+            "business_area": "sales",
+            "priority": "high",
+            "case_assessment": {"case_family": "lead_opportunity", "interpretation": "Kontynuacja."},
+            "thread": {"thread_id": "thread_rcu1"},
+        }
+        case_link = {"decision": "weak_link", "confidence": 0.5, "selected_case_key": ""}
+        business = {
+            "business_interpretation": "",
+            "customer_state_guess": "post_offer",
+            "recommended_next_action": "escalate_review",
+            "urgency": "high",
+        }
+        reply = {"draft_enabled": False, "drafts": []}
+        action_plan = {"primary_action": "create_review", "confidence": 0.5}
+        thread_memory = {
+            "thread_id": "thread_rcu1",
+            "unresolved_questions": [
+                "Akceptuje oferte. Przy okazji - czy mozemy przelozyc czwartkowa wizje lokalna na piatek?",
+                "I jeszcze pytanie: czy w cenie jest wliczony wywoz starego pieca?",
+            ],
+            "commitments_made": [],
+            "key_facts_so_far": [],
+            "has_unanswered_question": True,
+            "has_open_commitment": False,
+            "thread_state": "active",
+            "updated_at": "2026-01-01T10:00:00Z",
+            "last_operator_action": "",
+            "open_tasks_from_thread": [],
+        }
+        ci = build_case_intelligence(
+            snapshot=snapshot,
+            intake_result=intake_result,
+            case_link_result=case_link,
+            business_result=business,
+            reply_result=reply,
+            action_plan_result=action_plan,
+            thread_memory=thread_memory,
+            case_context_pack={"source_refs": [], "vector_retrieval": {}, "relevant_chunks": []},
+        )
+        uo = build_understanding_output(
+            snapshot=snapshot,
+            intake_result=intake_result,
+            case_link_result=case_link,
+            intelligence=ci,
+            thread_memory=thread_memory,
+            attachment_intelligence={},
+            case_context_pack={"source_refs": [], "vector_retrieval": {}, "relevant_chunks": []},
+            business_result=business,
+        )
+        patched, _ = validate_understanding_invariants(uo)
+        intent = patched["customer_intent_pl"].lower()
+        self.assertIn("akceptuje oferte", intent)
+        self.assertIn("piatek", intent)
+        self.assertIn("wywoz starego pieca", intent)
+
     def test_clear_quote_intent_not_unknown(self) -> None:
         uo = _uo(business={
             "business_interpretation": "Klient prosi o wycene pompy ciepla dla domu 150 m2.",

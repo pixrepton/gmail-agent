@@ -79,8 +79,6 @@ def build_understanding_output(
     )
     essence = operator_feed_plain_summary(summary_seed, fallback="Sygnał wymaga oceny operatora.")[:700]
 
-    intent = _customer_intent_pl(cu, business, intake)
-
     prior_state_rows = _prior_known_state_rows(pack, current_signal_id=source_signal_id)
     prior_state_pl = _prior_known_state_pl(prior_state_rows)
     pending_outcome_gaps = _pending_outcome_gaps_pl(
@@ -107,6 +105,8 @@ def build_understanding_output(
         for s in (operator_feed_plain_summary(q, fallback="") for q in (tm.get("unresolved_questions") or []))
         if s
     ])
+
+    intent = _customer_intent_pl(cu, business, intake, unresolved_questions=unresolved_questions_pl)
     # Deterministic, grounded gaps (pending_outcome_gaps) are PREPENDED, not
     # appended: the free-form LLM list can be long and carry near-duplicate
     # phrasings (business_result.missing_information often restates
@@ -1041,11 +1041,24 @@ _BUSINESS_REASONING_UNAVAILABLE_MARKERS = frozenset(
 )
 
 
-def _customer_intent_pl(cu: dict[str, Any], business: dict[str, Any], intake: dict[str, Any]) -> str:
+def _customer_intent_pl(
+    cu: dict[str, Any],
+    business: dict[str, Any],
+    intake: dict[str, Any],
+    *,
+    unresolved_questions: list[str] | None = None,
+) -> str:
     """Express the customer's current intent by REUSING existing business
     intelligence, in order of authority. Falls back to an honest "unknown" only
     when no interpretation and no state signal exist — clear evidence must not
-    collapse to unknown, but genuine ambiguity may."""
+    collapse to unknown, but genuine ambiguity may.
+
+    P4-A (multi-intent collapse): when the business layer produced no usable
+    interpretation, several explicit customer questions are a stronger,
+    deterministic intent signal than a single state-guess label. Enumerate the
+    already-PII-sanitized questions instead of silently dropping two of three
+    intents into one enum phrase.
+    """
     for candidate in (cu.get("customer_intent_pl"), business.get("customer_intent")):
         s = operator_feed_plain_summary(candidate or "", fallback="")
         if s:
@@ -1053,6 +1066,9 @@ def _customer_intent_pl(cu: dict[str, Any], business: dict[str, Any], intake: di
     interpretation = operator_feed_plain_summary(business.get("business_interpretation") or "", fallback="")
     if interpretation and interpretation.strip().lower() not in _BUSINESS_REASONING_UNAVAILABLE_MARKERS:
         return interpretation[:300]
+    questions = [str(q).strip()[:240] for q in (unresolved_questions or []) if str(q).strip()]
+    if len(questions) >= 2:
+        return ("Klient: " + " | ".join(questions))[:300]
     summary = operator_feed_plain_summary(cu.get("summary_short") or "", fallback="")
     if summary and summary.strip().lower() not in _BUSINESS_REASONING_UNAVAILABLE_MARKERS:
         return summary[:300]
