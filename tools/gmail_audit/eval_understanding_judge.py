@@ -76,8 +76,9 @@ Do not score tool use, planner execution, extraction fields, draft style, runtim
 Score semantic equivalence, not lexical overlap. must means required meaning; must_not means forbidden meaning.
 For each applicable dimension, inspect the whole Understanding output; required meaning may appear in any field.
 Do not fail solely because a title is generic when the required meaning is explicit elsewhere.
-Applicable dimensions may also cover claims the output actually asserted, such as gaps or risks.
-Do not penalize a missing dimension when it is not applicable.
+Only score the dimensions listed in applicable_dimensions. Set applicable=false for any other
+dimension, even when the output happens to assert gaps, risks, contradictions, or a next step.
+Do not penalize a dimension that is not applicable.
 
 Verdicts:
 PASS = meaning captured; no material omission.
@@ -301,15 +302,6 @@ def infer_applicable_dimensions(case: dict[str, Any], actual_understanding: dict
         dims.add("current_state_change")
     if any(token in text for token in ("next step", "kolejny krok", "nastepny krok", "rekomendowan", "zalecan", "dalsze dzialanie")):
         dims.add("recommended_next_step")
-    if isinstance(actual_understanding, dict):
-        if actual_understanding.get("missing_information") or actual_understanding.get("missing_critical_fields"):
-            dims.add("gaps")
-        if actual_understanding.get("risks"):
-            dims.add("risks")
-        if actual_understanding.get("contradictions"):
-            dims.add("contradictions")
-        if actual_understanding.get("next_best_action_recommendation"):
-            dims.add("recommended_next_step")
     return [name for name in DIMENSIONS if name in dims]
 
 

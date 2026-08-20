@@ -25,6 +25,7 @@ from eval_understanding_judge import (  # noqa: E402
     run_judge,
     select_judge_config,
     _sanitize_error,
+    infer_applicable_dimensions,
 )
 
 
@@ -38,6 +39,30 @@ def _case() -> dict:
 
 def _output() -> dict:
     return {"id": "FU-05", "understanding": {"summary_pl": "Klient odklada decyzje na okolo miesiac."}}
+
+
+def _corpus_cases() -> dict[str, dict]:
+    path = TOOL_DIR / "tests" / "fixtures" / "measurement_contract_v1" / "corpus-v2.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return {case["id"]: case for case in data["cases"]}
+
+
+def test_gt_unanchored_dimensions_are_not_inferred_applicable() -> None:
+    """P3B: a judge dimension must be applicable only when GT anchors it.
+
+    The four K3 residuals failed only on output-asserted dimensions that GT never
+    required (recommended_next_step / gaps / risks). Those must not be inferred
+    applicable; genuinely anchored dimensions must stay applicable.
+    """
+    cases = _corpus_cases()
+    assert "recommended_next_step" not in infer_applicable_dimensions(cases["INT-04"], None)
+    assert "recommended_next_step" not in infer_applicable_dimensions(cases["NEW-05"], None)
+    assert "gaps" not in infer_applicable_dimensions(cases["FU-01"], None)
+    assert "gaps" not in infer_applicable_dimensions(cases["MI-01"], None)
+    assert "risks" not in infer_applicable_dimensions(cases["MI-01"], None)
+
+    assert "gaps" in infer_applicable_dimensions(cases["SVC-05"], None)
+    assert "contradictions" in infer_applicable_dimensions(cases["CTX-03"], None)
 
 
 def test_judge_contract_freezes_one_provider_no_fallback() -> None:
