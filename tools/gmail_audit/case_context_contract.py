@@ -17,6 +17,7 @@ from evidence_ref import normalize_evidence_refs
 from context_quality_contract import normalize_context_quality, operator_feed_context_quality_view
 
 from case_context_deterministic import merge_conflicts_deterministic, merge_gaps_deterministic, normalize_value_for_conflict
+from mailbox_memory.active_facts import annotate_decision_fact_use
 
 
 CONTRACT_NAME = "CaseContextPack"
@@ -504,6 +505,9 @@ def build_case_context_pack_vnext(
             row["status"] = _conflict_status(row.get("status"), refs=refs2)
     conflicts = _dedupe_conflicts_prefer_evidence(conflicts)
     conflicts = [_finalize_conflict_row(row) for row in conflicts]
+    # Fact conflicts do not block the whole case; consumers check the specific
+    # decision fact keys they need.
+    active_facts = annotate_decision_fact_use(active_facts, conflicts)
 
     gaps = normalize_completeness_gaps(source.get("completeness_gaps"), case_id=case_id)
     gaps = merge_gaps_deterministic(
