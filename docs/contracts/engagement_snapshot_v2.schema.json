@@ -407,6 +407,11 @@
           ],
           "title": "Draft Origin",
           "type": "string"
+        },
+        "target_email": {
+          "default": "",
+          "title": "Target Email",
+          "type": "string"
         }
       },
       "title": "CommunicationReceipt",
@@ -837,6 +842,11 @@
           "title": "Schema Version",
           "type": "string"
         },
+        "canonical_decision_id": {
+          "default": "",
+          "title": "Canonical Decision Id",
+          "type": "string"
+        },
         "decision_candidate_id": {
           "default": "",
           "title": "Decision Candidate Id",
@@ -871,6 +881,37 @@
           "default": "",
           "title": "Action Intent",
           "type": "string"
+        },
+        "action_target": {
+          "default": "",
+          "title": "Action Target",
+          "type": "string"
+        },
+        "action_channel": {
+          "default": "",
+          "title": "Action Channel",
+          "type": "string"
+        },
+        "allowed_tools": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Tools",
+          "type": "array"
+        },
+        "allowed_action_tools": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Action Tools",
+          "type": "array"
+        },
+        "forbidden_tools": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbidden Tools",
+          "type": "array"
         },
         "allowed_by_policy": {
           "anyOf": [
