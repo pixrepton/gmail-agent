@@ -223,6 +223,12 @@ def run_shared_downstream_stages(
 ) -> SharedDownstreamResult:
     """link_case_context → mailbox → business → intelligence → policy (shared spine)."""
     opts = options or SharedDownstreamOptions()
+    # P0.5 provenance residual closeout: segment the inbound body exactly once.
+    # Structured MessageSegment[] is attached additively to source_message;
+    # body_text/snippet stay untouched for existing consumers.
+    from message_segments import attach_message_segments
+
+    snapshot = attach_message_segments(snapshot)
     from policy_action_proposal import attach_policy_and_proposals
 
     from gmail_intake import (

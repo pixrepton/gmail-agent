@@ -495,6 +495,14 @@ def build_business_reasoning_payload(
 ) -> dict[str, Any]:
     """Build the business-reasoner payload with separated evidence confidence layers."""
     evidence = _build_evidence_sections(snapshot=snapshot, intake_result=intake_result, case_link_result=case_link_result)
+    source_message = snapshot.get("source_message")
+    source_message = source_message if isinstance(source_message, dict) else {}
+    segments = source_message.get("message_segments")
+    message_segments = (
+        [segment for segment in segments if isinstance(segment, dict)]
+        if isinstance(segments, list)
+        else []
+    )
     return {
         "message_summary": {
             "sender": str(snapshot.get("source_message", {}).get("sender") or ""),
@@ -502,6 +510,7 @@ def build_business_reasoning_payload(
             "snippet": str(snapshot.get("source_message", {}).get("snippet") or ""),
             "body_excerpt": str(snapshot.get("source_message", {}).get("body") or "")[:900],
             "thread_quality": str(snapshot.get("thread_context_quality") or "weak"),
+            "message_segments": message_segments,
         },
         "intake_result": sanitize_prompt_input(intake_result),
         "case_link_result": sanitize_prompt_input(case_link_result),

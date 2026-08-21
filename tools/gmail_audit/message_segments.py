@@ -143,9 +143,34 @@ def segment_message_dicts(body_text: str | None) -> list[dict[str, Any]]:
     return [segment.to_dict() for segment in segment_message(body_text)]
 
 
+def attach_message_segments(snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    """Production seam: segment the inbound body exactly once and attach the
+    structured segments additively to ``source_message``.
+
+    ``body_text``/``snippet`` are left untouched (legacy consumers keep working
+    on the raw blob). If segments are already present, nothing is recomputed.
+    Returns a new snapshot dict when changed; never mutates the input.
+    """
+    snap = dict(snapshot) if isinstance(snapshot, dict) else {}
+    source_message = snap.get("source_message")
+    if not isinstance(source_message, dict) or "message_segments" in source_message:
+        return snap
+    body = str(
+        source_message.get("body_text") or source_message.get("body") or ""
+    ).strip()
+    if not body:
+        return snap
+    snap["source_message"] = {
+        **source_message,
+        "message_segments": segment_message_dicts(body),
+    }
+    return snap
+
+
 __all__ = [
     "SEGMENT_TYPES",
     "MessageSegment",
+    "attach_message_segments",
     "segment_message",
     "segment_message_dicts",
 ]

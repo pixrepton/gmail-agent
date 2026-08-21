@@ -215,6 +215,21 @@ def build_understanding_output(
         ),
         "context_quality": context_quality,
         "source_quality": source_quality,
+        # P0.5 provenance residual closeout: compact structured segments reach
+        # the Understanding output as evidence provenance. Deliberately without
+        # text (the output contract keeps raw message body out).
+        "message_segments": [
+            {
+                "segment_type": str(segment.get("segment_type") or ""),
+                "source_origin": str(segment.get("source_origin") or ""),
+                "evidence_authority": str(segment.get("evidence_authority") or ""),
+                "instruction_authority": str(
+                    segment.get("instruction_authority") or "NONE"
+                ),
+            }
+            for segment in (source.get("message_segments") or [])
+            if isinstance(segment, dict) and str(segment.get("segment_type") or "")
+        ],
         "retrieval_support": _retrieval_support(pack),
         "similar_case_hints": _similar_case_hints(pack),
         "thread_continuity": {
