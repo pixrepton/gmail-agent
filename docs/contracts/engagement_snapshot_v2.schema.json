@@ -50,6 +50,11 @@
           "title": "Parent Decision Candidate Id",
           "type": "string"
         },
+        "source_semantic_hash": {
+          "default": "",
+          "title": "Source Semantic Hash",
+          "type": "string"
+        },
         "source_signal_id": {
           "default": "",
           "title": "Source Signal Id",
@@ -845,6 +850,11 @@
         "canonical_decision_id": {
           "default": "",
           "title": "Canonical Decision Id",
+          "type": "string"
+        },
+        "source_semantic_hash": {
+          "default": "",
+          "title": "Source Semantic Hash",
           "type": "string"
         },
         "decision_candidate_id": {

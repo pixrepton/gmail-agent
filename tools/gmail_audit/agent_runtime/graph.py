@@ -856,7 +856,13 @@ def _policy_enforcement_block(
                     "policy_decision_id": str(consistency.policy_decision_id or ""),
                     "action_proposal_id": str(consistency.action_proposal_id or ""),
                 },
-                detail=",".join(sorted(reasons & semantic_reasons)),
+                detail=(
+                    ",".join(sorted(reasons & semantic_reasons))
+                    + ";expected_semantic_hash="
+                    + str(getattr(envelope, "source_semantic_hash", "") or "")
+                    + ";observed_semantic_hash="
+                    + str(getattr(plan, "semantic_hash", "") or "")
+                ),
             ),
         )
     if "policy_blocks_actionable_tool" not in reasons:

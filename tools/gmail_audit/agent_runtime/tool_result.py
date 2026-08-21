@@ -15,6 +15,11 @@ class ToolCallPlan(BaseModel):
     policy_decision_id: str = ""
     action_proposal_id: str = ""
     correlation_status: str = ""
+    #: The canonical semantic identity this plan was built against (observed
+    #: ``semantic_hash`` from the envelope offered to the planner). The
+    #: reference monitor compares it with the current envelope's
+    #: ``source_semantic_hash``; mismatch DENY (canonical_semantic_drift).
+    semantic_hash: str = ""
 
     model_config = ConfigDict(extra="forbid")
 

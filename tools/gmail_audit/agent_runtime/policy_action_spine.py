@@ -45,6 +45,7 @@ def _semantic_tool_constraints(
     proposal_action_type: str,
     candidate: dict[str, Any],
     canonical_decision_id: str = "",
+    source_semantic_hash: str = "",
 ) -> dict[str, Any]:
     """Compile the narrow customer-mail action semantics currently proven by Brain 1.
 
@@ -62,6 +63,7 @@ def _semantic_tool_constraints(
     if customer_missing_data:
         return {
             "canonical_decision_id": canonical_decision_id,
+            "source_semantic_hash": str(source_semantic_hash or "").strip(),
             "action_target": "customer",
             "action_channel": channel or "mail",
             # allowed_tools is a full planner-turn whitelist. Keep it empty here
@@ -72,6 +74,7 @@ def _semantic_tool_constraints(
         }
     return {
         "canonical_decision_id": canonical_decision_id,
+        "source_semantic_hash": str(source_semantic_hash or "").strip(),
         "action_target": "",
         "action_channel": channel,
         "allowed_tools": [],
@@ -224,6 +227,7 @@ def persist_policy_action_spine(
             proposal_action_type=str(raw.get("action_type") or ""),
             candidate=candidate,
             canonical_decision_id=str(raw.get("canonical_decision_id") or ""),
+            source_semantic_hash=str(raw.get("semantic_hash") or ""),
         )
         proposal_row = {
             "proposal_id": str(raw.get("proposal_id") or "").strip(),
@@ -231,6 +235,7 @@ def persist_policy_action_spine(
             "decision_candidate_id": candidate_id,
             "case_id": cid,
             "canonical_decision_id": str(raw.get("canonical_decision_id") or ""),
+            "source_semantic_hash": str(raw.get("semantic_hash") or ""),
             "source_signal_id": canonical_signal_id,
             "source_message_id": message_id,
             "schema_version": str(raw.get("schema_version") or ""),
@@ -348,6 +353,11 @@ def project_policy_action_envelope(
         policy_status=str(policy.get("status") or ""),
         action_intent=str(proposal.get("action_type") or ""),
         canonical_decision_id=str(raw_json.get("canonical_decision_id") or ""),
+        source_semantic_hash=str(
+            raw_json.get("source_semantic_hash")
+            or proposal.get("source_semantic_hash")
+            or ""
+        ),
         action_target=str(raw_json.get("action_target") or ""),
         action_channel=str(raw_json.get("action_channel") or ""),
         allowed_tools=_string_list(raw_json.get("allowed_tools")),
@@ -434,6 +444,16 @@ def evaluate_semantic_policy_plan_consistency(
         mismatches.append("action_proposal_id_mismatch")
     if mismatches:
         return _consistency("conflicting", mismatches, envelope, plan)
+
+    expected_hash = str(getattr(envelope, "source_semantic_hash", "") or "").strip()
+    observed_hash = str(getattr(plan, "semantic_hash", "") or "").strip()
+    if expected_hash and observed_hash and expected_hash != observed_hash:
+        return _consistency(
+            "conflicting",
+            ["canonical_semantic_drift"],
+            envelope,
+            plan,
+        )
 
     forbidden_tools = {str(item).strip() for item in envelope.forbidden_tools if str(item).strip()}
     allowed_tools = {str(item).strip() for item in envelope.allowed_tools if str(item).strip()}
@@ -554,6 +574,9 @@ def annotate_action_parent_refs(
                 "parent_policy_decision_id": envelope.policy_decision_id,
                 "parent_action_proposal_v2_id": envelope.action_proposal_id,
                 "parent_decision_candidate_id": envelope.decision_candidate_id,
+                "source_semantic_hash": getattr(
+                    envelope, "source_semantic_hash", ""
+                ),
                 "source_signal_id": envelope.source_signal_id,
                 # AI-OS-CANONICAL-DRAFT-IDENTITY-01: only ever set to "complete" here,
                 # where real correlation to a fresh, id-matching envelope was just

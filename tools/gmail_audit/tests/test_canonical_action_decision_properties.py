@@ -21,6 +21,7 @@ from action_proposal_v2 import build_action_proposals_v2
 from agent_runtime.effective_tools import semantic_envelope_gate_reason
 from agent_runtime.policy_action_spine import (
     _semantic_tool_constraints,
+    annotate_action_parent_refs,
     evaluate_semantic_policy_plan_consistency,
 )
 from agent_runtime.tool_result import ToolCallPlan
@@ -345,3 +346,189 @@ def test_property_decision_id_and_semantic_hash_rules() -> None:
     assert same["semantic_hash"] == cad["semantic_hash"]
     different = _cad(missing_information=["device_model"])
     assert different["semantic_hash"] != cad["semantic_hash"]
+
+
+# CLOSEOUT-02: semantic identity must travel further than canonical_decision_id.
+# CAD.semantic_hash == PolicyEnvelope.source_semantic_hash ==
+# ExecutionBoundary.semantic_hash. Authority/availability fields never change it.
+def test_property_semantic_hash_preserved_cad_to_envelope_and_plan() -> None:
+    cad = _cad()
+
+    # ActionPlan projection carries the canonical identity.
+    plan = build_action_plan_result(
+        {"decision": {"action": "create_case"}, "review_required": True},
+        {"decision": "no_link"},
+        _br(),
+        {"draft_enabled": True, "drafts": []},
+        None,
+        canonical_decision=cad,
+    )
+    assert plan["semantic_hash"] == cad["semantic_hash"]
+
+    # NBA projection carries the same identity.
+    nba = build_next_best_action(
+        intake_result={"business_area": "service", "review_required": True},
+        case_link_result={"decision": "no_link"},
+        business_result=_br(),
+        reply_result={"draft_enabled": True},
+        action_plan_result={"primary_action": "prepare_reply"},
+        missing_info={"critical": [], "important": ["observed_symptoms"], "helpful": []},
+        merge_split_suggestions={},
+        canonical_decision=cad,
+    )
+    primary = nba["primary_next_action"]
+    assert primary["semantic_hash"] == cad["semantic_hash"]
+
+    # ToolEnvelope projects source_semantic_hash from the CAD lineage.
+    constraints = _semantic_tool_constraints(
+        proposal_action_type="request_missing_info",
+        candidate=build_decision_candidate(
+            case_id="case_456",
+            source_signal_id="msg_1",
+            next_best_action=primary,
+            next_best_action_code=canonical_decision_code(cad),
+        ),
+        canonical_decision_id=cad["decision_id"],
+        source_semantic_hash=plan["semantic_hash"],
+    )
+    assert constraints["source_semantic_hash"] == cad["semantic_hash"]
+    envelope = PolicyActionEnvelopeV1(
+        canonical_decision_id=cad["decision_id"],
+        source_semantic_hash=constraints["source_semantic_hash"],
+        policy_decision_id="pdec_1",
+        action_proposal_id="apv2_1",
+        action_intent="ask_for_missing_data",
+        action_target="customer",
+        action_channel="mail",
+        allowed_action_tools=["generate_draft_reply"],
+        forbidden_tools=["request_operator_clarification"],
+        freshness="current",
+    )
+    assert envelope.source_semantic_hash == cad["semantic_hash"]
+
+    # A plan built against the same identity is consistent at the reference
+    # monitor.
+    plan_ok = ToolCallPlan(
+        tool_name="generate_draft_reply",
+        arguments={"intent": "missing_info"},
+        policy_decision_id="pdec_1",
+        action_proposal_id="apv2_1",
+        semantic_hash=cad["semantic_hash"],
+    )
+    consistency = evaluate_semantic_policy_plan_consistency(envelope, plan_ok)
+    assert consistency.status == "consistent"
+    assert "canonical_semantic_drift" not in consistency.reason_codes
+
+
+def test_property_semantic_hash_mismatch_denied() -> None:
+    envelope = PolicyActionEnvelopeV1(
+        canonical_decision_id="dec_1",
+        source_semantic_hash="sh_expected",
+        policy_decision_id="pdec_1",
+        action_proposal_id="apv2_1",
+        action_intent="ask_for_missing_data",
+        action_target="customer",
+        action_channel="mail",
+        allowed_action_tools=["generate_draft_reply"],
+        forbidden_tools=["request_operator_clarification"],
+        freshness="current",
+    )
+    stale_plan = ToolCallPlan(
+        tool_name="generate_draft_reply",
+        arguments={"intent": "missing_info"},
+        policy_decision_id="pdec_1",
+        action_proposal_id="apv2_1",
+        semantic_hash="sh_stale_or_forged",
+    )
+    consistency = evaluate_semantic_policy_plan_consistency(envelope, stale_plan)
+    assert consistency.status == "conflicting"
+    assert "canonical_semantic_drift" in consistency.reason_codes
+
+
+@pytest.mark.parametrize("approval", [True, False])
+@pytest.mark.parametrize("review_required", [True, False])
+def test_property_review_and_approval_do_not_change_semantic_hash(
+    approval: bool,
+    review_required: bool,
+) -> None:
+    cad = _cad()
+    envelope = PolicyActionEnvelopeV1(
+        canonical_decision_id=cad["decision_id"],
+        source_semantic_hash=cad["semantic_hash"],
+        policy_decision_id="pdec_1",
+        action_proposal_id="apv2_1",
+        action_intent="ask_for_missing_data",
+        action_target="customer",
+        action_channel="mail",
+        allowed_action_tools=["generate_draft_reply"],
+        forbidden_tools=["request_operator_clarification"],
+        allowed_by_policy=not review_required,
+        requires_operator_approval=approval,
+        freshness="current",
+    )
+    assert envelope.source_semantic_hash == cad["semantic_hash"]
+    plan = ToolCallPlan(
+        tool_name="generate_draft_reply",
+        arguments={"intent": "missing_info"},
+        policy_decision_id="pdec_1",
+        action_proposal_id="apv2_1",
+        semantic_hash=cad["semantic_hash"],
+    )
+    consistency = evaluate_semantic_policy_plan_consistency(envelope, plan)
+    assert "canonical_semantic_drift" not in consistency.reason_codes
+
+
+def test_property_tool_availability_does_not_change_semantic_hash() -> None:
+    cad = _cad()
+    envelope = PolicyActionEnvelopeV1(
+        canonical_decision_id=cad["decision_id"],
+        source_semantic_hash=cad["semantic_hash"],
+        policy_decision_id="pdec_1",
+        action_proposal_id="apv2_1",
+        action_intent="ask_for_missing_data",
+        action_target="customer",
+        action_channel="mail",
+        allowed_action_tools=["generate_draft_reply"],
+        forbidden_tools=["request_operator_clarification"],
+        freshness="current",
+    )
+    snap = type("Snap", (), {"policy_action_envelope": envelope})()
+    decision = semantic_envelope_gate_reason(
+        "request_operator_clarification",
+        snapshot=snap,
+    )
+    assert decision is not None
+    assert decision.offered is False
+    # The gate only filters; it never mutates or recomputes the identity.
+    assert snap.policy_action_envelope.source_semantic_hash == cad["semantic_hash"]
+
+
+def test_property_materialized_action_carries_source_semantic_hash() -> None:
+    cad = _cad()
+    envelope = PolicyActionEnvelopeV1(
+        canonical_decision_id=cad["decision_id"],
+        source_semantic_hash=cad["semantic_hash"],
+        policy_decision_id="pdec_1",
+        action_proposal_id="apv2_1",
+        decision_candidate_id="dc_1",
+        source_signal_id="msg_1",
+        action_intent="ask_for_missing_data",
+        action_target="customer",
+        action_channel="mail",
+        allowed_action_tools=["generate_draft_reply"],
+        forbidden_tools=["request_operator_clarification"],
+        freshness="current",
+    )
+    plan = ToolCallPlan(
+        tool_name="generate_draft_reply",
+        arguments={"intent": "missing_info"},
+        policy_decision_id="pdec_1",
+        action_proposal_id="apv2_1",
+        semantic_hash=cad["semantic_hash"],
+    )
+    delta = annotate_action_parent_refs(
+        {"actions": [{"id": "draft_reply", "enabled": True}]},
+        plan=plan,
+        envelope=envelope,
+    )
+    assert delta["actions"][0]["source_semantic_hash"] == cad["semantic_hash"]

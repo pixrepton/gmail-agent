@@ -51,6 +51,10 @@ class ActionItem(StrictModel):
     parent_policy_decision_id: str = ""
     parent_action_proposal_v2_id: str = ""
     parent_decision_candidate_id: str = ""
+    #: Canonical semantic identity of the decision this action materializes.
+    #: Equal to CAD.semantic_hash when lineage correlation succeeded; empty
+    #: otherwise (honest default, never guessed).
+    source_semantic_hash: str = ""
     source_signal_id: str = ""
     # AI-OS-CANONICAL-DRAFT-IDENTITY-01: the artifact identity of this action, distinct
     # from the four parent/lineage refs above. `draft_id` names the opportunity/slot
@@ -174,6 +178,9 @@ class PolicyActionEnvelopeV1(StrictModel):
 
     schema_version: Literal["policy_action_envelope.v1"] = "policy_action_envelope.v1"
     canonical_decision_id: str = ""
+    #: CAD.semantic_hash projected through the policy/APv2 records; the
+    #: expected identity the reference monitor checks against the plan.
+    source_semantic_hash: str = ""
     decision_candidate_id: str = ""
     policy_decision_id: str = ""
     action_proposal_id: str = ""

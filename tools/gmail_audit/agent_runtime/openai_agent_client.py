@@ -281,7 +281,21 @@ class OpenAIToolPlanner:
                         "attempt": index + 1,
                     }})
                     breaker.record_success()
-                    return self._parse_tool_call(response)
+                    plan = self._parse_tool_call(response)
+                    # Bind the observed canonical identity offered to the LLM
+                    # (the same envelope serialized into the prompt). The
+                    # reference monitor compares this with the current
+                    # envelope's source_semantic_hash; a mismatch denies the
+                    # plan before any tool executes (canonical_semantic_drift).
+                    envelope = getattr(snapshot, "policy_action_envelope", None)
+                    source_hash = (
+                        str(getattr(envelope, "source_semantic_hash", "") or "")
+                        if envelope is not None
+                        else ""
+                    )
+                    if source_hash and not str(plan.semantic_hash or "").strip():
+                        plan = plan.model_copy(update={"semantic_hash": source_hash})
+                    return plan
                 except Exception as exc:  # noqa: BLE001
                     last_exc = exc
                     breaker.record_failure()
