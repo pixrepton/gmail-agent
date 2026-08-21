@@ -60,9 +60,16 @@ def plan_actions(
     business_result: dict[str, Any] | None,
     reply_result: dict[str, Any] | None,
     case_context_pack: dict[str, Any] | None = None,
+    canonical_decision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a conservative downstream action plan without changing live behavior."""
-    primary_action = select_primary_action(intake_result, case_link_result, business_result, reply_result)
+    primary_action = select_primary_action(
+        intake_result,
+        case_link_result,
+        business_result,
+        reply_result,
+        canonical_decision=canonical_decision,
+    )
     projection_mode = infer_projection_mode(intake_result, primary_action)
     checklist = build_operator_checklist(
         intake_result,
@@ -99,6 +106,12 @@ def plan_actions(
         "confidence_components": confidence_components,
         "reasoning_blockers": blockers,
     }
+    if isinstance(canonical_decision, dict):
+        result["canonical_decision_id"] = str(canonical_decision.get("decision_id") or "")
+        result["semantic_hash"] = str(canonical_decision.get("semantic_hash") or "")
+        # Own execution vocabulary, derived from the frozen CAD — never a
+        # re-selection of business meaning.
+        result["execution_step"] = primary_action
     return result
 
 
@@ -107,8 +120,22 @@ def select_primary_action(
     case_link_result: dict[str, Any] | None,
     business_result: dict[str, Any] | None,
     reply_result: dict[str, Any] | None,
+    canonical_decision: dict[str, Any] | None = None,
 ) -> str:
     """Pick the safest operator-facing action bundle."""
+    if isinstance(canonical_decision, dict):
+        cad_action = str(canonical_decision.get("action_type") or "").strip()
+        cad_target = str(canonical_decision.get("target") or "").strip()
+        cad_channel = str(canonical_decision.get("channel") or "").strip()
+        if (
+            cad_action == "ask_for_missing_data"
+            and cad_target == "customer"
+            and cad_channel == "mail"
+        ):
+            return "prepare_reply"
+        # Unknown frozen semantic: conservative hold. The CAD may be blocked,
+        # restricted or revised — never reinterpreted into another action.
+        return "hold"
     intake_action = str(intake_result.get("decision", {}).get("action") or "")
     business_action = str((business_result or {}).get("recommended_next_action") or "")
     case_link_decision = str((case_link_result or {}).get("decision") or "")

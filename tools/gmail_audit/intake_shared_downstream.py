@@ -300,6 +300,32 @@ def run_shared_downstream_stages(
         business_result = biz_future.result()
         stage_timings["business_reasoning"] = _timer_ms(_t)
 
+        # CanonicalActionDecision boundary — after BusinessReasoning, before any
+        # downstream re-translation (draft / CI / ActionPlan / policy / planner).
+        _t = time.monotonic()
+        from canonical_action_decision import build_canonical_decision_for_stage
+
+        understanding = stage_config.get("understanding_output")
+        canonical_decision, canonicalization_failure = build_canonical_decision_for_stage(
+            business_reasoning_result=business_result,
+            situation_understanding=understanding if isinstance(understanding, dict) else None,
+            case_context_pack=effective_pack if isinstance(effective_pack, dict) else None,
+            intake_result=intake_result,
+            case_id=str(
+                ((intake_result.get("case_assessment") or {}).get("case_id") if isinstance(intake_result, dict) else "")
+                or (intake_result.get("case_id") if isinstance(intake_result, dict) else "")
+                or ""
+            ),
+            situation_version=str(
+                (understanding.get("understanding_output_id") if isinstance(understanding, dict) else "")
+                or (understanding.get("created_at") if isinstance(understanding, dict) else "")
+                or ""
+            ),
+        )
+        stage_config["canonical_decision"] = canonical_decision
+        stage_config["canonicalization_failure"] = canonicalization_failure
+        stage_timings["canonical_decision"] = _timer_ms(_t)
+
         # Stage 2: draft_reply (LLM) — zalezy od business_result
         if opts.skip_draft_reply:
             from reply_drafter import annotate_reply_causal_observability

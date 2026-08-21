@@ -2939,13 +2939,26 @@ def plan_actions(
     config: dict[str, Any],
 ) -> dict[str, Any] | None:
     """Build the conservative operator-facing action plan."""
-    return build_action_plan_result(
+    canonical_decision = config.get("canonical_decision")
+    if not isinstance(canonical_decision, dict):
+        canonical_decision = None
+    result = build_action_plan_result(
         intake_result,
         case_link_result,
         business_result,
         reply_result,
         _resolve_effective_mailbox_context_pack(config),
+        canonical_decision=canonical_decision,
     )
+    canonicalization_failure = config.get("canonicalization_failure")
+    if isinstance(canonicalization_failure, dict):
+        from canonical_action_decision import canonicalization_failure_review_state
+
+        result["canonicalization_failure"] = canonicalization_failure
+        result["workflow_state"] = canonicalization_failure_review_state(canonicalization_failure)
+    if isinstance(canonical_decision, dict):
+        result["canonical_decision"] = canonical_decision
+    return result
 
 
 def build_case_intelligence_layer(
@@ -2959,6 +2972,9 @@ def build_case_intelligence_layer(
 ) -> dict[str, Any]:
     """Build the case-first AI intelligence layer over the existing foundation stages, enriched with substrate layers."""
     cfg = config if isinstance(config, dict) else {}
+    canonical_decision = cfg.get("canonical_decision")
+    if not isinstance(canonical_decision, dict):
+        canonical_decision = None
     effective_context_pack = _resolve_effective_mailbox_context_pack(cfg)
     settings_obj = cfg.get("settings")
     att_fetcher = cfg.get("attachment_fetcher")
@@ -2994,6 +3010,7 @@ def build_case_intelligence_layer(
         business_result=business_result or {},
         reply_result=reply_result or {},
         action_plan_result=action_plan_result or {},
+        canonical_decision=canonical_decision,
         feedback_memory_seed=cfg.get("feedback_memory_seed"),
         current_note_state=cfg.get("current_note_state"),
         attachment_intelligence=att_intel,

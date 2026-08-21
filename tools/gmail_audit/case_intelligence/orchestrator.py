@@ -54,6 +54,7 @@ def build_case_intelligence(
     case_context_pack: dict[str, Any] | None = None,
     decision_candidate_enabled: bool = False,
     preclassification_result: dict[str, Any] | None = None,
+    canonical_decision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     feedback_learning_memory = build_feedback_learning_memory(feedback_memory_seed)
     merge_split_suggestions = build_merge_split_suggestions(
@@ -71,7 +72,8 @@ def build_case_intelligence(
         intake_result=intake_result, case_link_result=case_link_result or {},
         business_result=business_result or {}, reply_result=reply_result or {},
         action_plan_result=action_plan_result or {}, missing_info=missing_info,
-        merge_split_suggestions=merge_split_suggestions)
+        merge_split_suggestions=merge_split_suggestions,
+        canonical_decision=canonical_decision)
     case_understanding = build_case_understanding_snapshot(
         snapshot=snapshot, intake_result=intake_result, case_link_result=case_link_result or {},
         business_result=business_result or {}, next_best_action=next_best_action,

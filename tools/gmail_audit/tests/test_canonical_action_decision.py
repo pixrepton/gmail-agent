@@ -19,6 +19,8 @@ from canonical_action_decision import (
     semantic_hash_of,
     semantic_signature_matches,
 )
+from action_planner import plan_actions as build_action_plan_result
+from case_intelligence.next_best_action import build_next_best_action
 
 
 def _br(**overrides: object) -> dict[str, object]:
@@ -209,3 +211,70 @@ def test_canonical_decision_code() -> None:
     cad = canonicalize(proposal=proposal, situation_understanding=_situation())
     assert canonical_decision_code(cad) == "ask_for_missing_data"
     assert canonical_decision_code({}) == ""
+
+
+def _cad() -> dict[str, object]:
+    proposal = build_business_decision_proposal(_br())
+    assert proposal is not None
+    cad = canonicalize(proposal=proposal, situation_understanding=_situation(), case_id="case_456")
+    assert cad["semantic_status"] == "FROZEN"
+    return cad
+
+
+def test_action_plan_derives_from_canonical_decision() -> None:
+    cad = _cad()
+    plan = build_action_plan_result(
+        {"decision": {"action": "create_case"}, "review_required": True},
+        {"decision": "no_link"},
+        _br(),
+        {"draft_enabled": True, "drafts": []},
+        None,
+        canonical_decision=cad,
+    )
+    # CAD-derived: customer/mail clarification -> prepare_reply, even when the
+    # intake review flag is set (review never changes the addressee).
+    assert plan["primary_action"] == "prepare_reply"
+    assert plan["canonical_decision_id"] == cad["decision_id"]
+    assert plan["execution_step"] == "prepare_reply"
+    assert plan["semantic_hash"] == cad["semantic_hash"]
+
+
+def test_action_plan_unknown_frozen_semantic_holds() -> None:
+    cad = dict(_cad())
+    cad["action_type"] = "unknown_action"
+    plan = build_action_plan_result(
+        {"decision": {"action": "create_case"}},
+        {"decision": "no_link"},
+        _br(),
+        {"draft_enabled": True, "drafts": []},
+        None,
+        canonical_decision=cad,
+    )
+    assert plan["primary_action"] == "hold"
+
+
+def test_next_best_action_projects_canonical_decision() -> None:
+    cad = _cad()
+    intake = {
+        "business_area": "service",
+        "review": {"required": True, "flags": ["ambiguous_signal"]},
+        "review_required": True,
+    }
+    nba = build_next_best_action(
+        intake_result=intake,
+        case_link_result={"decision": "no_link"},
+        business_result=_br(),
+        reply_result={"draft_enabled": True},
+        action_plan_result={"primary_action": "prepare_reply"},
+        missing_info={"critical": [], "important": ["observed_symptoms"], "helpful": []},
+        merge_split_suggestions={},
+        canonical_decision=cad,
+    )
+    primary = nba["primary_next_action"]
+    # Case Intelligence projects the frozen action into its own vocabulary and
+    # keeps the customer/mail addressee even though review_required is true.
+    assert primary["action_type"] == "ask_for_missing_data"
+    assert primary["suggested_channel"] == "mail"
+    assert primary["canonical_decision_id"] == cad["decision_id"]
+    assert primary["semantic_hash"] == cad["semantic_hash"]
+    assert primary["whether_human_review_required"] is True

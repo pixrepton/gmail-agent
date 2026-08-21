@@ -49,6 +49,7 @@ def build_next_best_action(
     action_plan_result: dict[str, Any],
     missing_info: dict[str, Any],
     merge_split_suggestions: dict[str, Any],
+    canonical_decision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     business_action = str(business_result.get("recommended_next_action") or "").strip()
     primary_action_plan = str(action_plan_result.get("primary_action") or "").strip()
@@ -72,8 +73,16 @@ def build_next_best_action(
         primary_action_plan=primary_action_plan,
     )
 
+    canonical_decision_id = str((canonical_decision or {}).get("decision_id") or "").strip()
+    semantic_hash = str((canonical_decision or {}).get("semantic_hash") or "").strip()
     action_type = "wait"
-    if customer_clarification_ready:
+    if isinstance(canonical_decision, dict) and canonical_decision.get("semantic_status") == "FROZEN":
+        # Case Intelligence never re-selects the business action after the CAD
+        # is frozen; it projects the canonical action into its own vocabulary.
+        cad_action = str(canonical_decision.get("action_type") or "").strip()
+        if cad_action in INTELLIGENCE_ACTION_TYPES:
+            action_type = cad_action
+    elif customer_clarification_ready:
         action_type = "ask_for_missing_data"
     elif review_required:
         action_type = "review_required"
@@ -106,6 +115,7 @@ def build_next_best_action(
     elif primary_action_plan in {"update_case", "create_task", "hold"}:
         action_type = "escalate_internal"
 
+    cad_channel = str((canonical_decision or {}).get("channel") or "").strip()
     primary = {
         "action_type": action_type,
         "title_pl": ACTION_TITLE_PL.get(action_type, "Sprawdz nastepny ruch"),
@@ -115,9 +125,13 @@ def build_next_best_action(
         "confidence": max(_bounded_float(action_plan_result.get("confidence"), default=0.0),
             _bounded_float((business_result.get("confidence") or {}).get("action_confidence"), default=0.0)),
         "whether_human_review_required": review_required or action_type in {"review_required", "merge_with_existing_case", "split_case_review"},
-        "suggested_channel": ACTION_CHANNEL.get(action_type, "internal"),
+        "suggested_channel": cad_channel or ACTION_CHANNEL.get(action_type, "internal"),
         "optional_draft_pointer": str(reply_result.get("recommended_variant") or "") if bool(reply_result.get("draft_enabled")) and action_type in {"answer_customer", "ask_for_missing_data"} else "",
     }
+    if canonical_decision_id:
+        primary["canonical_decision_id"] = canonical_decision_id
+    if semantic_hash:
+        primary["semantic_hash"] = semantic_hash
 
     secondary_actions: list[dict[str, Any]] = []
     if merge_split_suggestions.get("merge_candidates"):

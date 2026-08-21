@@ -450,6 +450,36 @@ def build_decision_revision_request(
     }
 
 
+def build_canonical_decision_for_stage(
+    *,
+    business_reasoning_result: dict[str, Any] | None,
+    situation_understanding: dict[str, Any] | None = None,
+    case_context_pack: dict[str, Any] | None = None,
+    intake_result: dict[str, Any] | None = None,
+    case_id: str = "",
+    situation_version: str = "",
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """One-shot stage helper: returns ``(canonical_decision, canonicalization_failure)``.
+
+    Exactly one of the two values is non-None when a proposal exists; both are
+    None for BR actions outside the first enforced slice (legacy path).
+    """
+    proposal = build_business_decision_proposal(business_reasoning_result)
+    if proposal is None:
+        return None, None
+    outcome = canonicalize(
+        proposal=proposal,
+        situation_understanding=situation_understanding,
+        case_context_pack=case_context_pack,
+        intake_result=intake_result,
+        case_id=case_id,
+        situation_version=situation_version,
+    )
+    if outcome.get("semantic_status") == "FROZEN":
+        return outcome, None
+    return None, outcome
+
+
 __all__ = [
     "ACTION_TYPE_CHANNELS",
     "ACTION_TYPE_DEFAULT_TARGET",
@@ -464,6 +494,7 @@ __all__ = [
     "FAILURE_REASON_CODES",
     "REVISION_REASON_CODES",
     "build_business_decision_proposal",
+    "build_canonical_decision_for_stage",
     "build_decision_revision_request",
     "canonical_decision_code",
     "canonicalization_failure_review_state",
