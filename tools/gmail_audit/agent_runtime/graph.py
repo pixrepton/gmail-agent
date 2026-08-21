@@ -38,6 +38,7 @@ from agent_runtime.sub_agents import (
 from agent_runtime.tool_result import ToolCallPlan, ToolResult
 from agent_runtime.tools_registry import AgentToolRegistry, MockToolRegistry, ToolRegistry
 from agent_runtime.turn_journal import AgentTurnJournal
+from agent_runtime.untrusted_input_boundary import guard_untrusted_input_execution
 from llm_contracts.engagement_snapshot_v2 import (
     EngagementSnapshotV2,
     HitlGate,
@@ -289,6 +290,17 @@ class AgentGraphEngine:
                 )
                 if policy_block is not None:
                     result = policy_block
+                    sub_agent = "general"
+                elif (
+                    boundary_block := guard_untrusted_input_execution(
+                        snapshot=current,
+                        plan=plan,
+                        signal_payload=ctx.signal_payload
+                        if isinstance(ctx.signal_payload, dict)
+                        else {},
+                    )
+                ) is not None:
+                    result = boundary_block
                     sub_agent = "general"
                 elif plan.tool_name not in available_tools:
                     result = attach_attribution(
