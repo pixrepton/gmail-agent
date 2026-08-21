@@ -14,6 +14,7 @@ from typing import Any
 
 from agent_runtime.failure_taxonomy import attach_attribution, attribution
 from agent_runtime.tool_result import ToolCallPlan, ToolResult
+from evidence_authority import classify_source_origin, is_external_origin
 from llm_contracts.engagement_snapshot_v2 import EngagementSnapshotV2
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -66,6 +67,66 @@ _AUTHORITY_KEYS = frozenset(
     }
 )
 
+# Approval can only be established by the trusted HITL / operator flow.
+# External content claiming approval must not mutate approval state.
+_APPROVAL_CLAIM_KEYS = frozenset(
+    {
+        "approved",
+        "approval_id",
+        "approval_receipt",
+        "approval_state",
+        "hitl_approved",
+        "operator_approved",
+    }
+)
+
+# Canonical runtime identities: external content or an LLM plan may not
+# override them directly. Values must match the canonical snapshot/envelope
+# state; when the runtime has no canonical value, an external value cannot
+# establish one.
+_CANONICAL_IDENTITY_KEYS = frozenset(
+    {
+        "case_id",
+        "thread_id",
+        "customer_id",
+        "engagement_id",
+        "decision_id",
+        "semantic_hash",
+        "draft_hash",
+    }
+)
+
+
+def _canonical_identity_mismatches(
+    snapshot: EngagementSnapshotV2,
+    args: Mapping[str, Any],
+) -> list[str]:
+    envelope = getattr(snapshot, "policy_action_envelope", None)
+    canonical: dict[str, str] = {
+        "case_id": str(getattr(snapshot, "case_id", "") or "").strip(),
+        "decision_id": (
+            str(getattr(envelope, "canonical_decision_id", "") or "").strip()
+            if envelope is not None
+            else ""
+        ),
+        "semantic_hash": (
+            str(getattr(envelope, "source_semantic_hash", "") or "").strip()
+            if envelope is not None
+            else ""
+        ),
+    }
+    mismatches: list[str] = []
+    for key in _CANONICAL_IDENTITY_KEYS:
+        proposed = str(args.get(key) or "").strip()
+        if not proposed:
+            continue
+        expected = canonical.get(key, "")
+        if expected and proposed != expected:
+            mismatches.append(f"{key}={proposed}!=canonical:{expected}")
+        elif not expected:
+            mismatches.append(f"{key}={proposed}!=canonical:(none)")
+    return mismatches
+
 
 def guard_untrusted_input_execution(
     *,
@@ -92,8 +153,24 @@ def guard_untrusted_input_execution(
     if authority_paths:
         return _blocked_result(
             reason=f"untrusted_authority_argument:{tool_name}",
-            failure_class="UNTRUSTED_AUTHORITY_ARGUMENT",
+            failure_class="UNTRUSTED_AUTHORITY_OVERRIDE",
             detail=",".join(authority_paths[:8]),
+        )
+
+    approval_paths = _find_sensitive_paths(args, _APPROVAL_CLAIM_KEYS)
+    if approval_paths:
+        return _blocked_result(
+            reason=f"untrusted_approval_claim:{tool_name}",
+            failure_class="UNTRUSTED_APPROVAL_CLAIM",
+            detail=",".join(approval_paths[:8]),
+        )
+
+    identity_mismatches = _canonical_identity_mismatches(snapshot, args)
+    if identity_mismatches:
+        return _blocked_result(
+            reason=f"canonical_argument_mismatch:{tool_name}",
+            failure_class="CANONICAL_ARGUMENT_MISMATCH",
+            detail=",".join(identity_mismatches[:8]),
         )
 
     recipient_values = _collect_recipient_values(args)
@@ -103,14 +180,14 @@ def guard_untrusted_input_execution(
     if not trusted:
         return _blocked_result(
             reason=f"untrusted_recipient_argument:{tool_name}",
-            failure_class="UNTRUSTED_RECIPIENT_ARGUMENT",
+            failure_class="UNTRUSTED_RECIPIENT_OVERRIDE",
             detail="no_trusted_recipient",
         )
     untrusted_values = [value for value in recipient_values if value not in trusted]
     if untrusted_values:
         return _blocked_result(
             reason=f"untrusted_recipient_argument:{tool_name}",
-            failure_class="UNTRUSTED_RECIPIENT_ARGUMENT",
+            failure_class="UNTRUSTED_RECIPIENT_OVERRIDE",
             detail=",".join(untrusted_values[:8]),
         )
     return None
@@ -124,7 +201,13 @@ def _is_untrusted_inbound(payload: Mapping[str, Any]) -> bool:
         if isinstance(payload.get("source"), Mapping)
         else "",
     }
-    return bool(values & _UNTRUSTED_SOURCE_KINDS)
+    if values & _UNTRUSTED_SOURCE_KINDS:
+        return True
+    # Three-dimension fallback: any external origin (email, quoted/forwarded,
+    # attachment, RAG, external tool result, derived) has instruction authority
+    # NONE and must never be treated as a trusted instruction source.
+    origin = classify_source_origin(payload)
+    return is_external_origin(origin)
 
 
 def _trusted_recipient_candidates(payload: Mapping[str, Any]) -> set[str]:

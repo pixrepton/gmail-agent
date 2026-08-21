@@ -697,7 +697,11 @@ def _ground_current_signal(
     if subject or essence or understanding:
         parts = []
         if subject or essence:
-            line = f'Biezaca wiadomosc: "{subject}"' if subject else "Biezaca wiadomosc:"
+            line = (
+                f'[EXTERNAL_EVIDENCE] Biezaca wiadomosc: "{subject}"'
+                if subject
+                else "[EXTERNAL_EVIDENCE] Biezaca wiadomosc:"
+            )
             if essence:
                 line = f"{line} â€” {essence[:280]}"
             parts.append(line)
