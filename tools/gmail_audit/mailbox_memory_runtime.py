@@ -30,6 +30,7 @@ from attachment_intelligence import build_attachment_records
 from case_identity import derive_canonical_case_id
 from case_routing import apply_routing_to_case_row, route_gmail_message
 from embedding_runtime import build_embedding_runtime
+from evidence_authority import ensure_provenance_defaults, provenance_defaults
 from mailbox_memory_health import (
     VECTOR_PATH_DISABLED,
     VECTOR_PATH_FAILED,
@@ -773,6 +774,10 @@ class MailboxMemoryRuntime:
             "created_at": occurred_at,
             "updated_at": occurred_at,
         }
+        attachment_row["metadata"] = {
+            **attachment_row["metadata"],
+            **provenance_defaults(origin="ATTACHMENT"),
+        }
         if not process_attachment_documents:
             attachment_row["metadata"]["warnings"] = [*warnings, "document_processing_skipped_metadata_only"]
             self.store.upsert_attachment(attachment_row)
@@ -888,6 +893,10 @@ class MailboxMemoryRuntime:
                 },
                 "created_at": occurred_at,
                 "updated_at": occurred_at,
+            }
+            document_row["metadata"] = {
+                **document_row["metadata"],
+                **provenance_defaults(origin="ATTACHMENT"),
             }
             self.store.upsert_document(document_row)
             try:
@@ -1310,23 +1319,26 @@ def build_document_chunks(
         pieces.append(current)
     rows: list[dict[str, Any]] = []
     for ordinal, piece in enumerate(pieces):
-        rows.append(
-            {
-                "chunk_id": stable_id("chunk", document_id, str(ordinal)),
-                "document_id": document_id,
-                "case_id": case_id,
-                "ordinal": ordinal,
-                "chunk_text": piece,
-                "token_estimate": max(1, len(piece.split())),
-                "embedding_model": "",
-                "embedding_status": "missing",
-                "embedding_updated_at": None,
-                "embedding_error": "",
-                "metadata": {"file_name": file_name, "source_type": source_type},
-                "created_at": created_at,
-                **({"updated_at": updated_at or created_at} if updated_at else {}),
-            }
-        )
+        row = {
+            "chunk_id": stable_id("chunk", document_id, str(ordinal)),
+            "document_id": document_id,
+            "case_id": case_id,
+            "ordinal": ordinal,
+            "chunk_text": piece,
+            "token_estimate": max(1, len(piece.split())),
+            "embedding_model": "",
+            "embedding_status": "missing",
+            "embedding_updated_at": None,
+            "embedding_error": "",
+            "metadata": {
+                "file_name": file_name,
+                "source_type": source_type,
+                **provenance_defaults(origin="ATTACHMENT"),
+            },
+            "created_at": created_at,
+            **({"updated_at": updated_at or created_at} if updated_at else {}),
+        }
+        rows.append(row)
     return rows
 
 
@@ -1611,6 +1623,20 @@ def build_case_context_pack(
     facts = fetch_current_facts_for_case(store, case_id)
     active_facts, conflicting_facts = split_conflicting_facts(facts)
     documents = store.fetch_documents_for_case(case_id, limit=8)
+    # P0.5 residual: provenance dims survive ingest -> storage -> retrieval.
+    # Legacy rows without provenance metadata get the safe NONE default at read
+    # time; existing explicit values are never upgraded.
+    documents = [
+        {
+            **document,
+            "metadata": ensure_provenance_defaults(
+                document.get("metadata") or {},
+                default_origin="ATTACHMENT",
+            ),
+        }
+        for document in documents
+        if isinstance(document, dict)
+    ]
     messages = store.fetch_messages_for_case(case_id, limit=10)
     events = store.fetch_events_for_case(case_id, limit=12)
     next_action = store.fetch_next_action(case_id) or {}

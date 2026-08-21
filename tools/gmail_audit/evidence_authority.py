@@ -225,6 +225,52 @@ def attach_evidence_provenance(
     return out
 
 
+def provenance_defaults(*, origin: str = "DERIVED") -> dict[str, str]:
+    """Safe provenance trio for a known origin (storage/metadata stamping)."""
+    origin = str(origin or "").strip().upper() or "DERIVED"
+    return {
+        "source_origin": origin,
+        "evidence_authority": evidence_authority_for_origin(origin),
+        "instruction_authority": instruction_authority_for_origin(origin),
+    }
+
+
+def ensure_provenance_defaults(
+    record: dict[str, Any],
+    *,
+    default_origin: str = "DERIVED",
+) -> dict[str, Any]:
+    """Read-time normalization: fill missing provenance dims with safe defaults.
+
+    Legacy records without provenance metadata get:
+
+        source_origin        = default_origin (or DERIVED)
+        evidence_authority   = UNKNOWN (never guessed higher)
+        instruction_authority= NONE      (never guessed higher)
+
+    Existing explicit values are never overwritten or upgraded.
+    """
+    out = dict(record) if isinstance(record, dict) else {}
+    explicit_origin = str(out.get("source_origin") or "").strip().upper()
+    if explicit_origin:
+        if not str(out.get("evidence_authority") or "").strip():
+            out["evidence_authority"] = evidence_authority_for_origin(
+                explicit_origin
+            )
+        if not str(out.get("instruction_authority") or "").strip():
+            out["instruction_authority"] = instruction_authority_for_origin(
+                explicit_origin
+            )
+        return out
+    if not str(out.get("source_origin") or "").strip():
+        out["source_origin"] = str(default_origin or "").strip().upper() or "DERIVED"
+    if not str(out.get("evidence_authority") or "").strip():
+        out["evidence_authority"] = "UNKNOWN"
+    if not str(out.get("instruction_authority") or "").strip():
+        out["instruction_authority"] = "NONE"
+    return out
+
+
 __all__ = [
     "EVIDENCE_AUTHORITIES",
     "EXTERNAL_ORIGINS",
@@ -232,8 +278,10 @@ __all__ = [
     "SOURCE_ORIGINS",
     "attach_evidence_provenance",
     "classify_source_origin",
+    "ensure_provenance_defaults",
     "evidence_authority_for_origin",
     "instruction_authority_for_origin",
     "is_external_origin",
+    "provenance_defaults",
     "provenance_classification",
 ]

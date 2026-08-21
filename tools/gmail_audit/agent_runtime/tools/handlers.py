@@ -22,6 +22,7 @@ from agent_runtime.kalk_top_client import (
 )
 from agent_runtime.tool_context import ToolExecutionContext
 from agent_runtime.tool_result import ToolCallPlan, ToolResult
+from evidence_authority import ensure_provenance_defaults
 from mailbox_memory.active_facts import fetch_current_facts_for_case
 
 _AREA_RE = re.compile(r"(\d{2,4})\s*m\s*[²2]", re.IGNORECASE)
@@ -659,6 +660,14 @@ def search_rag_knowledge(plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolR
         )
     hit_rows = [r for r in rows if isinstance(r, dict)]
     hits = [str(r.get("chunk_text") or "")[:160] for r in hit_rows]
+    top_provenance = (
+        ensure_provenance_defaults(
+            hit_rows[0].get("metadata") or {},
+            default_origin="RAG",
+        )
+        if hit_rows
+        else {}
+    )
     evidence_ids: list[str] = []
     for index, row in enumerate(hit_rows[:3]):
         evidence_id = ""
@@ -672,7 +681,10 @@ def search_rag_knowledge(plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolR
     evidence_summary = ",".join(evidence_ids) if evidence_ids else "none"
     reasoning_summary = (
         f"RAG query={query[:120]}; hits={len(hits)}; "
-        f"evidence={evidence_summary}; top={top_hit}"
+        f"evidence={evidence_summary}; "
+        f"provenance={top_provenance.get('source_origin') or 'RAG'}"
+        f"(instruction={top_provenance.get('instruction_authority') or 'NONE'}); "
+        f"top={top_hit}"
     )
     return ToolResult(
         status="ok",
