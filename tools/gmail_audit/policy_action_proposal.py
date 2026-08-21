@@ -140,6 +140,7 @@ def build_policy_action_proposal(
         "schema_version": POLICY_ACTION_PROPOSAL_SCHEMA_VERSION,
         "proposal_id": _proposal_id(run_id=run_id, message_id=message_id, primary_action=primary),
         "trace_id": trace_id or run_id,
+        "canonical_decision_id": str(plan.get("canonical_decision_id") or ""),
         "primary_action": primary,
         "action_class": action_class,
         "safe_for_live_push": safe_live,
@@ -455,6 +456,11 @@ def attach_policy_and_proposals(
         planner_primary_action=str((action_plan_result or {}).get("primary_action") or "hold"),
         dry_run_only=dry_run_only,
     )
+    canonical_decision_id = str((action_plan_result or {}).get("canonical_decision_id") or "")
+    if canonical_decision_id:
+        for raw_proposal in v2_bundle.get("action_proposals_v2") or []:
+            if isinstance(raw_proposal, dict):
+                raw_proposal["canonical_decision_id"] = canonical_decision_id
     case_intelligence_result["policy_decision"] = policy_decision
     case_intelligence_result["action_proposals_v2"] = v2_bundle["action_proposals_v2"]
     return policy_report, policy_action_proposal

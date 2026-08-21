@@ -36,7 +36,12 @@ def normalize_planner_primary_for_v2(primary_action_type: str) -> str:
 def _v2_reply_intent_tokens(*, planner_primary: str, decision_candidate: dict[str, Any]) -> tuple[str, str]:
     """Planner primary (normalized) + DecisionCandidate.next_best_action (NBA string spine)."""
     p_norm = normalize_planner_primary_for_v2(planner_primary)
-    nba = str(decision_candidate.get("next_best_action") or "").strip()
+    nba_value = decision_candidate.get("next_best_action")
+    if isinstance(nba_value, dict):
+        # Defensive A17 fix: DecisionCandidate may carry the NBA object; the
+        # canonical code string is what the v2 boundary compares against.
+        nba_value = nba_value.get("action_type") if isinstance(nba_value.get("action_type"), str) else ""
+    nba = str(nba_value or "").strip()
     return p_norm, nba
 
 

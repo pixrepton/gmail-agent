@@ -21,6 +21,11 @@ from canonical_action_decision import (
 )
 from action_planner import plan_actions as build_action_plan_result
 from case_intelligence.next_best_action import build_next_best_action
+from action_proposal_v2 import build_action_proposals_v2
+from agent_runtime.policy_action_spine import evaluate_semantic_policy_plan_consistency
+from agent_runtime.tool_result import ToolCallPlan
+from llm_contracts.engagement_snapshot_v2 import PolicyActionEnvelopeV1
+from policy_action_proposal import build_policy_action_proposal
 
 
 def _br(**overrides: object) -> dict[str, object]:
@@ -278,3 +283,71 @@ def test_next_best_action_projects_canonical_decision() -> None:
     assert primary["canonical_decision_id"] == cad["decision_id"]
     assert primary["semantic_hash"] == cad["semantic_hash"]
     assert primary["whether_human_review_required"] is True
+
+
+def test_apv2_reads_nba_dict_action_type() -> None:
+    """A17 fix: a dict NBA must not be stringified; the code branch works."""
+    candidate = {
+        "decision_candidate_id": "dc_1",
+        "case_id": "case_456",
+        "source_signal_id": "msg_1",
+        "next_best_action": {"action_type": "ask_for_missing_data", "suggested_channel": "mail"},
+        "evidence_refs": [],
+    }
+    policy_decision = {
+        "policy_decision_id": "pdec_1",
+        "decision_candidate_id": "dc_1",
+        "status": "insufficient_context",
+        "allowed_actions": ["request_missing_info", "mark_attention_required"],
+        "risk_class": "low",
+    }
+    proposals = build_action_proposals_v2(
+        decision_candidate=candidate,
+        policy_decision=policy_decision,
+        primary_action_type="prepare_reply",
+    )
+    assert proposals
+    assert proposals[0]["action_type"] == "request_missing_info"
+
+
+def test_policy_action_proposal_carries_canonical_decision_id() -> None:
+    proposal = build_policy_action_proposal(
+        action_plan_result={"primary_action": "prepare_reply", "canonical_decision_id": "dec_123"},
+        intake_result={},
+        case_link_result={},
+        case_intelligence_result={},
+        entity_link_result={},
+        snapshot={},
+    )
+    assert proposal["canonical_decision_id"] == "dec_123"
+
+
+def test_decision_candidate_normalizes_canonical_code() -> None:
+    from decision_candidate import build_decision_candidate
+
+    candidate = build_decision_candidate(
+        case_id="case_456",
+        source_signal_id="msg_1",
+        next_best_action_code="ask_for_missing_data",
+    )
+    assert candidate["next_best_action"] == "ask_for_missing_data"
+
+
+def test_reference_monitor_emits_canonical_semantic_drift() -> None:
+    envelope = PolicyActionEnvelopeV1(
+        canonical_decision_id="dec_123",
+        policy_decision_id="pdec_1",
+        action_proposal_id="apv2_1",
+        forbidden_tools=["request_operator_clarification"],
+        freshness="current",
+    )
+    plan = ToolCallPlan(
+        tool_name="request_operator_clarification",
+        arguments={},
+        policy_decision_id="pdec_1",
+        action_proposal_id="apv2_1",
+    )
+    consistency = evaluate_semantic_policy_plan_consistency(envelope, plan)
+    assert consistency.status == "conflicting"
+    assert "semantic_tool_forbidden_for_action_intent" in consistency.reason_codes
+    assert "canonical_semantic_drift" in consistency.reason_codes

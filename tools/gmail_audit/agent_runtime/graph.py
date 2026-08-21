@@ -826,6 +826,7 @@ def _policy_enforcement_block(
         return None
     reasons = {str(item) for item in (consistency.reason_codes or [])}
     semantic_reasons = {
+        "canonical_semantic_drift",
         "semantic_tool_forbidden_for_action_intent",
         "semantic_tool_not_allowed_for_action_intent",
     }

@@ -104,6 +104,8 @@ def build_case_intelligence(
     normalized = validate_case_intelligence_result(result)
     if decision_candidate_enabled:
         from decision_candidate import build_decision_candidate
+        from canonical_action_decision import canonical_decision_code
+
         source_message = snapshot.get("source_message") if isinstance(snapshot.get("source_message"), dict) else {}
         normalized["decision_candidate"] = build_decision_candidate(
             case_id=str(case_understanding.get("case_id") or ""),
@@ -114,6 +116,7 @@ def build_case_intelligence(
             sla_risk=str((risk_assessment.get("risks") or [{}])[0].get("severity") or ""),
             owner_hint=str((case_understanding.get("current_owner") or "")),
             next_best_action=next_best_action.get("primary_next_action") or {},
+            next_best_action_code=canonical_decision_code(canonical_decision or {}),
             risk_class_candidate=str((risk_assessment.get("risks") or [{}])[0].get("severity") or "unknown"),
             case_context_pack=case_context_pack or {})
     normalized["execution_metadata"] = {

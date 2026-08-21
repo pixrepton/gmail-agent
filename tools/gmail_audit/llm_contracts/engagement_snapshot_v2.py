@@ -173,6 +173,7 @@ class PolicyActionEnvelopeV1(StrictModel):
     """Bounded read-only projection of canonical MailboxMemory policy/action records."""
 
     schema_version: Literal["policy_action_envelope.v1"] = "policy_action_envelope.v1"
+    canonical_decision_id: str = ""
     decision_candidate_id: str = ""
     policy_decision_id: str = ""
     action_proposal_id: str = ""

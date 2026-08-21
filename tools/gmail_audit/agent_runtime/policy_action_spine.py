@@ -44,6 +44,7 @@ def _semantic_tool_constraints(
     *,
     proposal_action_type: str,
     candidate: dict[str, Any],
+    canonical_decision_id: str = "",
 ) -> dict[str, Any]:
     """Compile the narrow customer-mail action semantics currently proven by Brain 1.
 
@@ -60,6 +61,7 @@ def _semantic_tool_constraints(
     customer_missing_data = nba_action == "ask_for_missing_data" or proposal_action == "request_missing_info"
     if customer_missing_data:
         return {
+            "canonical_decision_id": canonical_decision_id,
             "action_target": "customer",
             "action_channel": channel or "mail",
             # allowed_tools is a full planner-turn whitelist. Keep it empty here
@@ -69,6 +71,7 @@ def _semantic_tool_constraints(
             "forbidden_tools": [_OPERATOR_CLARIFICATION_TOOL],
         }
     return {
+        "canonical_decision_id": canonical_decision_id,
         "action_target": "",
         "action_channel": channel,
         "allowed_tools": [],
@@ -220,12 +223,14 @@ def persist_policy_action_spine(
         semantic = _semantic_tool_constraints(
             proposal_action_type=str(raw.get("action_type") or ""),
             candidate=candidate,
+            canonical_decision_id=str(raw.get("canonical_decision_id") or ""),
         )
         proposal_row = {
             "proposal_id": str(raw.get("proposal_id") or "").strip(),
             "policy_decision_id": policy_id,
             "decision_candidate_id": candidate_id,
             "case_id": cid,
+            "canonical_decision_id": str(raw.get("canonical_decision_id") or ""),
             "source_signal_id": canonical_signal_id,
             "source_message_id": message_id,
             "schema_version": str(raw.get("schema_version") or ""),
@@ -342,6 +347,7 @@ def project_policy_action_envelope(
         source_message_id=message_id,
         policy_status=str(policy.get("status") or ""),
         action_intent=str(proposal.get("action_type") or ""),
+        canonical_decision_id=str(raw_json.get("canonical_decision_id") or ""),
         action_target=str(raw_json.get("action_target") or ""),
         action_channel=str(raw_json.get("action_channel") or ""),
         allowed_tools=_string_list(raw_json.get("allowed_tools")),
@@ -437,9 +443,12 @@ def evaluate_semantic_policy_plan_consistency(
         if str(item).strip()
     }
     if plan.tool_name in forbidden_tools:
+        reason_codes: list[str] = ["semantic_tool_forbidden_for_action_intent"]
+        if str(getattr(envelope, "canonical_decision_id", "") or "").strip():
+            reason_codes.append("canonical_semantic_drift")
         return _consistency(
             "conflicting",
-            ["semantic_tool_forbidden_for_action_intent"],
+            reason_codes,
             envelope,
             plan,
         )
