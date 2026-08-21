@@ -128,6 +128,11 @@ from eval_shadow import (
     write_eval_summary,
     write_shadow_review_template,
 )
+from real_mail_intelligence_discovery import (
+    RealMailDiscoveryOptions,
+    run_real_mail_intelligence_discovery,
+    write_real_mail_discovery_proof,
+)
 from central_llm_stage import (
     resolve_case_id,
     resolve_engagement_id,
@@ -278,6 +283,8 @@ def main() -> int:
             return _run_doctor_mode(args)
         if args.command == "eval":
             return run_eval_command(args)
+        if args.command == "real-mail-discovery":
+            return run_real_mail_discovery_command(args)
         if args.command == "maintain-desk":
             return run_maintenance_command(args)
         if args.command == "replay-v2":
@@ -724,6 +731,27 @@ def run_eval_command(args: argparse.Namespace) -> int:
     _emit_json(summary)
     print(f"[info] Evaluation details: {run_dir / RUN_ARTIFACT_FILENAMES['eval_details']}", file=sys.stderr)
     return 0
+
+
+def run_real_mail_discovery_command(args: argparse.Namespace) -> int:
+    """Run file-only real-mail intelligence discovery without side effects."""
+
+    input_path = Path(getattr(args, "input")).expanduser().resolve()
+    base_output_dir = Path(getattr(args, "output_dir")).expanduser().resolve()
+    options = RealMailDiscoveryOptions(
+        input_path=input_path,
+        output_dir=base_output_dir,
+        run_id=str(getattr(args, "run_id", "") or ""),
+        min_cases=int(getattr(args, "min_cases", 10) or 10),
+        max_cases=int(getattr(args, "max_cases", 15) or 15),
+        allow_small_sample=bool(getattr(args, "allow_small_sample", False)),
+    )
+    summary = run_real_mail_intelligence_discovery(options)
+    run_output_dir = base_output_dir / str(summary.get("run_id") or "real-mail-discovery")
+    artifact_paths = write_real_mail_discovery_proof(summary, output_dir=run_output_dir)
+    ok = summary.get("status") in {"completed", "completed_small_sample"}
+    _emit_json({"ok": ok, "artifact_paths": artifact_paths, "summary": summary})
+    return 0 if ok else 1
 
 
 def run_maintenance_command(args: argparse.Namespace) -> int:

@@ -273,6 +273,30 @@ def _build_backfill_parser(subparsers: argparse._SubParsersAction, common: argpa
 
 def _build_helper_parsers(subparsers: argparse._SubParsersAction) -> None:
     """Add all remaining subcommands."""
+    real_mail_discovery = subparsers.add_parser(
+        "real-mail-discovery",
+        help="No-side-effect discovery over operator-curated historical real-mail cases.",
+    )
+    real_mail_discovery.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="JSON/JSONL file with curated historical case records and operator expected outcomes.",
+    )
+    real_mail_discovery.add_argument(
+        "--output-dir",
+        type=Path,
+        default=RUNS_DIR / "real-mail-intelligence-discovery",
+        help="Directory for discovery proof artifacts.",
+    )
+    real_mail_discovery.add_argument("--run-id", default="", help="Optional stable discovery run id.")
+    real_mail_discovery.add_argument("--min-cases", type=positive_int, default=10, help="Minimum discovery cohort size.")
+    real_mail_discovery.add_argument("--max-cases", type=positive_int, default=15, help="Maximum discovery cohort size.")
+    real_mail_discovery.add_argument(
+        "--allow-small-sample",
+        action="store_true",
+        help="Test/dev override: allow fewer than --min-cases. Do not use as program closeout proof.",
+    )
     evaluate = subparsers.add_parser("eval", help="Evaluate human annotations for an existing run.")
     eval_source = evaluate.add_mutually_exclusive_group(required=True)
     eval_source.add_argument("--run-id", help="Existing run id under tools/gmail_audit/runs/.")
