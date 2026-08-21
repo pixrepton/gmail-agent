@@ -36,6 +36,15 @@ def _decision_inputs(
     draft_enabled: bool = False,
     case_family: str = "lead_opportunity",
 ) -> dict:
+    # `decision_fact_blocks` is part of the production contract
+    # (decision_comparison_inputs.v1, added with c80be17) and is consumed by
+    # kalk_eligibility. With no mailbox context pack all three dependent
+    # actions project an unblocked block.
+    unblocked_block = {
+        "blocked": False,
+        "blocked_fact_keys": [],
+        "decision_block_reason": None,
+    }
     return {
         "schema_version": "decision_comparison_inputs.v1",
         "source_signal_id": source_signal_id,
@@ -44,6 +53,11 @@ def _decision_inputs(
         "next_best_action_type": nba_action,
         "reply_draft_enabled": draft_enabled,
         "case_family": case_family,
+        "decision_fact_blocks": {
+            "call_kalk_top_quote": unblocked_block,
+            "prepare_offer": unblocked_block,
+            "acknowledge_documents": unblocked_block,
+        },
     }
 
 
