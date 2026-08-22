@@ -28,11 +28,16 @@ from agent_runtime.tool_result import ToolCallPlan
 from canonical_action_decision import (
     CANONICAL_CHANNELS,
     CANONICAL_TARGETS,
+    DecisionRevisionLedger,
     build_business_decision_proposal,
+    build_canonical_decision_for_stage,
     build_decision_revision_request,
     canonical_decision_code,
     canonicalization_failure_review_state,
     canonicalize,
+    decision_version_id_of,
+    evaluate_decision_revision,
+    request_decision_revision,
 )
 from case_intelligence.next_best_action import build_next_best_action
 from decision_candidate import build_decision_candidate
@@ -532,3 +537,123 @@ def test_property_materialized_action_carries_source_semantic_hash() -> None:
         envelope=envelope,
     )
     assert delta["actions"][0]["source_semantic_hash"] == cad["semantic_hash"]
+
+
+# P1.1: decision revision lifecycle invariants.
+def _revision_fixture() -> tuple[DecisionRevisionLedger, dict[str, object]]:
+    ledger = DecisionRevisionLedger()
+    cad, failure = build_canonical_decision_for_stage(
+        business_reasoning_result=_br(),
+        situation_understanding=_situation(),
+        case_context_pack={},
+        intake_result={},
+        case_id="case_rev",
+        situation_version="sv_1",
+    )
+    assert cad is not None and failure is None
+    ledger.register_cad(cad)
+    return ledger, cad
+
+
+def _accept(
+    ledger: DecisionRevisionLedger,
+    cad: dict[str, object],
+    *,
+    br: dict[str, object] | None = None,
+    situation: dict[str, object] | None = None,
+) -> dict[str, object]:
+    emitted = request_decision_revision(
+        decision_id=cad["decision_id"],
+        current_revision=cad["revision"],
+        reason_code="NEW_CONFLICTING_EVIDENCE",
+        ledger=ledger,
+    )
+    return evaluate_decision_revision(
+        request=emitted["request"],
+        current_cad=cad,
+        business_reasoning_result=br or _br(),
+        situation_understanding=situation or _situation(),
+        ledger=ledger,
+    )
+
+
+def test_property_revision_numbers_monotonic_and_one_current() -> None:
+    ledger, cad = _revision_fixture()
+    revisions = [cad["revision"]]
+    for _ in range(2):
+        result = _accept(ledger, cad)
+        assert result["outcome"] == "ACCEPTED"
+        cad = result["new_cad"]
+        revisions.append(cad["revision"])
+    assert revisions == [1, 2, 3]
+    assert ledger.current_revision(cad["decision_id"]) == 3
+    statuses = [r["revision_status"] for r in ledger.revisions(cad["decision_id"])]
+    assert statuses == ["SUPERSEDED", "SUPERSEDED", "CURRENT"]
+
+
+def test_property_decision_id_stable_and_version_id_unique() -> None:
+    ledger, cad = _revision_fixture()
+    first = _accept(ledger, cad)
+    second = _accept(ledger, first["new_cad"])
+    assert first["new_cad"]["decision_id"] == cad["decision_id"]
+    assert second["new_cad"]["decision_id"] == cad["decision_id"]
+    version_ids = [
+        r["decision_version_id"] for r in ledger.revisions(cad["decision_id"])
+    ]
+    assert len(set(version_ids)) == 3
+    assert version_ids == [
+        decision_version_id_of(cad["decision_id"], 1),
+        decision_version_id_of(cad["decision_id"], 2),
+        decision_version_id_of(cad["decision_id"], 3),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("missing", "expected_hash_changes"),
+    [
+        (None, False),  # re-validation with identical semantics
+        (["exact_symptoms"], True),  # canonical payload changed
+    ],
+)
+def test_property_semantic_hash_depends_only_on_canonical_payload(
+    missing: list[str] | None,
+    expected_hash_changes: bool,
+) -> None:
+    ledger, cad = _revision_fixture()
+    br = _br() if missing is None else _br(missing_information=missing)
+    situation = _situation() if missing is None else _situation(missing)
+    result = _accept(ledger, cad, br=br, situation=situation)
+    assert result["outcome"] == "ACCEPTED"
+    if expected_hash_changes:
+        assert result["new_cad"]["semantic_hash"] != cad["semantic_hash"]
+    else:
+        assert result["new_cad"]["semantic_hash"] == cad["semantic_hash"]
+    # decision_version_id MUST change regardless of semantic hash stability.
+    assert result["new_cad"]["decision_version_id"] != cad["decision_version_id"]
+
+
+def test_property_rejected_revision_leaves_cad_unchanged() -> None:
+    ledger, cad = _revision_fixture()
+    result = _accept(
+        ledger,
+        cad,
+        br=_br(missing_information=["unknown_field"]),
+        situation=_situation(),
+    )
+    assert result["outcome"] == "REJECTED"
+    assert ledger.current_revision(cad["decision_id"]) == 1
+    assert ledger.is_current(cad)
+    assert len(ledger.revisions(cad["decision_id"])) == 1
+
+
+def test_property_stale_request_cannot_create_revision() -> None:
+    ledger, cad = _revision_fixture()
+    _accept(ledger, cad)
+    stale = request_decision_revision(
+        decision_id=cad["decision_id"],
+        current_revision=1,
+        reason_code="NEW_CONFLICTING_EVIDENCE",
+        ledger=ledger,
+    )
+    assert stale["status"] == "STALE_REVISION_REQUEST"
+    assert ledger.current_revision(cad["decision_id"]) == 2

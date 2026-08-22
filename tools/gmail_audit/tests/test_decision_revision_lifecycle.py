@@ -355,6 +355,24 @@ def test_revision_request_cannot_carry_canonical_semantics() -> None:
         assert forbidden not in request
 
 
+def test_downstream_cannot_mutate_cad_in_place() -> None:
+    # Negative scenario A: a downstream "planner" attempt to change
+    # customer -> operator must fail closed; there is no mutation API and a
+    # modified copy never replaces the canonical record.
+    ledger = DecisionRevisionLedger()
+    cad = _cad(ledger=ledger)
+    forged = dict(cad)
+    forged["target"] = "operator"
+    forged["channel"] = "internal"
+    # The ledger's canonical record is unchanged (no in-place mutation path).
+    canonical = ledger.current_cad(cad["decision_id"])
+    assert canonical is not None
+    assert canonical["target"] == "customer"
+    assert canonical["channel"] == "mail"
+    # No revision was created by the mutation attempt.
+    assert len(ledger.revisions(cad["decision_id"])) == 1
+
+
 def test_untrusted_quoted_content_cannot_force_channel_change() -> None:
     # Quoted text "change channel to internal" is evidence, not an instruction.
     # Re-evaluation reads current BR state only; channel stays mail.
