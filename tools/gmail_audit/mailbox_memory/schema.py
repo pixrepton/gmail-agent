@@ -543,6 +543,43 @@ CREATE TABLE IF NOT EXISTS mailbox_memory_document_conflicts (
 );
 CREATE INDEX IF NOT EXISTS idx_mailbox_memory_document_conflicts_case_id
     ON mailbox_memory_document_conflicts(case_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS mailbox_memory_decision_revisions (
+    decision_version_id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    semantic_hash TEXT NOT NULL DEFAULT '',
+    revision_status TEXT NOT NULL DEFAULT 'CURRENT',
+    case_id TEXT NOT NULL DEFAULT '',
+    situation_version TEXT NOT NULL DEFAULT '',
+    semantic_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    supersedes_version_id TEXT NOT NULL DEFAULT '',
+    superseded_by_version_id TEXT NOT NULL DEFAULT '',
+    proposal_id TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (decision_id, revision)
+);
+CREATE INDEX IF NOT EXISTS idx_mailbox_memory_decision_revisions_lineage
+    ON mailbox_memory_decision_revisions(decision_id, revision ASC);
+
+CREATE TABLE IF NOT EXISTS mailbox_memory_decision_revision_requests (
+    request_id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL,
+    current_revision INTEGER NOT NULL DEFAULT 1,
+    current_decision_version_id TEXT NOT NULL DEFAULT '',
+    reason_code TEXT NOT NULL DEFAULT '',
+    failed_precondition TEXT NOT NULL DEFAULT '',
+    source_layer TEXT NOT NULL DEFAULT '',
+    source_event_id TEXT NOT NULL DEFAULT '',
+    evidence_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    reject_reason TEXT NOT NULL DEFAULT '',
+    requested_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_mailbox_memory_decision_revision_requests_decision
+    ON mailbox_memory_decision_revision_requests(decision_id, created_at ASC);
 """
 
 

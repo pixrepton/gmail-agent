@@ -1880,6 +1880,205 @@ class PostgresMailboxMemoryStore:
             {},
         )
 
+    # -- DecisionRevision lineage (P1.1P durable state) --------------------
+
+    def append_decision_revision(self, row: dict[str, Any]) -> None:
+        """Persist one CAD revision row (idempotent per decision_version_id)."""
+        payload = dict(row)
+        payload.setdefault("semantic_payload", dict(row))
+        payload.setdefault("supersedes_version_id", "")
+        payload.setdefault("superseded_by_version_id", "")
+        payload.setdefault("created_at", datetime.now().astimezone().isoformat())
+        self._upsert(
+            """
+            INSERT INTO mailbox_memory_decision_revisions (
+                decision_version_id, decision_id, revision, semantic_hash, revision_status,
+                case_id, situation_version, semantic_payload, supersedes_version_id,
+                superseded_by_version_id, proposal_id, created_at
+            ) VALUES (
+                %(decision_version_id)s, %(decision_id)s, %(revision)s, %(semantic_hash)s,
+                %(revision_status)s, %(case_id)s, %(situation_version)s, %(semantic_payload)s::jsonb,
+                %(supersedes_version_id)s, %(superseded_by_version_id)s, %(proposal_id)s, %(created_at)s
+            )
+            ON CONFLICT (decision_version_id) DO NOTHING
+            """,
+            self._prep(payload, json_fields={"semantic_payload"}, time_fields={"created_at"}),
+        )
+
+    def append_decision_revision_request(self, row: dict[str, Any]) -> None:
+        """Upsert one revision request row (idempotent per request_id)."""
+        payload = dict(row)
+        payload.setdefault("reject_reason", "")
+        now = datetime.now().astimezone().isoformat()
+        payload.setdefault("requested_at", now)
+        payload.setdefault("created_at", now)
+        payload.setdefault("updated_at", now)
+        self._upsert(
+            """
+            INSERT INTO mailbox_memory_decision_revision_requests (
+                request_id, decision_id, current_revision, current_decision_version_id,
+                reason_code, failed_precondition, source_layer, source_event_id,
+                evidence_refs, status, reject_reason, requested_at, created_at, updated_at
+            ) VALUES (
+                %(request_id)s, %(decision_id)s, %(current_revision)s, %(current_decision_version_id)s,
+                %(reason_code)s, %(failed_precondition)s, %(source_layer)s, %(source_event_id)s,
+                %(evidence_refs)s::jsonb, %(status)s, %(reject_reason)s, %(requested_at)s,
+                %(created_at)s, %(updated_at)s
+            )
+            ON CONFLICT (request_id) DO UPDATE SET
+                status = EXCLUDED.status,
+                reject_reason = EXCLUDED.reject_reason,
+                updated_at = EXCLUDED.updated_at
+            """,
+            self._prep(
+                payload,
+                json_fields={"evidence_refs"},
+                time_fields={"requested_at", "created_at", "updated_at"},
+            ),
+        )
+
+    def accept_decision_revision_transition(
+        self, *, old_cad: dict[str, Any], new_cad: dict[str, Any], request: dict[str, Any]
+    ) -> None:
+        """Atomically persist old -> SUPERSEDED, new -> CURRENT, request -> ACCEPTED.
+
+        One transaction + advisory lock per decision lineage; a crash cannot
+        leave two CURRENT revisions in durable state.
+        """
+        old_version = str(old_cad.get("decision_version_id") or "").strip()
+        new_version = str(new_cad.get("decision_version_id") or "").strip()
+        request_id = str(request.get("request_id") or "").strip()
+        decision_id = str(old_cad.get("decision_id") or "").strip()
+        if not decision_id or not old_version or not new_version or not request_id:
+            raise ValueError(
+                "accept_decision_revision_transition requires decision_id, old/new version ids and request_id"
+            )
+        with self._connect() as conn:
+            try:
+                with conn.cursor() as cur:
+                    self._acquire_owner_lock(cur, scope="decision_revision", owner_id=decision_id)
+                    cur.execute(
+                        """
+                        UPDATE mailbox_memory_decision_revisions
+                        SET revision_status = 'SUPERSEDED',
+                            superseded_by_version_id = %(new_version)s
+                        WHERE decision_version_id = %(old_version)s
+                          AND revision_status = 'CURRENT'
+                        """,
+                        {"old_version": old_version, "new_version": new_version},
+                    )
+                    if cur.rowcount != 1:
+                        raise RuntimeError(
+                            f"decision_revision_conflict: old CAD {old_version} is not CURRENT"
+                        )
+                    new_row = dict(new_cad)
+                    new_row["revision_status"] = "CURRENT"
+                    new_row["supersedes_version_id"] = old_version
+                    self._insert_decision_revision_on_cursor(cur, new_row)
+                    cur.execute(
+                        """
+                        UPDATE mailbox_memory_decision_revision_requests
+                        SET status = 'ACCEPTED', updated_at = NOW()
+                        WHERE request_id = %(request_id)s
+                        """,
+                        {"request_id": request_id},
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    def _insert_decision_revision_on_cursor(self, cur: Any, cad: dict[str, Any]) -> None:
+        row = dict(cad)
+        row.setdefault("semantic_payload", dict(cad))
+        row.setdefault("superseded_by_version_id", "")
+        row.setdefault("created_at", datetime.now().astimezone().isoformat())
+        prepared = self._prep(row, json_fields={"semantic_payload"}, time_fields={"created_at"})
+        cur.execute(
+            """
+            INSERT INTO mailbox_memory_decision_revisions (
+                decision_version_id, decision_id, revision, semantic_hash, revision_status,
+                case_id, situation_version, semantic_payload, supersedes_version_id,
+                superseded_by_version_id, proposal_id, created_at
+            ) VALUES (
+                %(decision_version_id)s, %(decision_id)s, %(revision)s, %(semantic_hash)s,
+                %(revision_status)s, %(case_id)s, %(situation_version)s, %(semantic_payload)s::jsonb,
+                %(supersedes_version_id)s, %(superseded_by_version_id)s, %(proposal_id)s, %(created_at)s
+            )
+            ON CONFLICT (decision_version_id) DO NOTHING
+            """,
+            prepared,
+        )
+        if int(cur.rowcount or 0) != 1:
+            raise RuntimeError(
+                f"decision_revision_conflict: version already exists: {row.get('decision_version_id')}"
+            )
+
+    def fetch_decision_revisions(self, decision_id: str) -> list[dict[str, Any]]:
+        rows = self._fetch_all(
+            """
+            SELECT * FROM mailbox_memory_decision_revisions
+            WHERE decision_id = %(decision_id)s
+            ORDER BY revision ASC
+            """,
+            {"decision_id": str(decision_id or "").strip()},
+        )
+        return [self._decision_revision_from_row(row) for row in rows]
+
+    def _decision_revision_from_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        payload = row.get("semantic_payload")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                payload = {}
+        elif not isinstance(payload, dict):
+            payload = {}
+        payload = dict(payload or {})
+        # Typed columns are authoritative for lineage-critical fields so the
+        # projection rebuilds the exact durable status/supersession graph.
+        payload["decision_id"] = str(row.get("decision_id") or "")
+        payload["revision"] = int(row.get("revision") or 0)
+        payload["decision_version_id"] = str(row.get("decision_version_id") or "")
+        payload["semantic_hash"] = str(row.get("semantic_hash") or "")
+        payload["revision_status"] = str(row.get("revision_status") or "CURRENT")
+        payload["supersedes_version_id"] = str(row.get("supersedes_version_id") or "")
+        payload["superseded_by_version_id"] = str(row.get("superseded_by_version_id") or "")
+        return payload
+
+    def fetch_decision_revision_requests(self, decision_id: str) -> list[dict[str, Any]]:
+        rows = self._fetch_all(
+            """
+            SELECT * FROM mailbox_memory_decision_revision_requests
+            WHERE decision_id = %(decision_id)s
+            ORDER BY created_at ASC
+            """,
+            {"decision_id": str(decision_id or "").strip()},
+        )
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            evidence = item.get("evidence_refs")
+            if isinstance(evidence, str):
+                try:
+                    evidence = json.loads(evidence)
+                except json.JSONDecodeError:
+                    evidence = []
+            item["evidence_refs"] = evidence if isinstance(evidence, list) else []
+            out.append(item)
+        return out
+
+    def list_decision_lineage_ids(self) -> list[str]:
+        rows = self._fetch_all(
+            "SELECT DISTINCT decision_id FROM mailbox_memory_decision_revisions",
+            {},
+        )
+        return [
+            str(row.get("decision_id") or "")
+            for row in rows
+            if str(row.get("decision_id") or "").strip()
+        ]
+
     def _upsert(self, sql: str, params: dict[str, Any]) -> None:
         with self._connect() as conn:
             with conn.cursor() as cur:

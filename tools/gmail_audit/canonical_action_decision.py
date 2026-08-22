@@ -525,16 +525,112 @@ class DecisionRevisionLedger:
 
     Owns the revision state machine: exactly one CURRENT (execution-eligible)
     revision per decision_id, expected-revision concurrency guard, duplicate
-    request detection and an append-only audit trail. In-memory for P1.1;
-    persistence hook is an optional ``event_sink`` (existing event memory).
+    request detection and an append-only audit trail.
+
+    P1.1P: when a durable ``store`` (MailboxMemoryStore) is provided this
+    ledger is a projection/cache over durable state, not the Source of Truth.
+    Every mutation writes through to the store first; ``rebuild()`` restores
+    the projection after a process restart and fails closed on any
+    one-current-revision invariant violation. ``event_sink`` remains an
+    optional observability hook (existing event memory).
     """
 
-    def __init__(self, *, event_sink: Any | None = None) -> None:
+    def __init__(self, *, event_sink: Any | None = None, store: Any | None = None) -> None:
         self._lock = threading.RLock()
         self._lineages: dict[str, list[dict[str, Any]]] = {}
         self._requests: list[dict[str, Any]] = []
         self._audit: list[dict[str, Any]] = []
         self._event_sink = event_sink
+        self._store = store
+
+    @classmethod
+    def from_store(cls, store: Any, *, event_sink: Any | None = None) -> "DecisionRevisionLedger":
+        """Build a store-backed ledger and rebuild its projection from durable state."""
+        ledger = cls(store=store, event_sink=event_sink)
+        ledger.rebuild()
+        return ledger
+
+    def rebuild(self) -> None:
+        """Rebuild the in-memory projection from the durable store.
+
+        Fail closed when a durable lineage has zero or multiple CURRENT
+        revisions (never pick "latest by timestamp"). Ordering is by the
+        monotonic revision integer only; timestamps are observability.
+        """
+        if self._store is None:
+            return
+        with self._lock:
+            self._lineages = {}
+            self._requests = []
+            self._audit = []
+            for decision_id in self._store.list_decision_lineage_ids():
+                revisions = [
+                    dict(item) for item in self._store.fetch_decision_revisions(decision_id)
+                ]
+                revisions.sort(key=lambda item: int(item.get("revision") or 0))
+                current_count = sum(
+                    1
+                    for item in revisions
+                    if _string(item.get("revision_status")) == "CURRENT"
+                )
+                if revisions and current_count != 1:
+                    raise DecisionRevisionError(
+                        "rebuild_one_current_violation",
+                        f"durable lineage {decision_id} has {current_count} CURRENT revisions",
+                    )
+                self._lineages[decision_id] = revisions
+                requests = [
+                    dict(item)
+                    for item in self._store.fetch_decision_revision_requests(decision_id)
+                ]
+                requests.sort(key=lambda item: _string(item.get("requested_at")))
+                self._requests.extend(requests)
+                self._audit.extend(self._rebuild_audit(decision_id, revisions, requests))
+
+    def _rebuild_audit(
+        self,
+        decision_id: str,
+        revisions: list[dict[str, Any]],
+        requests: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Reconstruct the audit trail from durable lineage/request state."""
+        entries: list[dict[str, Any]] = []
+        by_supersedes: dict[str, dict[str, Any]] = {}
+        for rev in revisions:
+            src = _string(rev.get("supersedes_version_id"))
+            if src:
+                by_supersedes[src] = rev
+        for request in requests:
+            rid = _string(request.get("request_id"))
+            status = _string(request.get("status"))
+            reason = _string(request.get("reason_code"))
+            created = _string(request.get("requested_at"), _string(request.get("created_at")))
+            if status == "ACCEPTED":
+                old_version = _string(request.get("current_decision_version_id"))
+                new_rev = by_supersedes.get(old_version)
+                entries.append(
+                    {
+                        "decision_id": decision_id,
+                        "request_id": rid,
+                        "old_version_id": old_version,
+                        "new_version_id": _string(new_rev.get("decision_version_id")) if new_rev else "",
+                        "reason_code": reason,
+                        "outcome": "ACCEPTED",
+                        "created_at": created,
+                    }
+                )
+            elif status == "REJECTED":
+                entries.append(
+                    {
+                        "decision_id": decision_id,
+                        "request_id": rid,
+                        "reason_code": reason,
+                        "outcome": "REJECTED",
+                        "reject_reason": _string(request.get("reject_reason")),
+                        "created_at": created,
+                    }
+                )
+        return entries
 
     # -- lineage -----------------------------------------------------------
 
@@ -555,6 +651,8 @@ class DecisionRevisionLedger:
                     "one_current_revision_violation",
                     f"{decision_id} already has CURRENT {current.get('decision_version_id')}",
                 )
+            if self._store is not None:
+                self._store.append_decision_revision(dict(cad))
             lineage.append(dict(cad))
             self._emit("decision_registered", cad)
             return dict(cad)
@@ -617,6 +715,8 @@ class DecisionRevisionLedger:
                 stale = dict(request)
                 stale["status"] = "REJECTED"
                 stale["reject_reason"] = "STALE_REVISION_REQUEST"
+                if self._store is not None:
+                    self._store.append_decision_revision_request(dict(stale))
                 self._requests.append(stale)
                 self._audit.append(
                     {
@@ -630,6 +730,8 @@ class DecisionRevisionLedger:
                     }
                 )
                 return {"request": stale, "status": "STALE_REVISION_REQUEST"}
+            if self._store is not None:
+                self._store.append_decision_revision_request(dict(request))
             self._requests.append(request)
             self._emit("decision_revision_requested", request)
             return {"request": request, "status": "PENDING"}
@@ -658,13 +760,38 @@ class DecisionRevisionLedger:
         if not self.is_current(old_cad):
             raise DecisionRevisionError("stale_revision_request", "old_cad is not current")
         with self._lock:
+            current = self._current_locked(decision_id)
+            if (
+                current is None
+                or _string(current.get("decision_version_id"))
+                != _string(old_cad.get("decision_version_id"))
+            ):
+                raise DecisionRevisionError("stale_revision_request", "old_cad is not current")
+            old_version = _string(old_cad.get("decision_version_id"))
+            new_version = _string(new_cad.get("decision_version_id"))
+            superseded_old = {
+                **dict(old_cad),
+                "revision_status": "SUPERSEDED",
+                "superseded_by_version_id": new_version,
+            }
+            new_stamped = {
+                **dict(new_cad),
+                "revision_status": "CURRENT",
+                "supersedes_version_id": old_version,
+            }
+            if self._store is not None:
+                # Durable transition first (atomic): old -> SUPERSEDED,
+                # new -> CURRENT, request -> ACCEPTED.
+                self._store.accept_decision_revision_transition(
+                    old_cad=old_cad,
+                    new_cad=new_cad,
+                    request=request,
+                )
             lineage = self._lineages.get(decision_id, [])
-            superseded_old = dict(old_cad)
             for idx, item in enumerate(lineage):
-                if _string(item.get("decision_version_id")) == _string(old_cad.get("decision_version_id")):
-                    lineage[idx] = {**item, "revision_status": "SUPERSEDED"}
-                    superseded_old = lineage[idx]
-            lineage.append(dict(new_cad))
+                if _string(item.get("decision_version_id")) == old_version:
+                    lineage[idx] = dict(superseded_old)
+            lineage.append(dict(new_stamped))
             request = dict(request)
             request["status"] = "ACCEPTED"
             for idx, item in enumerate(self._requests):
@@ -674,18 +801,18 @@ class DecisionRevisionLedger:
                 {
                     "decision_id": decision_id,
                     "request_id": _string(request.get("request_id")),
-                    "old_version_id": _string(old_cad.get("decision_version_id")),
-                    "new_version_id": _string(new_cad.get("decision_version_id")),
+                    "old_version_id": old_version,
+                    "new_version_id": new_version,
                     "reason_code": _string(request.get("reason_code")),
                     "outcome": "ACCEPTED",
                     "created_at": _utc(),
                 }
             )
-            self._emit("decision_revision_accepted", new_cad)
+            self._emit("decision_revision_accepted", new_stamped)
             return {
                 "outcome": "ACCEPTED",
                 "old_cad": dict(superseded_old),
-                "new_cad": dict(new_cad),
+                "new_cad": dict(new_stamped),
                 "request": request,
             }
 
@@ -699,6 +826,8 @@ class DecisionRevisionLedger:
             request = dict(request)
             request["status"] = "REJECTED"
             request["reject_reason"] = _string(reason) or "REVISION_NOT_JUSTIFIED"
+            if self._store is not None:
+                self._store.append_decision_revision_request(dict(request))
             for idx, item in enumerate(self._requests):
                 if _string(item.get("request_id")) == _string(request.get("request_id")):
                     self._requests[idx] = request

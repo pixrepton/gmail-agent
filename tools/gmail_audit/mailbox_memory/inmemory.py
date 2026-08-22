@@ -41,6 +41,8 @@ class InMemoryMailboxMemoryStore:
     calendar_events: dict[str, dict[str, Any]] | None = None
     calendar_case_links: dict[str, dict[str, Any]] | None = None
     document_intelligence_results: dict[str, dict[str, Any]] | None = None
+    decision_revisions: dict[str, dict[str, Any]] | None = None
+    decision_revision_requests: dict[str, dict[str, Any]] | None = None
     _lock: RLock = field(default_factory=RLock, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -72,6 +74,8 @@ class InMemoryMailboxMemoryStore:
         self.calendar_events = self.calendar_events or {}
         self.calendar_case_links = self.calendar_case_links or {}
         self.document_intelligence_results = self.document_intelligence_results or {}
+        self.decision_revisions = self.decision_revisions or {}
+        self.decision_revision_requests = self.decision_revision_requests or {}
 
     def bootstrap(self) -> None:
         return None
@@ -881,3 +885,104 @@ class InMemoryMailboxMemoryStore:
         rows = [dict(item) for item in self.source_cursors.values()]
         rows.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
         return rows
+
+    # -- DecisionRevision lineage (P1.1P durable state) --------------------
+
+    def append_decision_revision(self, row: dict[str, Any]) -> None:
+        """Persist one CAD revision row (idempotent per decision_version_id)."""
+        version_id = str(row.get("decision_version_id") or "").strip()
+        if not version_id:
+            return
+        with self._lock:
+            existing = self.decision_revisions.get(version_id)
+            if existing is not None:
+                return
+            payload = dict(row)
+            payload.setdefault("revision_status", "CURRENT")
+            payload.setdefault("supersedes_version_id", "")
+            payload.setdefault("superseded_by_version_id", "")
+            self.decision_revisions[version_id] = payload
+
+    def append_decision_revision_request(self, row: dict[str, Any]) -> None:
+        """Upsert one revision request row (idempotent per request_id)."""
+        request_id = str(row.get("request_id") or "").strip()
+        if not request_id:
+            return
+        with self._lock:
+            payload = dict(row)
+            payload.setdefault("reject_reason", "")
+            existing = self.decision_revision_requests.get(request_id)
+            if existing is not None:
+                existing = dict(existing)
+                existing["status"] = payload.get("status") or existing.get("status") or "PENDING"
+                existing["reject_reason"] = payload.get("reject_reason") or existing.get("reject_reason") or ""
+                self.decision_revision_requests[request_id] = existing
+                return
+            self.decision_revision_requests[request_id] = payload
+
+    def accept_decision_revision_transition(
+        self, *, old_cad: dict[str, Any], new_cad: dict[str, Any], request: dict[str, Any]
+    ) -> None:
+        """Atomically persist old -> SUPERSEDED, new -> CURRENT, request -> ACCEPTED."""
+        old_version = str(old_cad.get("decision_version_id") or "").strip()
+        new_version = str(new_cad.get("decision_version_id") or "").strip()
+        request_id = str(request.get("request_id") or "").strip()
+        decision_id = str(old_cad.get("decision_id") or "").strip()
+        if not decision_id or not old_version or not new_version or not request_id:
+            raise ValueError(
+                "accept_decision_revision_transition requires decision_id, old/new version ids and request_id"
+            )
+        with self._lock:
+            old_row = self.decision_revisions.get(old_version)
+            if old_row is None or str(old_row.get("revision_status") or "") != "CURRENT":
+                raise RuntimeError("decision_revision_conflict: old CAD no longer CURRENT")
+            if new_version in self.decision_revisions:
+                raise RuntimeError(f"decision_revision_conflict: version already exists: {new_version}")
+            self.decision_revisions[old_version] = {
+                **old_row,
+                "revision_status": "SUPERSEDED",
+                "superseded_by_version_id": new_version,
+            }
+            new_row = dict(new_cad)
+            new_row["revision_status"] = "CURRENT"
+            new_row["supersedes_version_id"] = old_version
+            self.decision_revisions[new_version] = new_row
+            existing_request = self.decision_revision_requests.get(request_id)
+            if existing_request is not None:
+                self.decision_revision_requests[request_id] = {
+                    **existing_request,
+                    "status": "ACCEPTED",
+                }
+            else:
+                self.decision_revision_requests[request_id] = {
+                    **dict(request),
+                    "status": "ACCEPTED",
+                    "reject_reason": "",
+                }
+
+    def fetch_decision_revisions(self, decision_id: str) -> list[dict[str, Any]]:
+        rows = [
+            dict(item)
+            for item in self.decision_revisions.values()
+            if str(item.get("decision_id") or "").strip() == str(decision_id or "").strip()
+        ]
+        rows.sort(key=lambda item: int(item.get("revision") or 0))
+        return rows
+
+    def fetch_decision_revision_requests(self, decision_id: str) -> list[dict[str, Any]]:
+        rows = [
+            dict(item)
+            for item in self.decision_revision_requests.values()
+            if str(item.get("decision_id") or "").strip() == str(decision_id or "").strip()
+        ]
+        rows.sort(key=lambda item: str(item.get("requested_at") or item.get("created_at") or ""))
+        return rows
+
+    def list_decision_lineage_ids(self) -> list[str]:
+        return sorted(
+            {
+                str(item.get("decision_id") or "").strip()
+                for item in self.decision_revisions.values()
+                if str(item.get("decision_id") or "").strip()
+            }
+        )
