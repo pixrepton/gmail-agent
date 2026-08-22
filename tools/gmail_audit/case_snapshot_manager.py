@@ -680,6 +680,8 @@ class _EphemeralSnapshotStore:
 
     def append_facts_with_supersession(self, rows: list[dict[str, Any]]) -> dict[str, int]:
         """Mirror InMemoryMailboxMemoryStore.append_facts_with_supersession on a flat list."""
+        from mailbox_memory.facts import merge_fact_evidence
+
         stats = {"inserted": 0, "superseded": 0, "unchanged": 0}
         if not rows:
             return stats
@@ -704,6 +706,9 @@ class _EphemeralSnapshotStore:
                     if old_value == new_value:
                         stats["unchanged"] += 1
                         skip_insert = True
+                        merged_meta = merge_fact_evidence(item.get("metadata"), payload)
+                        if merged_meta != (item.get("metadata") if isinstance(item.get("metadata"), dict) else {}):
+                            item = {**item, "metadata": merged_meta}
                         updated_items.append(item)
                         continue
                     meta = dict(item.get("metadata") or {})

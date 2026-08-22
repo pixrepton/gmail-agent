@@ -2091,6 +2091,25 @@ def split_conflicting_facts(facts: list[dict[str, Any]]) -> tuple[list[dict[str,
     single-value set and no conflict.
     """
     live_facts = [fact for fact in facts if str(fact.get("status") or "active") != "superseded"]
+
+    def _dedupe_values(values: Any) -> list[str]:
+        """Case-insensitive, whitespace-stripped value dedup for conflict sets.
+
+        ``normalized_value`` representation may differ across producers (mail
+        keeps case, document promotion lowercases). The same business value
+        must never surface as a false conflict.
+        """
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in values:
+            text = str(item or "").strip()
+            key = text.casefold()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append(text)
+        return out
+
     superseded_values: dict[tuple[str, str], set[str]] = {}
     for fact in facts:
         if str(fact.get("status") or "active") != "superseded":
@@ -2116,10 +2135,29 @@ def split_conflicting_facts(facts: list[dict[str, Any]]) -> tuple[list[dict[str,
         ranked = sorted(ranked, key=lambda item: float(item.get("confidence") or 0.0), reverse=True)
         if ranked:
             active.append(ranked[0])
-        values = {str(item.get("normalized_value") or "").strip() for item in items if str(item.get("normalized_value") or "").strip()}
-        values.update(superseded_values.get((entity_scope, fact_key), set()))
+        values = _dedupe_values(
+            [str(item.get("normalized_value") or "") for item in items if str(item.get("normalized_value") or "").strip()]
+            + list(superseded_values.get((entity_scope, fact_key), set()))
+        )
         if len(values) > 1:
             conflicts.append({"entity_scope": entity_scope, "fact_key": fact_key, "values": sorted(values)})
+    # P1.5 convergence: cross-scope values for the same fact_key are one
+    # proposition domain (e.g. customer-scope mail vs document-scope attachment
+    # disagreeing on device_model). The snapshot builder already raised these
+    # as "mixed" conflicts; split_conflicting_facts now mirrors that so the
+    # pack's canonical conflict view and P1.3 projection see the same state.
+    cross_scope_values: dict[str, list[str]] = {}
+    for fact in live_facts:
+        key = str(fact.get("fact_key") or "").strip()
+        value = str(fact.get("normalized_value") or "").strip()
+        if key and value:
+            cross_scope_values.setdefault(key, []).append(value)
+    existing_keys = {str(item.get("fact_key") or "") for item in conflicts}
+    for fact_key, values in cross_scope_values.items():
+        deduped = _dedupe_values(values)
+        if len(deduped) <= 1 or fact_key in existing_keys:
+            continue
+        conflicts.append({"entity_scope": "mixed", "fact_key": fact_key, "values": sorted(deduped)})
     return active, conflicts
 
 

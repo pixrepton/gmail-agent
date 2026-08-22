@@ -7,6 +7,7 @@ from typing import Any
 
 from .protocol import MailboxMemoryStore
 from .schema import _case_payload_with_defaults, _cosine_similarity, _parse_vector_literal_coords
+from .facts import merge_fact_evidence
 
 
 @dataclass(slots=True)
@@ -330,6 +331,9 @@ class InMemoryMailboxMemoryStore:
                         if old_value == new_value:
                             stats["unchanged"] += 1
                             skip_insert = True
+                            merged_meta = merge_fact_evidence(item.get("metadata"), payload)
+                            if merged_meta != (item.get("metadata") if isinstance(item.get("metadata"), dict) else {}):
+                                item = {**item, "metadata": merged_meta}
                             updated_items.append(item)
                             continue
                         meta = dict(item.get("metadata") or {})

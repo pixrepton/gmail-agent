@@ -1,5 +1,6 @@
 """Fact extraction from text and HVAC signals for mailbox memory."""
 from __future__ import annotations
+import json
 import re
 from typing import Any
 
@@ -100,6 +101,87 @@ def stable_id(prefix: str, *parts: str) -> str:
         seed = prefix
     digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:12]
     return f"{prefix}_{digest}"
+
+
+def _evidence_key(ref: dict[str, Any]) -> str:
+    """Deterministic evidence identity for dedup (content-based, order-safe)."""
+    return json.dumps(ref, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def row_evidence_refs(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Collect evidence refs from one fact row.
+
+    Reads ``metadata.evidence_ref`` / ``metadata.evidence_refs`` plus the row's
+    own source identity (source_type/source_ref/message_id/document_id) as an
+    implied evidence ref. Used by the same-value append evidence merge so
+    multi-source provenance survives consolidation (P1.5).
+    """
+    meta = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    refs: list[dict[str, Any]] = []
+    ref = meta.get("evidence_ref")
+    if isinstance(ref, dict):
+        refs.append(dict(ref))
+    for item in meta.get("evidence_refs") or []:
+        if isinstance(item, dict):
+            refs.append(dict(item))
+    implied: dict[str, Any] = {}
+    if str(payload.get("source_type") or "").strip():
+        implied["source_type"] = str(payload.get("source_type") or "").strip()
+    if str(payload.get("source_ref") or "").strip():
+        implied["source_ref"] = str(payload.get("source_ref") or "").strip()
+    if str(payload.get("message_id") or "").strip():
+        implied["message_id"] = str(payload.get("message_id") or "").strip()
+    if str(payload.get("document_id") or "").strip():
+        implied["document_id"] = str(payload.get("document_id") or "").strip()
+    if implied:
+        refs.append(implied)
+    return refs
+
+
+def merge_fact_evidence(
+    metadata: dict[str, Any] | None,
+    payload: dict[str, Any],
+    *,
+    cap: int = 16,
+) -> dict[str, Any]:
+    """Merge incoming row evidence into existing fact metadata (P1.5).
+
+    Deterministic, idempotent: identical evidence (including retries of the
+    same row) is deduplicated. Keeps ``evidence_refs`` (list) and
+    ``evidence_ref`` (first) in the metadata; existing fields are preserved.
+    """
+    meta = dict(metadata) if isinstance(metadata, dict) else {}
+    existing: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    ref = meta.get("evidence_ref")
+    if isinstance(ref, dict):
+        key = _evidence_key(ref)
+        if key not in seen:
+            seen.add(key)
+            existing.append(dict(ref))
+    for item in meta.get("evidence_refs") or []:
+        if isinstance(item, dict):
+            key = _evidence_key(item)
+            if key not in seen:
+                seen.add(key)
+                existing.append(dict(item))
+    merged = list(existing)
+    for incoming in row_evidence_refs(payload):
+        key = _evidence_key(incoming)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(incoming)
+    if len(merged) > cap:
+        merged = merged[:cap]
+    out = dict(meta)
+    if merged:
+        out["evidence_refs"] = merged
+        out["evidence_ref"] = merged[0]
+    else:
+        out.pop("evidence_refs", None)
+        out.pop("evidence_ref", None)
+    return out
 
 
 def extract_facts_from_text(

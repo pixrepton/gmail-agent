@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any
 
 from .protocol import MailboxMemoryStore
+from .facts import merge_fact_evidence
 
 log = logging.getLogger(__name__)
 
@@ -643,6 +644,16 @@ class PostgresMailboxMemoryStore:
                 if old_value == new_value:
                     stats["unchanged"] += 1
                     skip_insert = True
+                    merged_meta = merge_fact_evidence(old_meta, row)
+                    if merged_meta != old_meta:
+                        cur.execute(
+                            """
+                            UPDATE mailbox_memory_facts
+                            SET metadata = %(metadata)s::jsonb
+                            WHERE fact_id = %(fact_id)s
+                            """,
+                            {"fact_id": fact_id, "metadata": _json_dump(merged_meta)},
+                        )
                     break
                 supersede_meta = dict(old_meta)
                 superseded_at = row.get("observed_at")

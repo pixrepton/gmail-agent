@@ -8,6 +8,7 @@ from typing import Any
 
 from document_intelligence_contract import EvidenceRef, ExtractedField, now_iso
 from document_parse_contract import DocumentElement, DocumentParseResult
+from evidence_authority import provenance_defaults
 
 # Normalize Polish labels to mailbox fact keys.
 _LABEL_TO_FACT_KEY: dict[str, str] = {
@@ -514,6 +515,9 @@ def structured_fields_to_fact_rows(
                     "field_type": str(field.get("field_type") or "generic"),
                     "evidence_ref": evidence_ref,
                     "extraction": "structure_first",
+                    # P1.5: provenance trio stamped at creation so the resolved
+                    # fact view never degrades document evidence to DERIVED.
+                    **provenance_defaults(origin="ATTACHMENT"),
                 },
             }
         )

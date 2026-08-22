@@ -17,6 +17,7 @@ from document_intelligence_contract import (
     ExtractedField,
     now_iso,
 )
+from evidence_authority import provenance_defaults
 
 DATE_PATTERN = r"(?:[0-9]{4}[.\-/][0-9]{1,2}[.\-/][0-9]{1,2}|[0-9]{1,2}[.\-/][0-9]{1,2}[.\-/][0-9]{2,4})"
 
@@ -298,6 +299,9 @@ def document_fields_to_fact_rows(result: dict[str, Any], *, min_confidence: floa
                     "document_type": document_type,
                     "tentative": confidence < 0.9 or field_name in conflict_fields or bool(conflicts),
                     "evidence_ref": evidence_ref,
+                    # P1.5: provenance trio stamped at creation (same rule as
+                    # structured_fields_to_fact_rows).
+                    **provenance_defaults(origin="ATTACHMENT"),
                 },
             }
         )
