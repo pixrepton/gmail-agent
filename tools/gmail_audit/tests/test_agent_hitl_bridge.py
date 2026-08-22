@@ -17,16 +17,21 @@ from agent_hitl_bridge import (
     approve_hitl_engagement,
     execute_hitl_send_from_bridge_row,
 )
+from agent_runtime.draft_identity import compute_body_hash, compute_draft_id
 from agent_runtime.mcp_service import AgentMcpService
 from agent_runtime.settings import load_agent_runtime_settings
 from agent_runtime.snapshot_delta import apply_snapshot_delta
 from agent_runtime.store import InMemoryOperatorEngagementStore, build_initial_snapshot
 from daszek_bridge_queue_drain import drain_bridge_rows
-from llm_contracts.engagement_snapshot_v2 import ActionItem
+from llm_contracts.engagement_snapshot_v2 import (
+    ActionItem,
+    CommunicationReceipt,
+    PolicyActionEnvelopeV1,
+)
 from mailbox_memory_store import InMemoryMailboxMemoryStore
 
 
-def _hitl_snapshot(*, enabled: bool = True, gate: bool = True):
+def _hitl_snapshot(*, enabled: bool = True, gate: bool = True, bound: bool = False):
     snap = build_initial_snapshot(case_id="case_hitl", engagement_id="eng_hitl", trace_id="t1")
     delta: dict = {
         "hitl_gate": {"required": gate, "reason": "draft_ready_for_approval" if gate else ""},
@@ -35,7 +40,55 @@ def _hitl_snapshot(*, enabled: bool = True, gate: bool = True):
         delta["actions"] = [
             ActionItem(id="draft_reply", enabled=True, payload_pl="Draft test").model_dump(mode="python")
         ]
-    return apply_snapshot_delta(snap, delta)
+    snap = apply_snapshot_delta(snap, delta)
+    if bound:
+        body_hash = compute_body_hash("Draft test")
+        draft_id = compute_draft_id(
+            case_id="case_hitl",
+            source_signal_id="sig_hitl",
+            action_id="draft_reply",
+        )
+        action = snap.actions[0].model_copy(
+            update={
+                "draft_id": draft_id,
+                "revision": 1,
+                "body_hash": body_hash,
+                "case_id": "case_hitl",
+                "source_signal_id": "sig_hitl",
+                "decision_version_id": "dec_hitl:r1",
+                "source_semantic_hash": "sh_hitl",
+                "identity_state": "complete",
+            }
+        )
+        snap = snap.model_copy(
+            update={
+                "actions": [action],
+                "communication_receipt": CommunicationReceipt(
+                    state="ready_for_manual_send",
+                    draft_id=draft_id,
+                    body_hash=body_hash,
+                    target_email="customer@example.com",
+                    thread_id="thread_1",
+                ),
+                "policy_action_envelope": PolicyActionEnvelopeV1(
+                    canonical_decision_id="dec_hitl",
+                    decision_version_id="dec_hitl:r1",
+                    source_semantic_hash="sh_hitl",
+                    policy_decision_id="pdec_hitl",
+                    action_proposal_id="apv2_hitl",
+                    decision_candidate_id="dc_hitl",
+                    source_signal_id="sig_hitl",
+                    source_message_id="msg_hitl",
+                    action_intent="ask_for_missing_data",
+                    action_target="customer",
+                    action_channel="mail",
+                    allowed_action_tools=["generate_draft_reply"],
+                    freshness="current",
+                    requires_operator_approval=True,
+                ),
+            }
+        )
+    return snap
 
 
 def test_agent_hitl_payload_from_row() -> None:
@@ -51,12 +104,26 @@ def test_agent_hitl_payload_from_row() -> None:
     assert payload["engagement_id"] == "eng-1"
 
 
-def _seed_hitl_store(store: InMemoryOperatorEngagementStore, *, gate: bool = True) -> None:
-    store.insert_snapshot(_hitl_snapshot(gate=gate))
+def _seed_hitl_store(
+    store: InMemoryOperatorEngagementStore,
+    *,
+    gate: bool = True,
+    bound: bool = False,
+) -> None:
+    store.insert_snapshot(_hitl_snapshot(gate=gate, bound=bound))
 
 
 def _mailbox_runtime(store: InMemoryMailboxMemoryStore) -> SimpleNamespace:
-    return SimpleNamespace(store=store, bootstrap=lambda: None)
+    return SimpleNamespace(
+        store=store,
+        bootstrap=lambda: None,
+        get_context_pack=lambda **_: {
+            "intake_output": {
+                "message": {"from": "customer@example.com", "thread_id": "thread_1"}
+            },
+            "facts": [],
+        },
+    )
 
 
 def _seed_hitl_case(store: InMemoryMailboxMemoryStore) -> None:
@@ -65,7 +132,18 @@ def _seed_hitl_case(store: InMemoryMailboxMemoryStore) -> None:
             "case_id": "case_hitl",
             "case_family": "mail_case",
             "status": "open",
+            "customer_email": "customer@example.com",
             "metadata": {},
+        }
+    )
+    store.append_decision_revision(
+        {
+            "decision_id": "dec_hitl",
+            "revision": 1,
+            "decision_version_id": "dec_hitl:r1",
+            "semantic_hash": "sh_hitl",
+            "revision_status": "CURRENT",
+            "case_id": "case_hitl",
         }
     )
 
@@ -124,7 +202,7 @@ def test_execute_hitl_send_requires_approve_first() -> None:
 def test_execute_hitl_send_after_approve() -> None:
     store = InMemoryOperatorEngagementStore()
     mailbox_store = InMemoryMailboxMemoryStore()
-    _seed_hitl_store(store, gate=False)
+    _seed_hitl_store(store, gate=False, bound=True)
     _seed_hitl_case(mailbox_store)
     service = AgentMcpService(store=store, settings=load_agent_runtime_settings())
 
@@ -160,7 +238,7 @@ def test_execute_hitl_send_after_approve() -> None:
 def test_execute_hitl_send_replay_after_completion_failure_does_not_rerun_executor() -> None:
     operator_store = InMemoryOperatorEngagementStore()
     mailbox_store = InMemoryMailboxMemoryStore()
-    _seed_hitl_store(operator_store, gate=False)
+    _seed_hitl_store(operator_store, gate=False, bound=True)
     _seed_hitl_case(mailbox_store)
     service = AgentMcpService(store=operator_store, settings=load_agent_runtime_settings())
     row = {
@@ -224,7 +302,7 @@ def test_execute_hitl_send_replay_after_completion_failure_does_not_rerun_execut
 def test_execute_hitl_send_failure_before_effect_allows_retry() -> None:
     operator_store = InMemoryOperatorEngagementStore()
     mailbox_store = InMemoryMailboxMemoryStore()
-    _seed_hitl_store(operator_store, gate=False)
+    _seed_hitl_store(operator_store, gate=False, bound=True)
     _seed_hitl_case(mailbox_store)
     service = AgentMcpService(store=operator_store, settings=load_agent_runtime_settings())
     row = {
@@ -281,7 +359,7 @@ def test_execute_hitl_send_failure_before_effect_allows_retry() -> None:
 def test_execute_hitl_send_outcome_unknown_is_not_rerun_on_replay() -> None:
     operator_store = InMemoryOperatorEngagementStore()
     mailbox_store = InMemoryMailboxMemoryStore()
-    _seed_hitl_store(operator_store, gate=False)
+    _seed_hitl_store(operator_store, gate=False, bound=True)
     _seed_hitl_case(mailbox_store)
     service = AgentMcpService(store=operator_store, settings=load_agent_runtime_settings())
     row = {
@@ -341,7 +419,7 @@ def test_execute_hitl_send_outcome_unknown_is_not_rerun_on_replay() -> None:
 def test_execute_hitl_send_parallel_drains_run_executor_once() -> None:
     operator_store = InMemoryOperatorEngagementStore()
     mailbox_store = InMemoryMailboxMemoryStore()
-    _seed_hitl_store(operator_store, gate=False)
+    _seed_hitl_store(operator_store, gate=False, bound=True)
     _seed_hitl_case(mailbox_store)
     service = AgentMcpService(store=operator_store, settings=load_agent_runtime_settings())
     row = {

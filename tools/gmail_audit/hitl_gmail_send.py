@@ -43,8 +43,11 @@ def _resolve_send_target(
     settings: Settings,
     snapshot: EngagementSnapshotV2,
     case_id: str,
+    runtime: Any | None = None,
 ) -> dict[str, Any]:
-    if not str(getattr(settings, "mailbox_memory_database_url", "") or "").strip():
+    if runtime is None and not str(
+        getattr(settings, "mailbox_memory_database_url", "") or ""
+    ).strip():
         raise SendTargetResolutionError("mailbox_memory_database_url_required")
 
     override_to = str(os.environ.get("AGENT_HITL_SEND_TO") or "").strip()
@@ -54,12 +57,15 @@ def _resolve_send_target(
     thread_id = ""
     to_addr = ""
     try:
-        from mailbox_memory_runtime import build_mailbox_memory_runtime
-
-        runtime = build_mailbox_memory_runtime(settings, allow_in_memory=False)
         if runtime is None:
-            raise SendTargetResolutionError("durable_mailbox_runtime_unavailable")
-        runtime.bootstrap()
+            from mailbox_memory_runtime import build_mailbox_memory_runtime
+
+            runtime = build_mailbox_memory_runtime(settings, allow_in_memory=False)
+            if runtime is None:
+                raise SendTargetResolutionError("durable_mailbox_runtime_unavailable")
+            bootstrap = getattr(runtime, "bootstrap", None)
+            if callable(bootstrap):
+                bootstrap()
         pack = runtime.get_context_pack(case_id=case_id or str(snapshot.case_id or ""), query_text="")
         if isinstance(pack, dict):
             intake = pack.get("intake_output") if isinstance(pack.get("intake_output"), dict) else {}
@@ -82,6 +88,27 @@ def _resolve_send_target(
         raise SendTargetResolutionError("mailbox_memory_lookup_failed") from exc
 
     return {"to": to_addr, "thread_id": thread_id, "source": "mailbox_memory"}
+
+
+def resolve_send_target(
+    *,
+    settings: Settings,
+    snapshot: EngagementSnapshotV2,
+    case_id: str = "",
+    runtime: Any | None = None,
+) -> dict[str, Any]:
+    """Public canonical target resolution for the write-boundary binding.
+
+    ``runtime`` may be supplied by the caller (production bridge already owns a
+    durable MailboxMemory runtime); when provided, the DB-URL guard is skipped
+    because the runtime itself is the durable owner.
+    """
+    return _resolve_send_target(
+        settings=settings,
+        snapshot=snapshot,
+        case_id=case_id,
+        runtime=runtime,
+    )
 
 
 def _build_mime_message(*, to_addr: str, subject: str, body: str) -> EmailMessage:
@@ -138,4 +165,9 @@ def execute_hitl_gmail_send(
     }
 
 
-__all__ = ["execute_hitl_gmail_send", "GMAIL_SEND_SCOPE"]
+__all__ = [
+    "GMAIL_SEND_SCOPE",
+    "SendTargetResolutionError",
+    "execute_hitl_gmail_send",
+    "resolve_send_target",
+]

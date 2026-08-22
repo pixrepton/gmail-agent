@@ -11,11 +11,16 @@ from datetime import datetime
 from typing import Any
 
 from agent_runtime.mcp_service import AgentMcpService
+from agent_runtime.draft_identity import compute_body_hash
 from agent_runtime.store import OperatorEngagementStore
+from agent_runtime.write_argument_binding import (
+    WriteBoundaryDeniedError,
+    evaluate_write_execution_binding,
+)
 from config import Settings, load_settings
 from event_spine.emitter import publish_os_event
 from event_spine.gmail_telemetry import publish_gmail_feed_push_event
-from hitl_gmail_send import execute_hitl_gmail_send
+from hitl_gmail_send import execute_hitl_gmail_send, resolve_send_target
 from mailbox_memory_runtime import build_mailbox_memory_runtime
 
 logger = logging.getLogger(__name__)
@@ -48,14 +53,14 @@ def _hitl_send_decision_key(row: dict[str, Any]) -> str:
     )
 
 
-def _mailbox_store_from_settings(settings: Settings) -> Any:
+def _mailbox_runtime_from_settings(settings: Settings) -> Any:
     runtime = build_mailbox_memory_runtime(settings, allow_in_memory=False)
     if runtime is None or getattr(runtime, "store", None) is None:
         raise ValueError("mailbox memory runtime is not configured for HITL send")
     bootstrap = getattr(runtime, "bootstrap", None)
     if callable(bootstrap):
         bootstrap()
-    return runtime.store
+    return runtime
 
 
 def _hitl_state_from_case(case_row: dict[str, Any], decision_key: str) -> dict[str, Any]:
@@ -485,7 +490,23 @@ def execute_hitl_send_from_bridge_row(
         case_id = str(snapshot.case_id or "").strip()
     snapshot_parent_refs = _snapshot_action_parent_refs(snapshot, action_id)
 
-    mailbox_store = _mailbox_store_from_settings(settings)
+    mailbox_runtime = _mailbox_runtime_from_settings(settings)
+    mailbox_store = mailbox_runtime.store
+    # P1.2B: store-backed durable ledger so the write boundary can bind the
+    # approved artifact to the CURRENT decision revision (P1.1P). Invalid
+    # durable revision state fails closed (REVISION_STATE_INVALID).
+    decision_revision_ledger = None
+    if mailbox_store is not None and all(
+        hasattr(mailbox_store, name)
+        for name in (
+            "list_decision_lineage_ids",
+            "fetch_decision_revisions",
+            "fetch_decision_revision_requests",
+        )
+    ):
+        from canonical_action_decision import build_store_backed_decision_ledger
+
+        decision_revision_ledger = build_store_backed_decision_ledger(mailbox_store)
     cached_state = _read_hitl_state(mailbox_store, case_id=case_id, decision_key=decision_key)
     cached_status = str(cached_state.get("status") or "").strip()
     if isinstance(cached_state.get("parent_refs"), dict):
@@ -517,6 +538,70 @@ def execute_hitl_send_from_bridge_row(
             parent_refs=parent_refs,
         )
     else:
+        # P1.2B: authorize only the exact approved artifact against the current
+        # durable revision before any write/manual-delivery authorization.
+        approved_action = next(
+            (
+                a
+                for a in (snapshot.actions or [])
+                if str(getattr(a, "id", "") or "") == action_id
+            ),
+            None,
+        )
+        effective_body = str(
+            row.get("operator_draft_pl") or row.get("draft_pl") or ""
+        ).strip()
+        if not effective_body and approved_action is not None:
+            effective_body = str(getattr(approved_action, "payload_pl", "") or "").strip()
+        try:
+            resolved_target = resolve_send_target(
+                settings=settings,
+                snapshot=snapshot,
+                case_id=case_id,
+                runtime=mailbox_runtime,
+            )
+        except Exception as exc:  # noqa: BLE001 - fail closed: unresolved target
+            resolved_target = {
+                "to": "",
+                "thread_id": "",
+                "source": "resolution_error",
+                "error": str(exc)[:200],
+            }
+        proposed = {
+            "case_id": case_id,
+            "draft_id": str(
+                getattr(approved_action, "draft_id", "")
+                if approved_action is not None
+                else ""
+            ),
+            "body_hash": compute_body_hash(effective_body),
+            "revision": int(
+                getattr(approved_action, "revision", 1) or 1
+            )
+            if approved_action is not None
+            else 1,
+            "decision_version_id": str(
+                getattr(approved_action, "decision_version_id", "")
+                if approved_action is not None
+                else ""
+            ),
+            "semantic_hash": str(
+                getattr(approved_action, "source_semantic_hash", "")
+                if approved_action is not None
+                else ""
+            ),
+        }
+        binding = evaluate_write_execution_binding(
+            snapshot=snapshot,
+            action_id=action_id,
+            proposed=proposed,
+            resolved_target=resolved_target,
+            ledger=decision_revision_ledger,
+            expected_body_hash=str(row.get("expected_body_hash") or "").strip() or None,
+        )
+        if binding["status"] != "pass":
+            raise WriteBoundaryDeniedError(binding)
+
         accepted_at = _now_iso()
         _mutate_hitl_state(
             mailbox_store,

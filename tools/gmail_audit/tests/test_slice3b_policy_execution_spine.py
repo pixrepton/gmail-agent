@@ -14,6 +14,7 @@ if str(TOOL_DIR) not in sys.path:
 from action_proposal_v2 import build_action_proposals_v2
 from agent_runtime.agent_reconcile import build_policy_action_envelope_handoff
 from agent_runtime.constitution import load_constitution
+from agent_runtime.draft_identity import compute_body_hash, compute_draft_id
 from agent_runtime.effective_tools import compute_effective_available_tools
 from agent_runtime.graph import AgentGraphEngine, _apply_tool_result, _ground_current_signal
 from agent_runtime.mcp_service import AgentMcpService
@@ -724,7 +725,20 @@ def test_action_parent_refs_are_additive_and_legacy_actions_still_validate() -> 
 
 
 def test_parent_refs_survive_approval_hitl_state_and_execution_result_replay() -> None:
-    envelope = _current_envelope()
+    envelope = _current_envelope().model_copy(
+        update={
+            "canonical_decision_id": "dec_3b",
+            "decision_version_id": "dec_3b:r1",
+            "source_semantic_hash": "sh_3b",
+            "freshness": "current",
+        }
+    )
+    draft_id = compute_draft_id(
+        case_id="case_3b",
+        source_signal_id="sig_3b_1",
+        action_id="draft_reply",
+    )
+    body_hash = compute_body_hash("Draft")
     action = ActionItem(
         id="draft_reply",
         enabled=True,
@@ -733,6 +747,13 @@ def test_parent_refs_survive_approval_hitl_state_and_execution_result_replay() -
         parent_action_proposal_v2_id=envelope.action_proposal_id,
         parent_decision_candidate_id=envelope.decision_candidate_id,
         source_signal_id=envelope.source_signal_id,
+        decision_version_id="dec_3b:r1",
+        source_semantic_hash="sh_3b",
+        draft_id=draft_id,
+        revision=1,
+        body_hash=body_hash,
+        case_id="case_3b",
+        identity_state="complete",
     )
     snapshot = build_initial_snapshot(
         case_id="case_3b",
@@ -745,13 +766,35 @@ def test_parent_refs_survive_approval_hitl_state_and_execution_result_replay() -
         {
             "actions": [action.model_dump(mode="python")],
             "hitl_gate": {"required": True, "reason": "draft_ready_for_approval"},
+            "policy_action_envelope": envelope.model_dump(mode="python"),
         },
     )
     operator_store = InMemoryOperatorEngagementStore()
     operator_store.insert_snapshot(gated)
+    mailbox_store = InMemoryMailboxMemoryStore()
+    mailbox_store.upsert_case(
+        {
+            "case_id": "case_3b",
+            "case_family": "mail_case",
+            "status": "open",
+            "customer_email": "customer@example.com",
+            "metadata": {},
+        }
+    )
+    mailbox_store.append_decision_revision(
+        {
+            "decision_id": "dec_3b",
+            "revision": 1,
+            "decision_version_id": "dec_3b:r1",
+            "semantic_hash": "sh_3b",
+            "revision_status": "CURRENT",
+            "case_id": "case_3b",
+        }
+    )
     service = AgentMcpService(
         store=operator_store,
         settings=load_agent_runtime_settings(),
+        mailbox_store=mailbox_store,
     )
 
     approval = service.approve_hitl_action(
@@ -767,16 +810,16 @@ def test_parent_refs_survive_approval_hitl_state_and_execution_result_replay() -
         envelope.action_proposal_id
     )
 
-    mailbox_store = InMemoryMailboxMemoryStore()
-    mailbox_store.upsert_case(
-        {
-            "case_id": "case_3b",
-            "case_family": "mail_case",
-            "status": "open",
-            "metadata": {},
-        }
+    mailbox_runtime = SimpleNamespace(
+        store=mailbox_store,
+        bootstrap=lambda: None,
+        get_context_pack=lambda **_: {
+            "intake_output": {
+                "message": {"from": "customer@example.com", "thread_id": "thread_1"}
+            },
+            "facts": [],
+        },
     )
-    mailbox_runtime = SimpleNamespace(store=mailbox_store, bootstrap=lambda: None)
     settings = SimpleNamespace(
         daszek_operational_feed_auto_push_enabled=False,
         mailbox_memory_database_url="",
