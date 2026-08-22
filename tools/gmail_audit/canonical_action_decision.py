@@ -111,6 +111,21 @@ class DecisionRevisionError(RuntimeError):
         self.code = code
 
 
+class DecisionRevisionStateInvalidError(RuntimeError):
+    """Fail-closed worker-boot signal: durable revision state cannot be rebuilt.
+
+    Raised by the production boot seam (store-backed ledger rebuild) when the
+    durable state violates a canonical invariant (zero/multiple CURRENT,
+    inconsistent ordering, corrupted lineage). The runtime MUST NOT pick a
+    decision heuristically; the case/worker is blocked with an observable
+    reason code (``code == REVISION_STATE_INVALID``).
+    """
+
+    def __init__(self, code: str, message: str = "") -> None:
+        super().__init__(message or code)
+        self.code = code
+
+
 def _utc() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -876,6 +891,25 @@ class DecisionRevisionLedger:
             return
 
 
+def build_store_backed_decision_ledger(store: Any) -> DecisionRevisionLedger:
+    """Production boot seam: rebuild a store-backed ledger or fail closed.
+
+    ``DecisionRevisionLedger.from_store`` raises
+    ``DecisionRevisionError`` (e.g. ``rebuild_one_current_violation``) when the
+    durable lineage violates the one-current invariant. This helper re-raises
+    that as ``DecisionRevisionStateInvalidError`` with the observable reason
+    code ``REVISION_STATE_INVALID`` so the worker boot can block the case
+    instead of selecting a decision heuristically.
+    """
+    try:
+        return DecisionRevisionLedger.from_store(store)
+    except DecisionRevisionError as exc:
+        raise DecisionRevisionStateInvalidError(
+            "REVISION_STATE_INVALID",
+            f"{exc.code}: {exc}",
+        ) from exc
+
+
 def request_decision_revision(
     *,
     decision_id: str,
@@ -1066,6 +1100,7 @@ __all__ = [
     "DECISION_REVISION_REQUEST_SCHEMA_VERSION",
     "DecisionRevisionError",
     "DecisionRevisionLedger",
+    "DecisionRevisionStateInvalidError",
     "FAILURE_REASON_CODES",
     "REVISION_OBSERVABILITY_CODES",
     "REVISION_REASON_CODES",
@@ -1076,6 +1111,7 @@ __all__ = [
     "build_business_decision_proposal",
     "build_canonical_decision_for_stage",
     "build_decision_revision_request",
+    "build_store_backed_decision_ledger",
     "canonical_decision_code",
     "canonicalization_failure_review_state",
     "canonicalize",

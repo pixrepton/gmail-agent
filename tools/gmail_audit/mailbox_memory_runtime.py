@@ -166,6 +166,11 @@ class MailboxMemoryRuntime:
     embedding_runtime: Any | None = None
     correlation_registry: CorrelationRegistryService | None = None
     signal_extraction_mode: str = "llm"
+    # P1.1P: store-backed DecisionRevisionLedger rebuilt at boot. The worker
+    # boot seam (build_mailbox_memory_runtime -> runtime.bootstrap()) populates
+    # this from the durable store; invalid durable revision state fails closed
+    # (DecisionRevisionStateInvalidError, reason code REVISION_STATE_INVALID).
+    decision_revision_ledger: Any | None = None
 
     def bootstrap(self) -> None:
         self.blob_root.mkdir(parents=True, exist_ok=True)
@@ -174,6 +179,9 @@ class MailboxMemoryRuntime:
             self.correlation_registry.bootstrap()
         if self.graph_store is not None:
             self.graph_store.bootstrap()
+        from canonical_action_decision import build_store_backed_decision_ledger
+
+        self.decision_revision_ledger = build_store_backed_decision_ledger(self.store)
 
     @property
     def enabled(self) -> bool:
