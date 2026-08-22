@@ -200,6 +200,11 @@ def build_case_understanding_projection(
         "risks": risks,
         "recommended_next_step_pl": sharpened[:400],
         "planner_action_hint": hint[:80],
+        "customer_intents": [
+            dict(item)
+            for item in (uo.get("customer_intents") or [])[:8]
+            if isinstance(item, dict)
+        ],
     }
 
 

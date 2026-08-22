@@ -70,6 +70,9 @@ class ActionItem(StrictModel):
     body_hash: str = ""
     case_id: str = ""
     identity_state: Literal["complete", "identity_incomplete"] = "identity_incomplete"
+    # P1.4: structured draft intent coverage (covered/unresolved/ignored +
+    # requested_information_by_intent). Empty default = single-intent/legacy.
+    intent_coverage: dict[str, Any] = Field(default_factory=dict)
 
 
 class HitlGate(StrictModel):
@@ -107,6 +110,10 @@ class CaseUnderstandingProjection(StrictModel):
     recommended_next_step_pl: str = ""
     # Roadmap 1.3: preferred tool class for planner (not a hard tool binding).
     planner_action_hint: str = ""
+    # P1.4: structural multi-intent projection for the current turn (additive).
+    # Each row is a normalized CustomerIntent dict (bounded vocabulary,
+    # deterministic ordering). Absent/empty = no intent surface, never a guess.
+    customer_intents: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class CaseUnderstandingProvenance(StrictModel):

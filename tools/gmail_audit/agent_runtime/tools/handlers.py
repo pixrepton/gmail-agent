@@ -44,6 +44,117 @@ _UNKNOWN_ASK_PL = {
     "photo_or_message": "Prosimy o zdjęcie komunikatu, jeśli jest dostępne.",
 }
 
+# P1.4: deterministic multi-intent surface. Acknowledgment lines never assert
+# execution (no scheduling/sending); write intents stay explicitly open behind
+# HITL authority. Questions are deduplicated globally via shared field mapping.
+_MULTI_INTENT_ACK_PL = {
+    "service_problem": "Przyjęliśmy zgłoszenie problemu serwisowego.",
+    "schedule_service": "Przyjęliśmy prośbę o umówienie przeglądu — po weryfikacji danych operator skontaktuje się w sprawie terminu.",
+    "document_request": "Przyjęliśmy prośbę o przesłanie kopii faktury — dokument zostanie przygotowany po akceptacji operatora.",
+    "other": "",
+}
+
+_INTENT_FIELD_ASK_PL = {
+    "preferred_service_date": "Prosimy o podanie preferowanego terminu przeglądu.",
+    "contact_phone": "Prosimy o numer telefonu do kontaktu.",
+    "invoice_period": "Prosimy o wskazanie okresu, którego dotyczy faktura.",
+    "document_delivery_confirmation": "Prosimy o potwierdzenie adresu do przesłania dokumentu.",
+}
+
+
+def _compose_multi_intent_body(
+    *,
+    intent_projection: Any,
+    epistemic_context: Any,
+    legacy_body: str,
+) -> tuple[str, dict[str, Any]]:
+    """Deterministic multi-intent customer draft + structured coverage.
+
+    Used only when the projection carries more than one intent. Each intent is
+    acknowledged; missing information is requested once globally (shared fields
+    deduplicated); no execution is asserted; write intents remain unresolved
+    behind HITL authority. Coverage is returned for the draft artifact and the
+    draft sanity gate.
+    """
+    intents = list(getattr(intent_projection, "intents", None) or [])
+    if len(intents) <= 1:
+        return legacy_body, {}
+
+    # Global question map (field -> question) so shared fields are asked once.
+    question_by_field: dict[str, str] = {}
+    for intent in intents:
+        for field in getattr(intent, "required_information", None) or []:
+            key = str(field or "").strip().lower()
+            if key and key not in question_by_field:
+                question_by_field[key] = _UNKNOWN_ASK_PL.get(key) or _INTENT_FIELD_ASK_PL.get(key) or ""
+
+    # P1.3 reuse: confirmed customer-reported claims may be acknowledged.
+    confirmed = (
+        list(getattr(epistemic_context, "confirmed_claims", None) or [])
+        if epistemic_context is not None
+        else []
+    )
+    lines: list[str] = []
+    for claim in confirmed[:2]:
+        key = str(getattr(claim, "proposition_key", "") or "").strip().lower()
+        value = str(getattr(claim, "value", "") or "").strip()
+        label = _CLAIM_LABEL_PL.get(key)
+        if label and value:
+            lines.append("Dziękujemy za informację o " + label + " " + value + ".")
+
+    # Global unique questions (first-appearance order across intents): shared
+    # fields are asked exactly once.
+    global_asks: list[str] = []
+    for intent in intents:
+        for field in getattr(intent, "required_information", None) or []:
+            question = question_by_field.get(str(field or "").strip().lower(), "")
+            if question and question not in global_asks:
+                global_asks.append(question)
+
+    covered: list[str] = []
+    unresolved: list[str] = []
+    requested_by_intent: dict[str, list[str]] = {}
+    for intent in intents:
+        intent_id = str(getattr(intent, "intent_id", "") or "").strip()
+        intent_type = str(getattr(intent, "intent_type", "") or "").strip()
+        ack = _MULTI_INTENT_ACK_PL.get(intent_type, "")
+        if ack:
+            lines.append(ack)
+            covered.append(intent_id)
+        requested_fields: list[str] = []
+        for field in getattr(intent, "required_information", None) or []:
+            field_key = str(field or "").strip().lower()
+            question = question_by_field.get(field_key, "")
+            if question and field_key not in requested_fields:
+                requested_fields.append(field_key)
+        if requested_fields:
+            requested_by_intent[intent_id] = requested_fields
+        # Open until real execution evidence exists: write intents are BLOCKED
+        # behind HITL, service problems with missing data are NEEDS_INFORMATION,
+        # and even a READY service problem is not executed in this slice.
+        unresolved.append(intent_id)
+    if global_asks:
+        lines.append(" ".join(global_asks))
+
+    body = (
+        "Dzień dobry,\n\n"
+        + "\n".join(lines)
+        + "\n\nPo otrzymaniu danych sprawa zostanie zweryfikowana i przekażemy ją "
+        "do dalszej obsługi.\n\nZespół TOP-INSTAL"
+    )
+    coverage = {
+        "intent_ids": [str(getattr(i, "intent_id", "") or "") for i in intents],
+        "covered_intent_ids": covered,
+        "unresolved_intent_ids": unresolved,
+        "ignored_intent_ids": [],
+        "requested_information_by_intent": requested_by_intent,
+        "required_information_by_intent": {
+            str(getattr(i, "intent_id", "") or ""): list(getattr(i, "required_information", None) or [])
+            for i in intents
+        },
+    }
+    return body, coverage
+
 
 def _compose_service_missing_info_body(
     *,
@@ -187,6 +298,19 @@ def generate_draft_reply(plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolR
         case_id,
         missing_fields,
     )
+    # P1.4: structural multi-intent projection from the current-turn
+    # understanding (deterministic; absent/empty means single-intent legacy).
+    from agent_runtime.intent_projection import project_customer_intents
+
+    intent_projection = None
+    if case_understanding is not None:
+        raw_intents = list(getattr(case_understanding, "customer_intents", None) or [])
+        if raw_intents:
+            intent_projection = project_customer_intents(
+                raw_intents=raw_intents,
+                case_id=case_id,
+                source_signal_id=str(getattr(ctx.snapshot, "signal_id", "") or ""),
+            )
     if intent == "missing_info":
         if is_service_case_kind(str(ctx.snapshot.case_kind or "")):
             body = (
@@ -209,14 +333,22 @@ def generate_draft_reply(plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolR
             f"dla budynku ok. {area} m2 w {city}. Przygotowaliśmy wstępną kalkulację — "
             f"prosimy o chwilę na weryfikację przez operatora.\n\nZespół TOP-INSTAL"
         )
+    intent_coverage: dict[str, Any] = {}
     if (
         intent == "missing_info"
         and is_service_case_kind(str(ctx.snapshot.case_kind or ""))
     ):
-        body = _compose_service_missing_info_body(
-            epistemic_context=epistemic_context,
-            legacy_body=body,
-        )
+        if intent_projection is not None and len(intent_projection.intents) > 1:
+            body, intent_coverage = _compose_multi_intent_body(
+                intent_projection=intent_projection,
+                epistemic_context=epistemic_context,
+                legacy_body=body,
+            )
+        else:
+            body = _compose_service_missing_info_body(
+                epistemic_context=epistemic_context,
+                legacy_body=body,
+            )
     body_hash = compute_body_hash(body)
     if not body_hash:
         # Fail-closed: an empty/whitespace-only body is not a valid operator-facing
@@ -235,6 +367,7 @@ def generate_draft_reply(plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolR
         snapshot=ctx.snapshot,
         policy_allows_draft=policy_allows,
         epistemic_context=epistemic_context,
+        intent_coverage=intent_coverage,
     )
     if not sanity.get("ok"):
         return attach_attribution(
@@ -304,6 +437,7 @@ def generate_draft_reply(plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolR
                     "case_id": case_id,
                     "source_signal_id": source_signal_id,
                     "identity_state": "identity_incomplete",
+                    "intent_coverage": intent_coverage,
                     "parent_policy_decision_id": "",
                     "parent_action_proposal_v2_id": "",
                     "parent_decision_candidate_id": "",

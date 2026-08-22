@@ -36,6 +36,9 @@ from intake_policy import (
     top_case_candidate_confidence,
 )
 
+# P1.4: bounded surface for multi-intent rows proposed by BusinessReasoning.
+_MAX_CUSTOMER_INTENTS = 8
+
 try:
     from jsonschema import Draft202012Validator
 except ImportError:  # pragma: no cover - handled at runtime
@@ -363,6 +366,35 @@ def _customer_clarification_possible(
     return not bool(flags & forced_human_review)
 
 
+def _normalize_customer_intents(obj: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """P1.4: structural (non-semantic) normalization of BR customer_intents.
+
+    Bounded list, canonical string fields, evidence refs normalized through the
+    shared contract. Semantic normalization/status/authority stays in
+    ``agent_runtime/intent_projection.py`` (single owner).
+    """
+    rows = obj.get("customer_intents") if isinstance(obj, dict) else None
+    if not isinstance(rows, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for row in rows[:_MAX_CUSTOMER_INTENTS]:
+        if not isinstance(row, dict):
+            continue
+        out.append(
+            {
+                "intent_type": _string_or_default(row.get("intent_type"), default="other"),
+                "description": _string_or_default(row.get("description"), default="")[:300],
+                "source_span": _string_or_default(row.get("source_span"), default="")[:240],
+                "evidence_refs": normalize_case_guidance_evidence_refs(
+                    row.get("evidence_refs") or [], source_mode="llm_reasoned"
+                ),
+                "required_information": _normalize_string_list_contract(row.get("required_information"))[:12],
+                "blocking_gaps": _normalize_string_list_contract(row.get("blocking_gaps"))[:6],
+            }
+        )
+    return out
+
+
 def validate_business_reasoning_result(
     obj: dict[str, Any] | None,
     *,
@@ -469,6 +501,7 @@ def validate_business_reasoning_result(
         ),
         "safety_notes": _normalize_string_list_contract(obj.get("safety_notes")),
         "evidence_refs": normalize_case_guidance_evidence_refs(obj.get("evidence_refs") or [], source_mode="llm_reasoned"),
+        "customer_intents": _normalize_customer_intents(obj),
         "assumptions": _normalize_string_list_contract(obj.get("assumptions")),
         "unsupported_claims": _normalize_string_list_contract(obj.get("unsupported_claims")),
         "conflict_refs": strip_forbidden_evidence_like_rows(obj.get("conflict_refs") or []),

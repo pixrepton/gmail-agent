@@ -107,6 +107,23 @@ def build_understanding_output(
     ])
 
     intent = _customer_intent_pl(cu, business, intake, unresolved_questions=unresolved_questions_pl)
+    # P1.4: structural multi-intent projection (deterministic). The single
+    # operator-facing phrase above remains; the typed list preserves every
+    # significant intent with independent status/information/authority.
+    from agent_runtime.intent_projection import project_customer_intents
+
+    case_id = str(cu.get("case_id") or "").strip()
+    customer_intent_projection = project_customer_intents(
+        br_result=business,
+        intake_result=intake,
+        case_id=case_id,
+        source_signal_id=source_signal_id,
+    )
+    customer_intents = (
+        [item.model_dump(mode="python") for item in customer_intent_projection.intents]
+        if customer_intent_projection is not None
+        else []
+    )
     # Deterministic, grounded gaps (pending_outcome_gaps) are PREPENDED, not
     # appended: the free-form LLM list can be long and carry near-duplicate
     # phrasings (business_result.missing_information often restates
@@ -132,7 +149,6 @@ def build_understanding_output(
     desk = ci.get("desk_composition") if isinstance(ci.get("desk_composition"), dict) else {}
     cg = ci.get("case_guidance") if isinstance(ci.get("case_guidance"), dict) else {}
     primary_action = nba.get("primary_next_action") if isinstance(nba.get("primary_next_action"), dict) else {}
-    case_id = str(cu.get("case_id") or "").strip()
     context_quality = _context_quality(pack, tm, ai)
     source_quality = _source_quality(source, link, evidence_refs)
     facts_explicit, facts_extracted, facts_inferred = _facts_from_inputs(
@@ -188,6 +204,7 @@ def build_understanding_output(
         },
         "customer_intent_pl": intent,
         "current_customer_intent": intent,
+        "customer_intents": customer_intents,
         "facts_explicit": facts_explicit,
         "facts_extracted": facts_extracted,
         "facts_inferred": facts_inferred,

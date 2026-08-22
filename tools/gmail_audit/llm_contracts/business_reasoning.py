@@ -29,6 +29,10 @@ class BusinessReasoningResult(BaseModel):
     human_review_bias: str | None = None
     safety_notes: list[str] = []
     evidence_refs: list[dict[str, Any]] = []
+    # P1.4: additive optional multi-intent surface. Each row is normalized
+    # deterministically by agent_runtime/intent_projection.py; the LLM only
+    # proposes intents, never grants authority.
+    customer_intents: list[dict[str, Any]] = []
     assumptions: list[str] = []
     unsupported_claims: list[str] = []
     conflict_refs: list[dict[str, Any]] = []

@@ -93,6 +93,11 @@
           ],
           "title": "Identity State",
           "type": "string"
+        },
+        "intent_coverage": {
+          "additionalProperties": true,
+          "title": "Intent Coverage",
+          "type": "object"
         }
       },
       "required": [
@@ -196,6 +201,14 @@
           "default": "",
           "title": "Planner Action Hint",
           "type": "string"
+        },
+        "customer_intents": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Customer Intents",
+          "type": "array"
         }
       },
       "title": "CaseUnderstandingProjection",

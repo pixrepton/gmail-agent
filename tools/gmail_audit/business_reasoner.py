@@ -53,6 +53,22 @@ BUSINESS_REASONING_SCHEMA = {
         "human_review_bias": {"type": "string"},
         "safety_notes": {"type": "array", "items": {"type": "string"}},
         "evidence_refs": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+        "customer_intents": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["intent_type"],
+                "properties": {
+                    "intent_type": {"type": "string"},
+                    "description": {"type": "string"},
+                    "source_span": {"type": "string"},
+                    "evidence_refs": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+                    "required_information": {"type": "array", "items": {"type": "string"}},
+                    "blocking_gaps": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+        },
         "assumptions": {"type": "array", "items": {"type": "string"}},
         "unsupported_claims": {"type": "array", "items": {"type": "string"}},
         "conflict_refs": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
@@ -74,6 +90,10 @@ BUSINESS_REASONING_INSTRUCTIONS = (
     "Nie wymyślaj historii, wycen ani wniosków technicznych. "
     "Elementy poparte źródłem wpisz w evidence_refs; założenia w assumptions; "
     "niesprawdzone twierdzenia w unsupported_claims. Przy słabych dowodach preferuj escalate_review. "
+    "Jeśli wiadomość zawiera więcej niż jeden istotny intent biznesowy, wymień każdy z nich "
+    "w customer_intents (intent_type z: service_problem, schedule_service, document_request, other) "
+    "razem z required_information i evidence_refs dla każdego intentu. Nie pomijaj żadnego istotnego "
+    "intentu; nie łącz różnych intentów w jeden. "
     "Odpowiedz wyłącznie po polsku. Wszystkie pola tekstowe — w tym business_interpretation, "
     "operator_note, business_summary_short, recommended_action_reason, missing_information, "
     "risks, assumptions i unsupported_claims — muszą być po polsku. "
