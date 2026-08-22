@@ -52,6 +52,7 @@ def evaluate_draft_sanity(
     intent: str = "",
     snapshot: Any = None,
     policy_allows_draft: bool | None = None,
+    epistemic_context: Any = None,
 ) -> dict[str, Any]:
     """Return {ok, reason_codes, failure_class?} for a customer-facing draft."""
     text = str(body or "").strip()
@@ -92,6 +93,19 @@ def evaluate_draft_sanity(
 
     if policy_allows_draft is False:
         reasons.append("policy_disallows_draft")
+
+    # P1.3: structured epistemic guard (UNKNOWN/INFERRED/CONFLICTED must not be
+    # asserted as confirmed facts). Defense-in-depth over the deterministic
+    # composer; never the primary mechanism.
+    if epistemic_context is not None:
+        from agent_runtime.epistemic_projection import evaluate_draft_epistemic_sanity
+
+        epistemic = evaluate_draft_epistemic_sanity(
+            body=body,
+            claim_context=epistemic_context,
+        )
+        if not epistemic.get("ok"):
+            reasons.extend(epistemic.get("reason_codes") or [])
 
     if reasons:
         return {

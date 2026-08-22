@@ -29,6 +29,66 @@ _AREA_RE = re.compile(r"(\d{2,4})\s*m\s*[²2]", re.IGNORECASE)
 _CITY_HINT_RE = re.compile(r"\b(Radlin|Rybnik|Katowice|Gliwice)\b", re.IGNORECASE)
 
 
+# P1.3: deterministic Polish realization of epistemic draft context.
+_CLAIM_LABEL_PL = {
+    "error_code": "kodzie błędu",
+    "customer_reported_error_code": "kodzie błędu",
+    "device_model": "modelu urządzenia",
+    "model": "modelu urządzenia",
+}
+_UNKNOWN_ASK_PL = {
+    "exact_symptoms": "Prosimy o dokładny opis objawów.",
+    "problem_start_time": "Prosimy o informację, kiedy problem się zaczął.",
+    "error_code": "Prosimy o podanie kodu błędu, jeśli jest dostępny.",
+    "device_model": "Prosimy o podanie modelu urządzenia.",
+    "photo_or_message": "Prosimy o zdjęcie komunikatu, jeśli jest dostępne.",
+}
+
+
+def _compose_service_missing_info_body(
+    *,
+    epistemic_context: Any,
+    legacy_body: str,
+) -> str:
+    """Deterministic epistemic-aware service draft.
+
+    Confirmed customer-reported claims may be acknowledged; UNKNOWN fields may
+    become questions; INFERRED/CONFLICTED claims are never asserted. When the
+    epistemic context is empty (no durable store / no claims), the legacy
+    template is preserved unchanged.
+    """
+    if epistemic_context is None:
+        return legacy_body
+    confirmed = list(getattr(epistemic_context, "confirmed_claims", None) or [])
+    unknown = list(getattr(epistemic_context, "unknown_fields", None) or [])
+    if not confirmed and not unknown:
+        return legacy_body
+
+    lines: list[str] = []
+    for claim in confirmed[:2]:
+        key = str(getattr(claim, "proposition_key", "") or "").strip().lower()
+        value = str(getattr(claim, "value", "") or "").strip()
+        label = _CLAIM_LABEL_PL.get(key)
+        if label and value:
+            lines.append("Dziękujemy za informację o " + label + " " + value + ".")
+    asks: list[str] = []
+    for claim in unknown:
+        key = str(getattr(claim, "proposition_key", "") or "").strip().lower()
+        ask = _UNKNOWN_ASK_PL.get(key)
+        if ask and ask not in asks:
+            asks.append(ask)
+    if asks:
+        lines.append(" ".join(asks[:3]))
+    if not lines:
+        return legacy_body
+    return (
+        "Dzień dobry,\n\n"
+        + "\n".join(lines)
+        + "\n\nPo otrzymaniu danych sprawa zostanie zweryfikowana i przekażemy ją "
+        "do dalszej obsługi.\n\nZespół TOP-INSTAL"
+    )
+
+
 def search_gmail_thread(_plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolResult:
     store = ctx.mailbox_store
     if store is None:
@@ -113,6 +173,20 @@ def generate_draft_reply(plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolR
     intent = str(plan.arguments.get("intent") or "quote").strip()
     area = profile.heated_area_m2 or "?"
     city = profile.location.city or "Państwa lokalizacji"
+    # P1.3: epistemic context projected from durable facts + Understanding
+    # missing fields. Deterministic; legacy template preserved when absent.
+    from agent_runtime.epistemic_projection import build_draft_claim_context_from_store
+
+    case_id = str(ctx.snapshot.case_id or "")
+    missing_fields: list[str] = []
+    case_understanding = getattr(ctx.snapshot, "case_understanding", None)
+    if case_understanding is not None:
+        missing_fields = list(getattr(case_understanding, "missing_critical_fields", None) or [])
+    epistemic_context = build_draft_claim_context_from_store(
+        getattr(ctx, "mailbox_store", None),
+        case_id,
+        missing_fields,
+    )
     if intent == "missing_info":
         if is_service_case_kind(str(ctx.snapshot.case_kind or "")):
             body = (
@@ -135,6 +209,14 @@ def generate_draft_reply(plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolR
             f"dla budynku ok. {area} m2 w {city}. Przygotowaliśmy wstępną kalkulację — "
             f"prosimy o chwilę na weryfikację przez operatora.\n\nZespół TOP-INSTAL"
         )
+    if (
+        intent == "missing_info"
+        and is_service_case_kind(str(ctx.snapshot.case_kind or ""))
+    ):
+        body = _compose_service_missing_info_body(
+            epistemic_context=epistemic_context,
+            legacy_body=body,
+        )
     body_hash = compute_body_hash(body)
     if not body_hash:
         # Fail-closed: an empty/whitespace-only body is not a valid operator-facing
@@ -152,6 +234,7 @@ def generate_draft_reply(plan: ToolCallPlan, ctx: ToolExecutionContext) -> ToolR
         intent=intent,
         snapshot=ctx.snapshot,
         policy_allows_draft=policy_allows,
+        epistemic_context=epistemic_context,
     )
     if not sanity.get("ok"):
         return attach_attribution(
