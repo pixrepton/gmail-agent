@@ -200,6 +200,9 @@ class PolicyActionEnvelopeV1(StrictModel):
     forbidden_tools: list[str] = Field(default_factory=list)
     allowed_by_policy: bool | None = None
     requires_operator_approval: bool | None = None
+    #: P1.2: deterministic argument-constraint projection for the bounded slice
+    #: (typed ArgumentConstraint records with canonical owner + revision refs).
+    argument_constraints: list[dict[str, Any]] = Field(default_factory=list)
     freshness: Literal["current", "stale", "unavailable"] = "unavailable"
     proposal_status: str = ""
     reason_codes: list[str] = Field(default_factory=list)
@@ -222,6 +225,9 @@ class SemanticPolicyPlanConsistencyV1(StrictModel):
         "not_evaluable",
     ]
     reason_codes: list[str] = Field(default_factory=list)
+    #: P1.2: per-argument violations (argument_name, constraint_mode, reason_code,
+    #: expected/allowed, proposed, decision_version_id) for observability.
+    argument_violations: list[dict[str, Any]] = Field(default_factory=list)
     policy_decision_id: str = ""
     action_proposal_id: str = ""
     tool_name: str = ""

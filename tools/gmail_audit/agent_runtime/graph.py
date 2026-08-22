@@ -287,6 +287,7 @@ class AgentGraphEngine:
                     current,
                     plan,
                     signal_payload=ctx.signal_payload if isinstance(ctx.signal_payload, dict) else {},
+                    ledger=getattr(ctx, "decision_revision_ledger", None),
                 )
                 if policy_block is not None:
                     result = policy_block
@@ -783,6 +784,7 @@ def _policy_enforcement_block(
     plan: ToolCallPlan,
     *,
     signal_payload: dict[str, Any] | None = None,
+    ledger: Any | None = None,
 ) -> ToolResult | None:
     """RP-30 + PLANNER-EXEC-FIDELITY-01: enforce policy/plan conflicts and required envelope."""
     payload = signal_payload if isinstance(signal_payload, dict) else {}
@@ -824,6 +826,50 @@ def _policy_enforcement_block(
             ),
         )
 
+    # P1.2 + P1.1P: the envelope must be a projection of the CURRENT durable
+    # CAD revision. A stale envelope (old APv2 row) must never authorize
+    # execution even if plan and envelope agree with each other.
+    if (
+        ledger is not None
+        and envelope is not None
+        and getattr(envelope, "freshness", "") == "current"
+    ):
+        decision_id = str(getattr(envelope, "canonical_decision_id", "") or "").strip()
+        envelope_version = str(getattr(envelope, "decision_version_id", "") or "").strip()
+        if decision_id and envelope_version:
+            current = ledger.current_cad(decision_id)
+            durable_version = (
+                str(current.get("decision_version_id") or "") if current is not None else ""
+            )
+            if durable_version != envelope_version:
+                return attach_attribution(
+                    ToolResult(
+                        status="error",
+                        turn_summary_pl=(
+                            "Envelope pochodzi z nieaktualnej rewizji decyzji - "
+                            "zablokowano przed wykonaniem."
+                        ),
+                        snapshot_delta={
+                            "operational_status": {"code": "pending_operator", "blocking": True},
+                            "hitl_gate": {
+                                "required": True,
+                                "reason": f"stale_decision_revision:{plan.tool_name}",
+                            },
+                        },
+                    ),
+                    attribution(
+                        failure_class="STALE_DECISION_REVISION",
+                        owner="policy",
+                        stage="policy_enforcement",
+                        retryable=False,
+                        safe_next_step="rebuild_policy_envelope_from_current_revision",
+                        detail=(
+                            f"envelope_decision_version_id={envelope_version};"
+                            f"durable_current={durable_version or '(none)'}"
+                        ),
+                    ),
+                )
+
     if consistency is None:
         return None
     if str(consistency.status or "") != "conflicting":
@@ -834,8 +880,23 @@ def _policy_enforcement_block(
         "semantic_tool_forbidden_for_action_intent",
         "semantic_tool_not_allowed_for_action_intent",
         "STALE_DECISION_REVISION",
+        "CANONICAL_ARGUMENT_MISMATCH",
+        "ARGUMENT_NOT_ALLOWED",
+        "ARGUMENT_OUTSIDE_CANONICAL_SET",
+        "MISSING_REQUIRED_CANONICAL_ARGUMENT",
+        "UNBOUND_EXECUTION_ARGUMENT",
     }
     if reasons & semantic_reasons:
+        violations = list(getattr(consistency, "argument_violations", None) or [])
+        violation_detail = ""
+        if violations:
+            first = violations[0]
+            violation_detail = (
+                f";argument={first.get('argument_name') or ''}"
+                f";constraint={first.get('constraint_mode') or ''}"
+                f";expected={first.get('expected') or ''}"
+                f";proposed={first.get('proposed') or ''}"
+            )
         return attach_attribution(
             ToolResult(
                 status="error",
@@ -867,6 +928,7 @@ def _policy_enforcement_block(
                     + str(getattr(envelope, "source_semantic_hash", "") or "")
                     + ";observed_semantic_hash="
                     + str(getattr(plan, "semantic_hash", "") or "")
+                    + violation_detail
                 ),
             ),
         )

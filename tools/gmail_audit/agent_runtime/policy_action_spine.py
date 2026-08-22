@@ -11,6 +11,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from agent_runtime.tool_result import ToolCallPlan
+from agent_runtime.tool_argument_constraints import (
+    constraint_violations,
+    project_slice_argument_constraints,
+    violations_reason_codes,
+)
 from llm_contracts.engagement_snapshot_v2 import (
     PolicyActionEnvelopeV1,
     SemanticPolicyPlanConsistencyV1,
@@ -62,12 +67,25 @@ def _semantic_tool_constraints(
 
     customer_missing_data = nba_action == "ask_for_missing_data" or proposal_action == "request_missing_info"
     if customer_missing_data:
+        # Canonical action semantics for the intent projection come from the
+        # decision/NBA vocabulary (ask_for_missing_data), NOT the APv2
+        # execution-stage action_type (prepare_reply_draft).
+        action_intent = str(nba_action or proposal_action or "")
         return {
             "canonical_decision_id": canonical_decision_id,
             "source_semantic_hash": str(source_semantic_hash or "").strip(),
             "decision_version_id": str(decision_version_id or "").strip(),
             "action_target": "customer",
             "action_channel": channel or "mail",
+            "argument_constraints": project_slice_argument_constraints(
+                action_intent=action_intent,
+                action_target="customer",
+                action_channel=channel or "mail",
+                canonical_decision_id=canonical_decision_id,
+                decision_version_id=str(decision_version_id or "").strip(),
+                source_semantic_hash=str(source_semantic_hash or "").strip(),
+                allowed_action_tools=list(_CUSTOMER_MAIL_TOOLS),
+            ),
             # allowed_tools is a full planner-turn whitelist. Keep it empty here
             # so safe read-only helpers are not accidentally hidden.
             "allowed_tools": [],
@@ -95,6 +113,12 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _constraint_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
 
 
 def _candidate_from_intelligence(case_intelligence_result: dict[str, Any]) -> dict[str, Any]:
@@ -369,6 +393,7 @@ def project_policy_action_envelope(
         allowed_tools=_string_list(raw_json.get("allowed_tools")),
         allowed_action_tools=_string_list(raw_json.get("allowed_action_tools")),
         forbidden_tools=_string_list(raw_json.get("forbidden_tools")),
+        argument_constraints=_constraint_list(raw_json.get("argument_constraints")),
         allowed_by_policy=bool(proposal.get("allowed_by_policy")),
         requires_operator_approval=bool(
             proposal.get("requires_operator_approval")
@@ -501,6 +526,15 @@ def evaluate_semantic_policy_plan_consistency(
                 envelope,
                 plan,
             )
+        argument_violations = _validate_plan_arguments(envelope, plan)
+        if argument_violations:
+            return _consistency(
+                "conflicting",
+                violations_reason_codes(argument_violations),
+                envelope,
+                plan,
+                argument_violations=argument_violations,
+            )
         return _consistency(
             "consistent",
             ["semantic_tool_allowed_for_action_intent"],
@@ -514,6 +548,15 @@ def evaluate_semantic_policy_plan_consistency(
                 ["semantic_tool_not_allowed_for_action_intent"],
                 envelope,
                 plan,
+            )
+        argument_violations = _validate_plan_arguments(envelope, plan)
+        if argument_violations:
+            return _consistency(
+                "conflicting",
+                violations_reason_codes(argument_violations),
+                envelope,
+                plan,
+                argument_violations=argument_violations,
             )
         return _consistency(
             "consistent",
@@ -545,15 +588,43 @@ def evaluate_semantic_policy_plan_consistency(
     )
 
 
+def _validate_plan_arguments(
+    envelope: PolicyActionEnvelopeV1,
+    plan: ToolCallPlan,
+) -> list[dict[str, Any]]:
+    """P1.2: validate planner arguments against the envelope constraint projection.
+
+    Uses the envelope's persisted projection when present; otherwise derives the
+    deterministic projection from the envelope fields (bounded slice). Never
+    mutates the plan and never repairs arguments -- mismatch is a DENY signal.
+    """
+    constraints = list(getattr(envelope, "argument_constraints", None) or [])
+    if not constraints:
+        constraints = project_slice_argument_constraints(
+            action_intent=str(getattr(envelope, "action_intent", "") or ""),
+            action_target=str(getattr(envelope, "action_target", "") or ""),
+            action_channel=str(getattr(envelope, "action_channel", "") or ""),
+            canonical_decision_id=str(getattr(envelope, "canonical_decision_id", "") or ""),
+            decision_version_id=str(getattr(envelope, "decision_version_id", "") or ""),
+            source_semantic_hash=str(getattr(envelope, "source_semantic_hash", "") or ""),
+            allowed_action_tools=list(getattr(envelope, "allowed_action_tools", None) or []),
+        )
+    if not constraints:
+        return []
+    return constraint_violations(plan.arguments, constraints)
+
+
 def _consistency(
     status: str,
     reason_codes: list[str],
     envelope: PolicyActionEnvelopeV1 | None,
     plan: ToolCallPlan,
+    argument_violations: list[dict[str, Any]] | None = None,
 ) -> SemanticPolicyPlanConsistencyV1:
     return SemanticPolicyPlanConsistencyV1(
         status=status,
         reason_codes=[str(item)[:160] for item in reason_codes[:8]],
+        argument_violations=[dict(item) for item in (argument_violations or [])],
         policy_decision_id=str(
             (envelope.policy_decision_id if envelope is not None else "")
         ),
