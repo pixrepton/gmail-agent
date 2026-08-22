@@ -194,3 +194,131 @@ def test_old_approval_cannot_authorize_new_revision_in_ledger_flow() -> None:
     }
     assert approval_binds_revision(old_approval, result["new_cad"]) is False
     assert approval_binds_revision(old_approval, result["old_cad"]) is True
+
+
+def test_bounded_revision_runtime_trajectory() -> None:
+    """Production-faithful bounded trajectory: r1 -> revision -> r2; old plan
+    DENIED (STALE_DECISION_REVISION), new plan passes to HITL."""
+    from agent_runtime.constitution import load_constitution
+    from agent_runtime.tools_registry import AgentToolRegistry
+    from test_closeout_p0_bounded_runtime_slice import (
+        _br as _closeout_br,
+        _cad as _closeout_cad,
+        _handoff as _closeout_handoff,
+        _settings as _closeout_settings,
+    )
+
+    ledger = DecisionRevisionLedger()
+    cad_r1 = _closeout_cad()
+    ledger.register_cad(cad_r1)
+    handoff_r1, _ = _closeout_handoff(cad_r1)
+    envelope_r1 = PolicyActionEnvelopeV1.model_validate(
+        handoff_r1["signal_payload"]["policy_action_envelope"]
+    )
+    assert envelope_r1.decision_version_id == f"{cad_r1['decision_id']}:r1"
+
+    br_r2 = dict(_closeout_br())
+    br_r2["missing_information"] = ["exact_symptoms"]
+    emitted = request_decision_revision(
+        decision_id=cad_r1["decision_id"],
+        current_revision=1,
+        reason_code="CANONICAL_FACT_CHANGED",
+        ledger=ledger,
+    )
+    revision = evaluate_decision_revision(
+        request=emitted["request"],
+        current_cad=cad_r1,
+        business_reasoning_result=br_r2,
+        situation_understanding={"missing_information": ["exact_symptoms"]},
+        ledger=ledger,
+    )
+    assert revision["outcome"] == "ACCEPTED"
+    cad_r2 = revision["new_cad"]
+    handoff_r2, _ = _closeout_handoff(cad_r2)
+    envelope_r2 = PolicyActionEnvelopeV1.model_validate(
+        handoff_r2["signal_payload"]["policy_action_envelope"]
+    )
+    assert envelope_r2.decision_version_id == f"{cad_r2['decision_id']}:r2"
+    assert envelope_r1.decision_version_id != envelope_r2.decision_version_id
+
+    class _Planner:
+        def __init__(self, plan: ToolCallPlan) -> None:
+            self.plan = plan
+
+        def plan_next_tool(self, **_: object) -> ToolCallPlan:
+            return self.plan
+
+    class _Registry:
+        def __init__(self) -> None:
+            self.executed: list[str] = []
+
+        def execute(self, plan, *, context):
+            from agent_runtime.tool_result import ToolResult
+
+            self.executed.append(plan.tool_name)
+            return ToolResult(
+                status="ok",
+                turn_summary_pl="executed",
+                snapshot_delta={
+                    "hitl_gate": {"required": True, "reason": "fixture_executed"},
+                    "operational_status": {"code": "pending_operator"},
+                },
+            )
+
+    snapshot = build_initial_snapshot(
+        case_id="case_closeout_service_1",
+        engagement_id="eng_p11",
+        trace_id="trace_p11",
+    )
+    snapshot = snapshot.model_copy(
+        update={"case_kind": "awaria_naprawa", "policy_action_envelope": envelope_r2}
+    )
+    registry = _Registry()
+    stale = AgentGraphEngine(
+        planner=_Planner(
+            ToolCallPlan(
+                tool_name="generate_draft_reply",
+                arguments={"intent": "missing_info"},
+                decision_version_id=f"{cad_r1['decision_id']}:r1",
+            )
+        ),
+        constitution=load_constitution(),
+        tool_registry=registry,
+    ).run(
+        snapshot,
+        context=ToolExecutionContext.from_snapshot(
+            snapshot,
+            settings=_closeout_settings(),
+            signal_payload=handoff_r2["signal_payload"],
+        ),
+    )
+    stale_consistency = stale.snapshot.semantic_policy_plan_consistency
+    assert stale_consistency is not None
+    assert stale_consistency.status == "conflicting"
+    assert "STALE_DECISION_REVISION" in stale_consistency.reason_codes
+    assert stale.snapshot.hitl_gate.required is True
+    assert registry.executed == []
+
+    fresh = AgentGraphEngine(
+        planner=_Planner(
+            ToolCallPlan(
+                tool_name="generate_draft_reply",
+                arguments={"intent": "missing_info"},
+                decision_version_id=f"{cad_r2['decision_id']}:r2",
+            )
+        ),
+        constitution=load_constitution(),
+        tool_registry=AgentToolRegistry(),
+    ).run(
+        snapshot,
+        context=ToolExecutionContext.from_snapshot(
+            snapshot,
+            settings=_closeout_settings(),
+            signal_payload=handoff_r2["signal_payload"],
+        ),
+    )
+    assert fresh.snapshot.hitl_gate.required is True
+    assert any(
+        item.tool == "generate_draft_reply" and item.status == "ok"
+        for item in fresh.snapshot.agent_memory.tool_calls
+    )
