@@ -50,6 +50,11 @@
           "title": "Parent Decision Candidate Id",
           "type": "string"
         },
+        "decision_version_id": {
+          "default": "",
+          "title": "Decision Version Id",
+          "type": "string"
+        },
         "source_semantic_hash": {
           "default": "",
           "title": "Source Semantic Hash",
@@ -850,6 +855,11 @@
         "canonical_decision_id": {
           "default": "",
           "title": "Canonical Decision Id",
+          "type": "string"
+        },
+        "decision_version_id": {
+          "default": "",
+          "title": "Decision Version Id",
           "type": "string"
         },
         "source_semantic_hash": {

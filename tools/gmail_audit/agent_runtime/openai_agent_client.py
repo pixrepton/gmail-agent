@@ -295,6 +295,15 @@ class OpenAIToolPlanner:
                     )
                     if source_hash and not str(plan.semantic_hash or "").strip():
                         plan = plan.model_copy(update={"semantic_hash": source_hash})
+                    version_id = (
+                        str(getattr(envelope, "decision_version_id", "") or "")
+                        if envelope is not None
+                        else ""
+                    )
+                    if version_id and not str(plan.decision_version_id or "").strip():
+                        plan = plan.model_copy(
+                            update={"decision_version_id": version_id}
+                        )
                     return plan
                 except Exception as exc:  # noqa: BLE001
                     last_exc = exc

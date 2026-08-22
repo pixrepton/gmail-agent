@@ -39,6 +39,8 @@ class ActionProposal:
     case_id: str
     action_type: str
     payload: dict[str, Any] = field(default_factory=dict)
+    # P1.1: concrete decision version this proposal authorizes execution for.
+    decision_version_id: str = ""
     source_signal_id: str = ""
     proposed_by: str = "ai"
     confidence: float = 0.0
@@ -122,6 +124,7 @@ def normalize_action_proposal(raw: dict[str, Any]) -> ActionProposal:
     return ActionProposal(
         proposal_id=proposal_id,
         case_id=case_id,
+        decision_version_id=str(raw.get("decision_version_id") or ""),
         source_signal_id=str(raw.get("source_signal_id") or ""),
         action_type=action_type,
         payload=payload,

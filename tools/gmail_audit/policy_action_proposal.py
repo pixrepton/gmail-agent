@@ -466,6 +466,11 @@ def attach_policy_and_proposals(
         for raw_proposal in v2_bundle.get("action_proposals_v2") or []:
             if isinstance(raw_proposal, dict):
                 raw_proposal["semantic_hash"] = semantic_hash
+    decision_version_id = str((action_plan_result or {}).get("decision_version_id") or "")
+    if decision_version_id:
+        for raw_proposal in v2_bundle.get("action_proposals_v2") or []:
+            if isinstance(raw_proposal, dict):
+                raw_proposal["decision_version_id"] = decision_version_id
     case_intelligence_result["policy_decision"] = policy_decision
     case_intelligence_result["action_proposals_v2"] = v2_bundle["action_proposals_v2"]
     return policy_report, policy_action_proposal

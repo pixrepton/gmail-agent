@@ -833,6 +833,7 @@ def _policy_enforcement_block(
         "canonical_semantic_drift",
         "semantic_tool_forbidden_for_action_intent",
         "semantic_tool_not_allowed_for_action_intent",
+        "STALE_DECISION_REVISION",
     }
     if reasons & semantic_reasons:
         return attach_attribution(

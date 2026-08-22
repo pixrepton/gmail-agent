@@ -51,6 +51,9 @@ class ActionItem(StrictModel):
     parent_policy_decision_id: str = ""
     parent_action_proposal_v2_id: str = ""
     parent_decision_candidate_id: str = ""
+    #: P1.1: exact decision version this action materializes. Superseded
+    #: revisions must never authorize execution (STALE_DECISION_REVISION).
+    decision_version_id: str = ""
     #: Canonical semantic identity of the decision this action materializes.
     #: Equal to CAD.semantic_hash when lineage correlation succeeded; empty
     #: otherwise (honest default, never guessed).
@@ -178,6 +181,8 @@ class PolicyActionEnvelopeV1(StrictModel):
 
     schema_version: Literal["policy_action_envelope.v1"] = "policy_action_envelope.v1"
     canonical_decision_id: str = ""
+    #: P1.1: concrete decision version (dec_<id>:r<rev>) this envelope projects.
+    decision_version_id: str = ""
     #: CAD.semantic_hash projected through the policy/APv2 records; the
     #: expected identity the reference monitor checks against the plan.
     source_semantic_hash: str = ""

@@ -46,6 +46,7 @@ def _semantic_tool_constraints(
     candidate: dict[str, Any],
     canonical_decision_id: str = "",
     source_semantic_hash: str = "",
+    decision_version_id: str = "",
 ) -> dict[str, Any]:
     """Compile the narrow customer-mail action semantics currently proven by Brain 1.
 
@@ -64,6 +65,7 @@ def _semantic_tool_constraints(
         return {
             "canonical_decision_id": canonical_decision_id,
             "source_semantic_hash": str(source_semantic_hash or "").strip(),
+            "decision_version_id": str(decision_version_id or "").strip(),
             "action_target": "customer",
             "action_channel": channel or "mail",
             # allowed_tools is a full planner-turn whitelist. Keep it empty here
@@ -75,6 +77,7 @@ def _semantic_tool_constraints(
     return {
         "canonical_decision_id": canonical_decision_id,
         "source_semantic_hash": str(source_semantic_hash or "").strip(),
+        "decision_version_id": str(decision_version_id or "").strip(),
         "action_target": "",
         "action_channel": channel,
         "allowed_tools": [],
@@ -228,6 +231,7 @@ def persist_policy_action_spine(
             candidate=candidate,
             canonical_decision_id=str(raw.get("canonical_decision_id") or ""),
             source_semantic_hash=str(raw.get("semantic_hash") or ""),
+            decision_version_id=str(raw.get("decision_version_id") or ""),
         )
         proposal_row = {
             "proposal_id": str(raw.get("proposal_id") or "").strip(),
@@ -236,6 +240,7 @@ def persist_policy_action_spine(
             "case_id": cid,
             "canonical_decision_id": str(raw.get("canonical_decision_id") or ""),
             "source_semantic_hash": str(raw.get("semantic_hash") or ""),
+            "decision_version_id": str(raw.get("decision_version_id") or ""),
             "source_signal_id": canonical_signal_id,
             "source_message_id": message_id,
             "schema_version": str(raw.get("schema_version") or ""),
@@ -353,6 +358,7 @@ def project_policy_action_envelope(
         policy_status=str(policy.get("status") or ""),
         action_intent=str(proposal.get("action_type") or ""),
         canonical_decision_id=str(raw_json.get("canonical_decision_id") or ""),
+        decision_version_id=str(raw_json.get("decision_version_id") or ""),
         source_semantic_hash=str(
             raw_json.get("source_semantic_hash")
             or proposal.get("source_semantic_hash")
@@ -444,6 +450,21 @@ def evaluate_semantic_policy_plan_consistency(
         mismatches.append("action_proposal_id_mismatch")
     if mismatches:
         return _consistency("conflicting", mismatches, envelope, plan)
+
+    # P1.1: a plan bound to a superseded decision revision must never execute.
+    expected_version = str(
+        getattr(envelope, "decision_version_id", "") or ""
+    ).strip()
+    observed_version = str(
+        getattr(plan, "decision_version_id", "") or ""
+    ).strip()
+    if expected_version and observed_version and expected_version != observed_version:
+        return _consistency(
+            "conflicting",
+            ["STALE_DECISION_REVISION"],
+            envelope,
+            plan,
+        )
 
     expected_hash = str(getattr(envelope, "source_semantic_hash", "") or "").strip()
     observed_hash = str(getattr(plan, "semantic_hash", "") or "").strip()
@@ -574,6 +595,9 @@ def annotate_action_parent_refs(
                 "parent_policy_decision_id": envelope.policy_decision_id,
                 "parent_action_proposal_v2_id": envelope.action_proposal_id,
                 "parent_decision_candidate_id": envelope.decision_candidate_id,
+                "decision_version_id": getattr(
+                    envelope, "decision_version_id", ""
+                ),
                 "source_semantic_hash": getattr(
                     envelope, "source_semantic_hash", ""
                 ),

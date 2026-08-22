@@ -20,6 +20,9 @@ class ToolCallPlan(BaseModel):
     #: reference monitor compares it with the current envelope's
     #: ``source_semantic_hash``; mismatch DENY (canonical_semantic_drift).
     semantic_hash: str = ""
+    #: P1.1: the exact decision version this plan was built against. A plan
+    #: bound to a superseded revision must never execute (STALE_DECISION_REVISION).
+    decision_version_id: str = ""
 
     model_config = ConfigDict(extra="forbid")
 

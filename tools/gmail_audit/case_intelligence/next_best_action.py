@@ -75,6 +75,9 @@ def build_next_best_action(
 
     canonical_decision_id = str((canonical_decision or {}).get("decision_id") or "").strip()
     semantic_hash = str((canonical_decision or {}).get("semantic_hash") or "").strip()
+    decision_version_id = str(
+        (canonical_decision or {}).get("decision_version_id") or ""
+    ).strip()
     action_type = "wait"
     if isinstance(canonical_decision, dict) and canonical_decision.get("semantic_status") == "FROZEN":
         # Case Intelligence never re-selects the business action after the CAD
@@ -132,6 +135,8 @@ def build_next_best_action(
         primary["canonical_decision_id"] = canonical_decision_id
     if semantic_hash:
         primary["semantic_hash"] = semantic_hash
+    if decision_version_id:
+        primary["decision_version_id"] = decision_version_id
 
     secondary_actions: list[dict[str, Any]] = []
     if merge_split_suggestions.get("merge_candidates"):

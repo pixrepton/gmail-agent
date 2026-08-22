@@ -109,6 +109,9 @@ def plan_actions(
     if isinstance(canonical_decision, dict):
         result["canonical_decision_id"] = str(canonical_decision.get("decision_id") or "")
         result["semantic_hash"] = str(canonical_decision.get("semantic_hash") or "")
+        result["decision_version_id"] = str(
+            canonical_decision.get("decision_version_id") or ""
+        )
         # Own execution vocabulary, derived from the frozen CAD — never a
         # re-selection of business meaning.
         result["execution_step"] = primary_action
