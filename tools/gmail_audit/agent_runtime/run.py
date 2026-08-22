@@ -190,12 +190,29 @@ def execute_agent_run(
         checkpoint_store=checkpoint_store,
         run_id=active_run_id,
     )
+    # P1.2: when a durable MailboxMemoryStore is provided, rebuild the
+    # store-backed DecisionRevisionLedger (P1.1P) so the reference monitor can
+    # bind the envelope to the current durable CAD revision. Invalid durable
+    # revision state fails closed (REVISION_STATE_INVALID) and blocks the run.
+    decision_revision_ledger = None
+    if mailbox_store is not None and all(
+        hasattr(mailbox_store, name)
+        for name in (
+            "list_decision_lineage_ids",
+            "fetch_decision_revisions",
+            "fetch_decision_revision_requests",
+        )
+    ):
+        from canonical_action_decision import build_store_backed_decision_ledger
+
+        decision_revision_ledger = build_store_backed_decision_ledger(mailbox_store)
     ctx = ToolExecutionContext.from_snapshot(
         snapshot,
         settings=settings,
         mailbox_store=mailbox_store,
         signal_payload=dict(signal or {}),
         constitution=constitution,
+        decision_revision_ledger=decision_revision_ledger,
     )
 
     # P7: Event Spine — agent.run.started

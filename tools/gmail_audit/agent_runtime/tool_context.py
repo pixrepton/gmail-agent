@@ -18,6 +18,9 @@ class ToolExecutionContext:
     signal_payload: dict[str, Any] = field(default_factory=dict)
     tool_usage: dict[str, int] = field(default_factory=dict)
     constitution: AgentConstitution | None = None
+    #: P1.2: store-backed DecisionRevisionLedger (P1.1P) so the reference
+    #: monitor can bind the envelope to the current durable CAD revision.
+    decision_revision_ledger: Any | None = None
 
     @classmethod
     def from_snapshot(
@@ -28,6 +31,7 @@ class ToolExecutionContext:
         mailbox_store: Any | None = None,
         signal_payload: dict[str, Any] | None = None,
         constitution: AgentConstitution | None = None,
+        decision_revision_ledger: Any | None = None,
     ) -> ToolExecutionContext:
         return cls(
             snapshot=snapshot,
@@ -35,6 +39,7 @@ class ToolExecutionContext:
             mailbox_store=mailbox_store,
             signal_payload=dict(signal_payload or {}),
             constitution=constitution,
+            decision_revision_ledger=decision_revision_ledger,
         )
 
     def record_tool_use(self, tool_name: str) -> int:

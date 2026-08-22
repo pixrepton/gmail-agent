@@ -957,6 +957,14 @@
           "default": null,
           "title": "Requires Operator Approval"
         },
+        "argument_constraints": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Argument Constraints",
+          "type": "array"
+        },
         "freshness": {
           "default": "unavailable",
           "enum": [
@@ -1040,6 +1048,14 @@
             "type": "string"
           },
           "title": "Reason Codes",
+          "type": "array"
+        },
+        "argument_violations": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Argument Violations",
           "type": "array"
         },
         "policy_decision_id": {

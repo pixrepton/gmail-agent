@@ -48,7 +48,10 @@ class MetricsCollector:
     def __init__(self, metrics_path: str = "", flush_interval: int = FLUSH_INTERVAL) -> None:
         self._path = Path(metrics_path or METRICS_PATH)
         self._flush_interval = int(flush_interval)
-        self._lock = threading.Lock()
+        # Reentrant: `_maybe_flush` -> `_flush` -> `report()` re-acquires the
+        # same lock on the same thread while `record_*` still holds it. A plain
+        # Lock deadlocks the collector at the first flush interval boundary.
+        self._lock = threading.RLock()
         self._event_count = 0
 
         # Liczniki
