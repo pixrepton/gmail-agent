@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -38,6 +39,7 @@ CANONICAL_ACTION_DECISION_SCHEMA_VERSION = "canonical_action_decision.v1"
 BUSINESS_DECISION_PROPOSAL_SCHEMA_VERSION = "business_decision_proposal.v1"
 CANONICALIZATION_FAILURE_SCHEMA_VERSION = "canonicalization_failure.v1"
 DECISION_REVISION_REQUEST_SCHEMA_VERSION = "decision_revision_request.v1"
+DECISION_REVISION_EVENT_SCHEMA_VERSION = "decision_revision_event.v1"
 
 # Canonical vocabularies. The first slice is intentionally narrow; each new
 # action class is added with its own legal channel/target rules and tests.
@@ -71,12 +73,42 @@ FAILURE_REASON_CODES = (
     "conflicted_fact_as_certainty",
 )
 
-# DecisionRevisionRequest reason codes (P0 contract only; full handling in P1).
+# DecisionRevisionRequest reason codes (P1.1: enum, no ad-hoc expansion).
 REVISION_REASON_CODES = (
     "NEW_CONFLICTING_EVIDENCE",
+    "FAILED_PRECONDITION",
+    "CANONICAL_FACT_CHANGED",
+    "STALE_SITUATION",
+    "TOOL_CAPABILITY_MISSING",
+    "POLICY_REEVALUATION_REQUIRED",
     "IMPOSSIBLE_PRECONDITION",
     "OUT_OF_SCOPE_REQUEST",
 )
+
+# DecisionRevisionRequest lifecycle statuses.
+REVISION_REQUEST_STATUSES = ("PENDING", "ACCEPTED", "REJECTED", "SUPERSEDED")
+
+# CAD revision status: exactly one CURRENT revision per decision lineage.
+REVISION_STATUSES = ("CURRENT", "SUPERSEDED")
+
+# Deterministic observability codes for revision lifecycle (failure taxonomy).
+REVISION_OBSERVABILITY_CODES = (
+    "DECISION_REVISION_REQUIRED",
+    "DECISION_REVISION_ACCEPTED",
+    "DECISION_REVISION_REJECTED",
+    "STALE_DECISION_REVISION",
+    "STALE_REVISION_REQUEST",
+    "DUPLICATE_REVISION_REQUEST",
+    "SUPERSEDED_DECISION_ARTIFACT",
+)
+
+
+class DecisionRevisionError(RuntimeError):
+    """Fail-closed revision lifecycle violation (e.g. one-current invariant)."""
+
+    def __init__(self, code: str, message: str = "") -> None:
+        super().__init__(message or code)
+        self.code = code
 
 
 def _utc() -> str:
@@ -168,6 +200,15 @@ def _proposal_id() -> str:
 
 def _decision_id() -> str:
     return "dec_" + uuid.uuid4().hex[:22]
+
+
+def _request_id() -> str:
+    return "revreq_" + uuid.uuid4().hex[:22]
+
+
+def decision_version_id_of(decision_id: str, revision: int) -> str:
+    """Unique concrete decision version identity, e.g. ``dec_abc:r2``."""
+    return f"{_string(decision_id)}:r{max(1, int(revision or 1))}"
 
 
 def _risk_class_from_business(business_result: dict[str, Any]) -> str:
@@ -295,6 +336,8 @@ def canonicalize(
     intake_result: dict[str, Any] | None = None,
     case_id: str = "",
     situation_version: str = "",
+    decision_id: str = "",
+    revision: int = 1,
 ) -> dict[str, Any]:
     """Deterministic canonicalization boundary.
 
@@ -360,6 +403,8 @@ def canonicalize(
 
     cid = _string(case_id)
     sv = _string(situation_version)
+    dec_id = _string(decision_id) or _decision_id()
+    rev = max(1, int(revision or 1))
     semantic_hash = semantic_hash_of(
         case_id=cid,
         situation_version=sv,
@@ -371,8 +416,9 @@ def canonicalize(
     )
     return {
         "schema_version": CANONICAL_ACTION_DECISION_SCHEMA_VERSION,
-        "decision_id": _decision_id(),
-        "revision": 1,
+        "decision_id": dec_id,
+        "revision": rev,
+        "decision_version_id": decision_version_id_of(dec_id, rev),
         "case_id": cid,
         "situation_version": sv,
         "goal": goal,
@@ -384,6 +430,8 @@ def canonicalize(
         "risk_class": _string(prop.get("risk_class"), "low"),
         "semantic_hash": semantic_hash,
         "semantic_status": "FROZEN",
+        # P1.1: exactly one CURRENT revision per decision lineage.
+        "revision_status": "CURRENT",
         "proposal_id": _string(prop.get("proposal_id")),
         "provenance": {
             "proposal_id": _string(prop.get("proposal_id")),
@@ -431,23 +479,418 @@ def build_decision_revision_request(
     reason_code: str = "NEW_CONFLICTING_EVIDENCE",
     failed_precondition: str = "",
     source_layer: str = "",
+    source_event_id: str = "",
+    evidence_refs: list[dict[str, Any]] | None = None,
+    request_id: str = "",
+    requested_at: str = "",
+    status: str = "PENDING",
 ) -> dict[str, Any]:
-    """Build a DecisionRevisionRequest (P0 contract + event only).
+    """Build a DecisionRevisionRequest (P1.1 public contract).
 
     Emitted after a CAD exists when downstream discovers new evidence, a
-    conflict, or an impossible precondition. Full handling (new CAD) is P1.
+    conflict, or an impossible precondition. Downstream MAY request revision;
+    only the canonical decision boundary may create a new CAD revision.
     """
     if reason_code not in REVISION_REASON_CODES:
         reason_code = "NEW_CONFLICTING_EVIDENCE"
+    if status not in REVISION_REQUEST_STATUSES:
+        status = "PENDING"
+    evidence = (
+        [dict(item) for item in evidence_refs if isinstance(item, dict)]
+        if isinstance(evidence_refs, list)
+        else []
+    )
+    rev = max(1, int(revision or 1))
+    dec_id = _string(decision_id)
     return {
         "schema_version": DECISION_REVISION_REQUEST_SCHEMA_VERSION,
-        "decision_id": _string(decision_id),
-        "revision": max(1, int(revision or 1)),
+        "request_id": _string(request_id) or _request_id(),
+        "decision_id": dec_id,
+        "current_revision": rev,
+        # Backward-compatible alias for P0 consumers (kept in sync).
+        "revision": rev,
+        "current_decision_version_id": decision_version_id_of(dec_id, rev),
         "reason_code": reason_code,
         "failed_precondition": _string(failed_precondition),
         "source_layer": _string(source_layer),
-        "requested_at": _utc(),
+        "source_event_id": _string(source_event_id),
+        "evidence_refs": evidence,
+        "requested_at": _string(requested_at) or _utc(),
+        "status": status,
     }
+
+
+class DecisionRevisionLedger:
+    """Canonical decision-lineage state (P1.1).
+
+    Owns the revision state machine: exactly one CURRENT (execution-eligible)
+    revision per decision_id, expected-revision concurrency guard, duplicate
+    request detection and an append-only audit trail. In-memory for P1.1;
+    persistence hook is an optional ``event_sink`` (existing event memory).
+    """
+
+    def __init__(self, *, event_sink: Any | None = None) -> None:
+        self._lock = threading.RLock()
+        self._lineages: dict[str, list[dict[str, Any]]] = {}
+        self._requests: list[dict[str, Any]] = []
+        self._audit: list[dict[str, Any]] = []
+        self._event_sink = event_sink
+
+    # -- lineage -----------------------------------------------------------
+
+    def register_cad(self, cad: dict[str, Any]) -> dict[str, Any]:
+        """Register a CAD revision in its lineage (idempotent for same version)."""
+        cad = cad if isinstance(cad, dict) else {}
+        decision_id = _string(cad.get("decision_id"))
+        version_id = _string(cad.get("decision_version_id"))
+        if not decision_id or not version_id:
+            raise DecisionRevisionError("invalid_cad_identity", "missing decision_id/version")
+        with self._lock:
+            lineage = self._lineages.setdefault(decision_id, [])
+            current = self._current_locked(decision_id)
+            if current is not None and current.get("decision_version_id") == version_id:
+                return current
+            if current is not None:
+                raise DecisionRevisionError(
+                    "one_current_revision_violation",
+                    f"{decision_id} already has CURRENT {current.get('decision_version_id')}",
+                )
+            lineage.append(dict(cad))
+            self._emit("decision_registered", cad)
+            return dict(cad)
+
+    def _current_locked(self, decision_id: str) -> dict[str, Any] | None:
+        for cad in reversed(self._lineages.get(decision_id, [])):
+            if _string(cad.get("revision_status")) == "CURRENT":
+                return cad
+        return None
+
+    def current_cad(self, decision_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            current = self._current_locked(_string(decision_id))
+            return dict(current) if current is not None else None
+
+    def current_revision(self, decision_id: str) -> int:
+        current = self.current_cad(_string(decision_id))
+        return int((current or {}).get("revision") or 0)
+
+    def expected_revision(self, decision_id: str) -> int:
+        return self.current_revision(_string(decision_id)) + 1
+
+    def is_current(self, cad: dict[str, Any]) -> bool:
+        cad = cad if isinstance(cad, dict) else {}
+        decision_id = _string(cad.get("decision_id"))
+        version_id = _string(cad.get("decision_version_id"))
+        if not decision_id or not version_id:
+            return False
+        current = self.current_cad(decision_id)
+        return current is not None and _string(current.get("decision_version_id")) == version_id
+
+    def revisions(self, decision_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            return [dict(item) for item in self._lineages.get(_string(decision_id), [])]
+
+    # -- requests ----------------------------------------------------------
+
+    def record_request(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Record a request with concurrency guards.
+
+        Returns ``{request, status}`` where status is PENDING,
+        STALE_REVISION_REQUEST (expected revision mismatch) or
+        DUPLICATE_REVISION_REQUEST (identical pending request already exists).
+        """
+        request = dict(request)
+        decision_id = _string(request.get("decision_id"))
+        expected = self.current_revision(decision_id)
+        with self._lock:
+            for existing in self._requests:
+                if _string(existing.get("request_id")) == _string(request.get("request_id")):
+                    return {"request": existing, "status": "DUPLICATE_REVISION_REQUEST"}
+                if (
+                    _string(existing.get("decision_id")) == decision_id
+                    and int(existing.get("current_revision") or 0) == int(request.get("current_revision") or 0)
+                    and _string(existing.get("reason_code")) == _string(request.get("reason_code"))
+                    and _string(existing.get("status")) == "PENDING"
+                ):
+                    return {"request": existing, "status": "DUPLICATE_REVISION_REQUEST"}
+            if int(request.get("current_revision") or 0) != expected:
+                stale = dict(request)
+                stale["status"] = "REJECTED"
+                stale["reject_reason"] = "STALE_REVISION_REQUEST"
+                self._requests.append(stale)
+                self._audit.append(
+                    {
+                        "decision_id": decision_id,
+                        "request_id": _string(stale.get("request_id")),
+                        "expected_revision": expected,
+                        "actual_revision": int(request.get("current_revision") or 0),
+                        "outcome": "REJECTED",
+                        "reason_code": "STALE_REVISION_REQUEST",
+                        "created_at": _utc(),
+                    }
+                )
+                return {"request": stale, "status": "STALE_REVISION_REQUEST"}
+            self._requests.append(request)
+            self._emit("decision_revision_requested", request)
+            return {"request": request, "status": "PENDING"}
+
+    def request_status(self, request_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            for request in self._requests:
+                if _string(request.get("request_id")) == _string(request_id):
+                    return dict(request)
+        return None
+
+    # -- accept / reject ---------------------------------------------------
+
+    def accept_revision(
+        self,
+        *,
+        old_cad: dict[str, Any],
+        new_cad: dict[str, Any],
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        decision_id = _string(old_cad.get("decision_id"))
+        if _string(new_cad.get("decision_id")) != decision_id:
+            raise DecisionRevisionError("revision_decision_id_mismatch")
+        if int(new_cad.get("revision") or 0) != int(old_cad.get("revision") or 0) + 1:
+            raise DecisionRevisionError("revision_not_monotonic")
+        if not self.is_current(old_cad):
+            raise DecisionRevisionError("stale_revision_request", "old_cad is not current")
+        with self._lock:
+            lineage = self._lineages.get(decision_id, [])
+            superseded_old = dict(old_cad)
+            for idx, item in enumerate(lineage):
+                if _string(item.get("decision_version_id")) == _string(old_cad.get("decision_version_id")):
+                    lineage[idx] = {**item, "revision_status": "SUPERSEDED"}
+                    superseded_old = lineage[idx]
+            lineage.append(dict(new_cad))
+            request = dict(request)
+            request["status"] = "ACCEPTED"
+            for idx, item in enumerate(self._requests):
+                if _string(item.get("request_id")) == _string(request.get("request_id")):
+                    self._requests[idx] = request
+            self._audit.append(
+                {
+                    "decision_id": decision_id,
+                    "request_id": _string(request.get("request_id")),
+                    "old_version_id": _string(old_cad.get("decision_version_id")),
+                    "new_version_id": _string(new_cad.get("decision_version_id")),
+                    "reason_code": _string(request.get("reason_code")),
+                    "outcome": "ACCEPTED",
+                    "created_at": _utc(),
+                }
+            )
+            self._emit("decision_revision_accepted", new_cad)
+            return {
+                "outcome": "ACCEPTED",
+                "old_cad": dict(superseded_old),
+                "new_cad": dict(new_cad),
+                "request": request,
+            }
+
+    def reject_request(
+        self,
+        *,
+        request: dict[str, Any],
+        reason: str = "",
+    ) -> dict[str, Any]:
+        with self._lock:
+            request = dict(request)
+            request["status"] = "REJECTED"
+            request["reject_reason"] = _string(reason) or "REVISION_NOT_JUSTIFIED"
+            for idx, item in enumerate(self._requests):
+                if _string(item.get("request_id")) == _string(request.get("request_id")):
+                    self._requests[idx] = request
+            self._audit.append(
+                {
+                    "decision_id": _string(request.get("decision_id")),
+                    "request_id": _string(request.get("request_id")),
+                    "reason_code": _string(request.get("reason_code")),
+                    "outcome": "REJECTED",
+                    "reject_reason": request["reject_reason"],
+                    "created_at": _utc(),
+                }
+            )
+            self._emit("decision_revision_rejected", request)
+            current = self._current_locked(_string(request.get("decision_id")))
+            return {
+                "outcome": "REJECTED",
+                "current_cad": dict(current) if current is not None else None,
+                "request": request,
+            }
+
+    def audit_trail(self, decision_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            return [
+                dict(item)
+                for item in self._audit
+                if _string(item.get("decision_id")) == _string(decision_id)
+            ]
+
+    def _emit(self, event_type: str, payload: dict[str, Any]) -> None:
+        if self._event_sink is None:
+            return
+        try:
+            self._event_sink(
+                {
+                    "schema_version": DECISION_REVISION_EVENT_SCHEMA_VERSION,
+                    "event_type": event_type,
+                    "decision_id": _string(payload.get("decision_id")),
+                    "decision_version_id": _string(payload.get("decision_version_id")),
+                    "revision": int(payload.get("revision") or 0),
+                    "created_at": _utc(),
+                }
+            )
+        except Exception:
+            # Observability must never break the canonical lifecycle.
+            return
+
+
+def request_decision_revision(
+    *,
+    decision_id: str,
+    current_revision: int,
+    reason_code: str = "NEW_CONFLICTING_EVIDENCE",
+    failed_precondition: str = "",
+    source_layer: str = "",
+    source_event_id: str = "",
+    evidence_refs: list[dict[str, Any]] | None = None,
+    ledger: DecisionRevisionLedger | None = None,
+) -> dict[str, Any]:
+    """Canonical emission path for a revision request (downstream's only right)."""
+    request = build_decision_revision_request(
+        decision_id=decision_id,
+        revision=current_revision,
+        reason_code=reason_code,
+        failed_precondition=failed_precondition,
+        source_layer=source_layer,
+        source_event_id=source_event_id,
+        evidence_refs=evidence_refs,
+    )
+    ledger = ledger if ledger is not None else _DEFAULT_LEDGER
+    recorded = ledger.record_request(request)
+    return {
+        "request": recorded["request"],
+        "status": recorded["status"],
+        "request_id": _string(recorded["request"].get("request_id")),
+    }
+
+
+def evaluate_decision_revision(
+    *,
+    request: dict[str, Any],
+    current_cad: dict[str, Any],
+    business_reasoning_result: dict[str, Any] | None,
+    situation_understanding: dict[str, Any] | None = None,
+    case_context_pack: dict[str, Any] | None = None,
+    intake_result: dict[str, Any] | None = None,
+    ledger: DecisionRevisionLedger | None = None,
+) -> dict[str, Any]:
+    """Canonical re-evaluation (the ONLY way a new CAD revision is created).
+
+    ACCEPT  -> new CAD revision FROZEN/CURRENT, old CAD SUPERSEDED.
+    REJECT  -> current CAD unchanged; request REJECTED.
+    The revision request is a trigger + evidence pointer, never an instruction
+    that directly sets canonical semantics.
+    """
+    ledger = ledger if ledger is not None else _DEFAULT_LEDGER
+    request = request if isinstance(request, dict) else {}
+    if _string(request.get("status")) != "PENDING":
+        return {
+            "outcome": "REJECTED",
+            "reason_codes": ["DECISION_REVISION_REJECTED"],
+            "request": request,
+            "current_cad": current_cad,
+            "new_cad": None,
+        }
+    current = current_cad if isinstance(current_cad, dict) else {}
+    decision_id = _string(request.get("decision_id"))
+    if _string(current.get("decision_id")) != decision_id or not ledger.is_current(current):
+        return {
+            "outcome": "REJECTED",
+            "reason_codes": ["STALE_REVISION_REQUEST"],
+            "request": request,
+            "current_cad": current,
+            "new_cad": None,
+        }
+
+    proposal = build_business_decision_proposal(business_reasoning_result)
+    if proposal is None:
+        ledger.reject_request(request=request, reason="NO_BOUNDED_CANONICAL_DECISION")
+        return {
+            "outcome": "REJECTED",
+            "reason_codes": ["DECISION_REVISION_REJECTED", "NO_BOUNDED_CANONICAL_DECISION"],
+            "review_state": "NEEDS_REVIEW",
+            "request": ledger.request_status(_string(request.get("request_id"))) or request,
+            "current_cad": current,
+            "new_cad": None,
+        }
+
+    new_revision = int(current.get("revision") or 0) + 1
+    outcome = canonicalize(
+        proposal=proposal,
+        situation_understanding=situation_understanding,
+        case_context_pack=case_context_pack,
+        intake_result=intake_result,
+        case_id=_string(current.get("case_id")),
+        situation_version=_string(current.get("situation_version")),
+        decision_id=decision_id,
+        revision=new_revision,
+    )
+    if outcome.get("semantic_status") != "FROZEN":
+        ledger.reject_request(
+            request=request,
+            reason="CANONICALIZATION_FAILED:" + ",".join(_as_list(outcome.get("reason_codes"))),
+        )
+        return {
+            "outcome": "REJECTED",
+            "reason_codes": ["DECISION_REVISION_REJECTED"] + _as_list(outcome.get("reason_codes")),
+            "request": ledger.request_status(_string(request.get("request_id"))) or request,
+            "current_cad": current,
+            "new_cad": None,
+        }
+
+    accepted = ledger.accept_revision(old_cad=current, new_cad=outcome, request=request)
+    return {
+        "outcome": "ACCEPTED",
+        "reason_codes": ["DECISION_REVISION_ACCEPTED"],
+        "request": accepted["request"],
+        "old_cad": accepted["old_cad"],
+        "new_cad": accepted["new_cad"],
+    }
+
+
+def artifact_version_matches(artifact: dict[str, Any], current_cad: dict[str, Any]) -> bool:
+    """Stale-artifact guard: artifact must bind the current decision version."""
+    artifact = artifact if isinstance(artifact, dict) else {}
+    current_cad = current_cad if isinstance(current_cad, dict) else {}
+    artifact_version = _string(artifact.get("decision_version_id"))
+    current_version = _string(current_cad.get("decision_version_id"))
+    return bool(artifact_version and current_version and artifact_version == current_version)
+
+
+def stale_artifact_reason(artifact: dict[str, Any], current_cad: dict[str, Any]) -> str | None:
+    """Return STALE_DECISION_REVISION when the artifact is bound to an old version."""
+    artifact = artifact if isinstance(artifact, dict) else {}
+    current_cad = current_cad if isinstance(current_cad, dict) else {}
+    artifact_version = _string(artifact.get("decision_version_id"))
+    if not artifact_version:
+        return None
+    current_version = _string(current_cad.get("decision_version_id"))
+    if artifact_version != current_version:
+        return "STALE_DECISION_REVISION"
+    return None
+
+
+def approval_binds_revision(approval_artifact: dict[str, Any], current_cad: dict[str, Any]) -> bool:
+    """Approval may only authorize the exact decision version it was granted for."""
+    return artifact_version_matches(approval_artifact, current_cad)
+
+
+# Module-level default ledger for bounded/local flows; production wiring passes
+# an explicit ledger instance (or a store-backed one) per decision lineage.
+_DEFAULT_LEDGER = DecisionRevisionLedger()
 
 
 def build_canonical_decision_for_stage(
@@ -490,15 +933,27 @@ __all__ = [
     "CANONICAL_GOALS",
     "CANONICAL_TARGETS",
     "CANONICALIZATION_FAILURE_SCHEMA_VERSION",
+    "DECISION_REVISION_EVENT_SCHEMA_VERSION",
     "DECISION_REVISION_REQUEST_SCHEMA_VERSION",
+    "DecisionRevisionError",
+    "DecisionRevisionLedger",
     "FAILURE_REASON_CODES",
+    "REVISION_OBSERVABILITY_CODES",
     "REVISION_REASON_CODES",
+    "REVISION_REQUEST_STATUSES",
+    "REVISION_STATUSES",
+    "approval_binds_revision",
+    "artifact_version_matches",
     "build_business_decision_proposal",
     "build_canonical_decision_for_stage",
     "build_decision_revision_request",
     "canonical_decision_code",
     "canonicalization_failure_review_state",
     "canonicalize",
+    "decision_version_id_of",
+    "evaluate_decision_revision",
+    "request_decision_revision",
     "semantic_hash_of",
     "semantic_signature_matches",
+    "stale_artifact_reason",
 ]
