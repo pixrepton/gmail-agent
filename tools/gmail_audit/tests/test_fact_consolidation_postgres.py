@@ -25,8 +25,9 @@ from mailbox_memory_runtime import split_conflicting_facts  # noqa: E402
 
 
 def _mail_fact(*, case_id: str, fact_key: str, value: str, message_id: str, observed_at: str) -> dict:
+    suffix = uuid.uuid5(uuid.NAMESPACE_URL, case_id).hex[:8]
     return {
-        "fact_id": f"pg_mail_{message_id}_{fact_key}",
+        "fact_id": f"pg_mail_{suffix}_{message_id}_{fact_key}",
         "case_id": case_id,
         "message_id": message_id,
         "document_id": "",
@@ -44,8 +45,9 @@ def _mail_fact(*, case_id: str, fact_key: str, value: str, message_id: str, obse
 
 
 def _doc_fact(*, case_id: str, fact_key: str, value: str, document_id: str, observed_at: str) -> dict:
+    suffix = uuid.uuid5(uuid.NAMESPACE_URL, case_id).hex[:8]
     return {
-        "fact_id": f"pg_doc_{document_id}_{fact_key}",
+        "fact_id": f"pg_doc_{suffix}_{document_id}_{fact_key}",
         "case_id": case_id,
         "message_id": "",
         "document_id": document_id,
@@ -107,12 +109,18 @@ def test_postgres_conflict_and_supersession_survive_restart() -> None:
     store2 = PostgresMailboxMemoryStore(POSTGRES_TEST_DATABASE_URL)
     _, conflicts = split_conflicting_facts(store2.fetch_facts_for_case(case_id))
     assert any(c.get("fact_key") == "device_model" for c in conflicts)
-    # Legal supersession: explicit same-scope correction resolves the premise.
+    # Legal supersession: explicit operator correction in BOTH consolidation
+    # domains (customer + document) resolves the premise; a one-sided
+    # correction would leave a conservative mixed conflict.
     store2.append_facts_with_supersession(
         [
             {
                 **_mail_fact(case_id=case_id, fact_key="device_model", value="WH-FINAL", message_id="m2", observed_at="2026-08-23T12:00:00Z"),
-                "entity_scope": "document",
+                "entity_scope": "customer",
+                "metadata": {"source_origin": "OPERATOR", "evidence_authority": "OPERATOR_STATEMENT", "instruction_authority": "NONE"},
+            },
+            {
+                **_doc_fact(case_id=case_id, fact_key="device_model", value="WH-FINAL", document_id="doc2", observed_at="2026-08-23T12:00:00Z"),
                 "metadata": {"source_origin": "OPERATOR", "evidence_authority": "OPERATOR_STATEMENT", "instruction_authority": "NONE"},
             }
         ]
