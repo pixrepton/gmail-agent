@@ -13,24 +13,24 @@ Use this rule only for agent harness, MCP, slash commands, verification loops, c
 
 ## Prefer Skills First (workspace)
 
-- `../../.agents/skills/cursor-codex-harness/SKILL.md`
-- `../../.agents/skills/gmail-agent-proof-run/SKILL.md`
-- `../../.agents/skills/policy-action-gates/SKILL.md`
-- `../../.agents/skills/agent-skill-quality-gate/SKILL.md` — when creating/editing skills
+- `../../../.agents/skills/cursor-codex-harness/SKILL.md`
+- `../../../.agents/skills/gmail-agent-proof-run/SKILL.md`
+- `../../../.agents/skills/policy-action-gates/SKILL.md`
+- `../../../.agents/skills/agent-skill-quality-gate/SKILL.md` — when creating/editing skills
 
 ## MCP and Tooling
 
-- Prefer workspace MCP policy via `../../knowledge/system-atlas/tooling/CODE_INTELLIGENCE_ROUTER.md`.
+- Prefer workspace MCP policy via `../../../knowledge/system-atlas/tooling/CODE_INTELLIGENCE_ROUTER.md`.
 - Repo-local `gmail-agent-repo-assistant` MCP when available; verify with file reads.
 - GitNexus/CBM/Serena: structural hints only, not runtime proof.
 - Context7: external library docs only.
 
 ## Navigation and Governance
 
-- **Git:** see `00-topinstal-core-router.mdc` (**Git i repo**); workspace task engine: `../../scripts/ai_os_task.py`.
-- Harness index: `../../knowledge/system-atlas/tooling/agent-harness/AGENT_DEVELOPMENT_HARNESS.md`.
-- Skills registry: `../../knowledge/system-atlas/tooling/agent-harness/AGENT_SKILLS_REGISTRY.md`.
-- Handoff: `../../knowledge/SESSION_MEMORY_POLICY.md` and `../../knowledge/memory/LAST_SESSION.md` (operator instruction to write).
+- **Git:** see `00-topinstal-core-router.mdc` (**Git i repo**); workspace task engine: `../../../scripts/ai_os_task.py`.
+- Harness index: `../../../knowledge/system-atlas/tooling/agent-harness/AGENT_DEVELOPMENT_HARNESS.md`.
+- Skills registry: `../../../knowledge/system-atlas/tooling/agent-harness/AGENT_SKILLS_REGISTRY.md`.
+- Handoff: `../../../knowledge/SESSION_MEMORY_POLICY.md` and `../../../knowledge/memory/LAST_SESSION.md` (operator instruction to write).
 
 ## Proof and Boundaries
 
@@ -41,7 +41,7 @@ Use this rule only for agent harness, MCP, slash commands, verification loops, c
 
 ## `.cursor/rules` Markdown link hygiene
 
-- Links in `.mdc` resolve relative to `.cursor/rules/`. Use `../../` for workspace and repo-root targets.
+- Links in `.mdc` resolve relative to `.cursor/rules/`. Use `../../../` for workspace targets and `../../` for repo-root targets.
 - After editing links, from workspace root run:
 
 ```powershell

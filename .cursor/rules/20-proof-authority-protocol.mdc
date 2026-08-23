@@ -15,8 +15,8 @@ Use this rule only when the task involves proof, authority, architecture claims,
 
 Do not read the full authority stack for routine edits. First select the smallest relevant workspace skill:
 
-- `../../.agents/skills/gmail-agent-proof-run/SKILL.md` — doctor, replay, bridge, runtime verification.
-- `../../.agents/skills/topinstal-node-topology/SKILL.md` — Node A/B ownership and deployment topology.
+- `../../../.agents/skills/gmail-agent-proof-run/SKILL.md` — doctor, replay, bridge, runtime verification.
+- `../../../.agents/skills/topinstal-node-topology/SKILL.md` — Node A/B ownership and deployment topology.
 - `policy-action-gates` — policy/HITL/execution proof.
 
 Backlog skills (load only if restored): `release-gate-proof-pack`, `daszek-v3-projection-audit`, `case-context-memory-pack`.
@@ -43,4 +43,4 @@ Hold at least two hypotheses until one is falsified with file-path, command, log
 
 ## Durable State
 
-After substantive proof/handover, update `../../knowledge/memory/LAST_SESSION.md` only when operator instructs per `../../knowledge/SESSION_MEMORY_POLICY.md`. Do not use `memory-bank/`.
+After substantive proof/handover, update `../../../knowledge/memory/LAST_SESSION.md` only when operator instructs per `../../../knowledge/SESSION_MEMORY_POLICY.md`. Do not use `memory-bank/`.

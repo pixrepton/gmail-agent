@@ -26,7 +26,7 @@ globs: tools/gmail_audit/config.py,tools/gmail_audit/groq_client.py,tools/gmail_
 
 ## VPS / worker
 
-- Worker image **bakes** `tools/gmail_audit` sources. After changing Python, **rebuild and recreate** `gmail-agent-worker` before claiming runtime parity (`docker-compose.vps.yml`, profile `worker`). See `docs/runbooks/CANONICAL_PRODUCTION_RUNTIME_AND_OPERATIONS.md` and `cursor_vps_codex_style_runbook.md`.
+- Worker image **bakes** `tools/gmail_audit` sources. After changing Python, **rebuild and recreate** `gmail-agent-worker` before claiming runtime parity (`docker-compose.vps.yml`, profile `worker`). See `../../docs/runbooks/GMAIL_AGENT_DAILY_OPS.md` and `../../docs/core/PHYSICAL_TOPOLOGY.md`.
 
 ## Tests
 

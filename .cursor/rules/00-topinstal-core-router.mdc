@@ -16,12 +16,12 @@ This is the only always-on Cursor rule in this repo. Keep it short. Detailed pro
 
 ## Authority Order
 
-1. `AGENTS.md` (this repo) and `../../AGENTS.md` (workspace constitution).
-2. `../../knowledge/INDEX.md` and `../../knowledge/source-of-truth.md` for cross-repo routing.
-3. `docs/core/PROJECT_README.md`, `docs/runbooks/LAST_PROVEN_STATE.md` — repo canon; LPS only for proof/runtime claims.
-4. `../../knowledge/system-atlas/tooling/agent-harness/AGENT_DEVELOPMENT_HARNESS.md` — when harness/MCP/proof workflow is in scope.
-5. `../../knowledge/system-atlas/tooling/agent-harness/AGENT_SKILLS_REGISTRY.md` — pick 1-3 skills.
-6. `../../.agents/skills/<skill>/SKILL.md` — open only selected skills.
+1. `AGENTS.md` (this repo) and `../../../AGENTS.md` (workspace constitution).
+2. `../../../knowledge/INDEX.md` and `../../../knowledge/source-of-truth.md` for cross-repo routing.
+3. `../../docs/core/PROJECT_README.md`, `../../docs/runbooks/LAST_PROVEN_STATE.md` — repo canon; LPS only for proof/runtime claims.
+4. `../../../knowledge/system-atlas/tooling/agent-harness/AGENT_DEVELOPMENT_HARNESS.md` — when harness/MCP/proof workflow is in scope.
+5. `../../../knowledge/system-atlas/tooling/agent-harness/AGENT_SKILLS_REGISTRY.md` — pick 1-3 skills.
+6. `../../../.agents/skills/<skill>/SKILL.md` — open only selected skills.
 7. `references/` under the selected skill — only when required.
 8. Source files and tests — after scope is narrow.
 
@@ -43,8 +43,8 @@ This is the only always-on Cursor rule in this repo. Keep it short. Detailed pro
 
 ## Conflict resolution
 
-- `../../knowledge/memory/OPERATOR_DECISIONS.md` supersedes repo rules.
-- VPS/prod: explicit operator request only — see workspace `05-local-only-mandate.mdc`.
+- `../../../knowledge/memory/OPERATOR_DECISIONS.md` supersedes repo rules.
+- VPS/prod: explicit operator request only — see workspace `../../../.cursor/rules/05-local-only-mandate.mdc`.
 
 ## Context Loading
 
@@ -68,5 +68,5 @@ Do not turn Cursor rules into a second `AGENTS.md`. If a task matches a skill, u
 - Request order: narrow reads + LSP → `just`/CLI → repo-assistant MCP → allowed workspace MCP → never forbidden servers.
 - Prefer code execution (`pytest`, `gmail_intake.py`, workspace `preflight-local-stack.ps1`) over widening MCP.
 - Treat MCP output as hints; verify with source reads and tests.
-- Markdown links in `.cursor/rules/*.mdc` resolve relative to this folder — use `../../` for workspace paths.
-- After harness edits: `python ../../scripts/context_link_audit.py --scope gmail-agent` from workspace root.
+- Markdown links in `.cursor/rules/*.mdc` resolve relative to this folder — use `../../../` for workspace paths and `../../` for repo-root paths.
+- After harness edits: `python scripts/context_link_audit.py --scope gmail-agent` from workspace root.
