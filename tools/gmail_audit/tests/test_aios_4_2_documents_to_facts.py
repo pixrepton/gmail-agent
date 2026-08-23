@@ -136,7 +136,13 @@ def test_conflict_and_superseded_audit_surface_in_operational_feed() -> None:
                     "source_type": "document_intelligence",
                     "source_ref": "document_intelligence:doc_a",
                     "status": "active",
-                    "metadata": {"evidence_ref": {"source_id": "doc_a", "excerpt": "MODEL-A"}},
+                    "metadata": {
+                        "evidence_ref": {"source_id": "doc_a", "excerpt": "MODEL-A"},
+                        "subject_ref": {"kind": "DEVICE", "id": "device:A", "resolution": "EXPLICIT"},
+                        "subject_kind": "DEVICE",
+                        "subject_identity": "device:A",
+                        "subject_resolution": "EXPLICIT",
+                    },
                 }
             ],
             "msg_b": [
@@ -154,15 +160,23 @@ def test_conflict_and_superseded_audit_surface_in_operational_feed() -> None:
                     "source_type": "document_intelligence",
                     "source_ref": "document_intelligence:doc_b",
                     "status": "active",
-                    "metadata": {"evidence_ref": {"source_id": "doc_b", "excerpt": "MODEL-B"}},
+                    "metadata": {
+                        "evidence_ref": {"source_id": "doc_b", "excerpt": "MODEL-B"},
+                        "subject_ref": {"kind": "DEVICE", "id": "device:A", "resolution": "EXPLICIT"},
+                        "subject_kind": "DEVICE",
+                        "subject_identity": "device:A",
+                        "subject_resolution": "EXPLICIT",
+                    },
                 }
             ],
         },
     )
 
     active, conflicts = split_conflicting_facts(store.fetch_facts_for_case("case_42_conflict"))
-    assert any(c.get("fact_key") == "device_model" for c in conflicts)
-    assert len([f for f in active if f.get("fact_key") == "device_model"]) == 1
+    device_conflicts = [c for c in conflicts if c.get("fact_key") == "device_model"]
+    assert device_conflicts
+    assert device_conflicts[0].get("subject_identity") == "device:A"
+    assert len([f for f in store.fetch_active_facts_for_case("case_42_conflict") if f.get("fact_key") == "device_model"]) == 2
 
     feed_before = assemble_mailbox_pack_dict(store, "case_42_conflict")
     assert any(c.get("fact_key") == "device_model" for c in feed_before.get("conflicting_facts") or [])

@@ -245,6 +245,12 @@ def test_pack_path_snapshot_and_hot_state_agree_on_active_only() -> None:
         "normalized_value": "140",
         "confidence": 0.6,
         "observed_at": "2026-08-03T09:00:00Z",
+        "metadata": {
+            "allow_subject_supersession": True,
+            "source_origin": "OPERATOR",
+            "evidence_authority": "OPERATOR_STATEMENT",
+            "instruction_authority": "NONE",
+        },
     }
     assert store.append_facts_with_supersession([row_v1])["inserted"] == 1
     assert store.append_facts_with_supersession([row_v2])["superseded"] == 1

@@ -58,6 +58,12 @@ def test_append_fact_rows_supersedes_on_value_change() -> None:
         normalized_value="140",
         raw_value="140",
         observed_at="2026-08-03T09:00:00Z",
+        metadata={
+            "allow_subject_supersession": True,
+            "source_origin": "OPERATOR",
+            "evidence_authority": "OPERATOR_STATEMENT",
+            "instruction_authority": "NONE",
+        },
     )
 
     store.append_fact_rows([row_v1])
@@ -102,6 +108,12 @@ def test_append_fact_rows_matches_explicit_supersession_path() -> None:
         normalized_value="140",
         raw_value="140",
         observed_at="2026-08-03T09:00:00Z",
+        metadata={
+            "allow_subject_supersession": True,
+            "source_origin": "OPERATOR",
+            "evidence_authority": "OPERATOR_STATEMENT",
+            "instruction_authority": "NONE",
+        },
     )
 
     via_rows.append_fact_rows([row_v1])

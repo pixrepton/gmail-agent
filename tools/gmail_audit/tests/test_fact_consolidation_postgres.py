@@ -24,8 +24,30 @@ from mailbox_memory import PostgresMailboxMemoryStore  # noqa: E402
 from mailbox_memory_runtime import split_conflicting_facts  # noqa: E402
 
 
-def _mail_fact(*, case_id: str, fact_key: str, value: str, message_id: str, observed_at: str) -> dict:
+def _mail_fact(
+    *,
+    case_id: str,
+    fact_key: str,
+    value: str,
+    message_id: str,
+    observed_at: str,
+    subject_kind: str = "",
+    subject_identity: str = "",
+    metadata: dict | None = None,
+) -> dict:
     suffix = uuid.uuid5(uuid.NAMESPACE_URL, case_id).hex[:8]
+    meta = {
+        "source_origin": "CUSTOMER_EMAIL",
+        "evidence_authority": "CUSTOMER_STATEMENT",
+        "instruction_authority": "NONE",
+    }
+    if metadata:
+        meta.update(metadata)
+    if subject_kind and subject_identity:
+        meta["subject_ref"] = {"kind": subject_kind, "id": subject_identity, "resolution": "EXPLICIT"}
+        meta["subject_kind"] = subject_kind
+        meta["subject_identity"] = subject_identity
+        meta["subject_resolution"] = "EXPLICIT"
     return {
         "fact_id": f"pg_mail_{suffix}_{message_id}_{fact_key}",
         "case_id": case_id,
@@ -40,12 +62,35 @@ def _mail_fact(*, case_id: str, fact_key: str, value: str, message_id: str, obse
         "source_type": "gmail_message",
         "source_ref": message_id,
         "status": "active",
-        "metadata": {"source_origin": "CUSTOMER_EMAIL", "evidence_authority": "CUSTOMER_STATEMENT", "instruction_authority": "NONE"},
+        "metadata": meta,
     }
 
 
-def _doc_fact(*, case_id: str, fact_key: str, value: str, document_id: str, observed_at: str) -> dict:
+def _doc_fact(
+    *,
+    case_id: str,
+    fact_key: str,
+    value: str,
+    document_id: str,
+    observed_at: str,
+    subject_kind: str = "",
+    subject_identity: str = "",
+    metadata: dict | None = None,
+) -> dict:
     suffix = uuid.uuid5(uuid.NAMESPACE_URL, case_id).hex[:8]
+    meta = {
+        "source_origin": "ATTACHMENT",
+        "evidence_authority": "CUSTOMER_DOCUMENT",
+        "instruction_authority": "NONE",
+        "evidence_ref": {"source_type": "document", "source_id": document_id, "page": 1},
+    }
+    if metadata:
+        meta.update(metadata)
+    if subject_kind and subject_identity:
+        meta["subject_ref"] = {"kind": subject_kind, "id": subject_identity, "resolution": "EXPLICIT"}
+        meta["subject_kind"] = subject_kind
+        meta["subject_identity"] = subject_identity
+        meta["subject_resolution"] = "EXPLICIT"
     return {
         "fact_id": f"pg_doc_{suffix}_{document_id}_{fact_key}",
         "case_id": case_id,
@@ -60,12 +105,7 @@ def _doc_fact(*, case_id: str, fact_key: str, value: str, document_id: str, obse
         "source_type": "structured_document_parse",
         "source_ref": f"structured_parse:docling:{document_id}:1",
         "status": "active",
-        "metadata": {
-            "source_origin": "ATTACHMENT",
-            "evidence_authority": "CUSTOMER_DOCUMENT",
-            "instruction_authority": "NONE",
-            "evidence_ref": {"source_type": "document", "source_id": document_id, "page": 1},
-        },
+        "metadata": meta,
     }
 
 
@@ -83,10 +123,10 @@ def test_postgres_same_value_consolidation_survives_restart() -> None:
     case_id = _unique_case("case_pg_consol")
     store = _fresh_store(case_id)
     store.append_facts_with_supersession(
-        [_mail_fact(case_id=case_id, fact_key="device_model", value="WH-XYZ", message_id="m1", observed_at="2026-08-23T10:00:00Z")]
+        [_mail_fact(case_id=case_id, fact_key="device_model", value="WH-XYZ", message_id="m1", observed_at="2026-08-23T10:00:00Z", subject_kind="DEVICE", subject_identity="device:A")]
     )
     store.append_facts_with_supersession(
-        [_doc_fact(case_id=case_id, fact_key="device_model", value="WH-XYZ", document_id="doc1", observed_at="2026-08-23T11:00:00Z")]
+        [_doc_fact(case_id=case_id, fact_key="device_model", value="WH-XYZ", document_id="doc1", observed_at="2026-08-23T11:00:00Z", subject_kind="DEVICE", subject_identity="device:A")]
     )
     # Restart: a brand-new store instance rebuilds from Postgres.
     store2 = PostgresMailboxMemoryStore(POSTGRES_TEST_DATABASE_URL)
@@ -95,18 +135,20 @@ def test_postgres_same_value_consolidation_survives_restart() -> None:
     assert values == {"WH-XYZ"}
     assert not conflicts
     rows = [f for f in store2.fetch_facts_for_case(case_id) if f.get("fact_key") == "device_model"]
-    origins = {str((f.get("metadata") or {}).get("source_origin")) for f in rows}
-    assert origins == {"CUSTOMER_EMAIL", "ATTACHMENT"}
+    assert len(rows) == 1
+    refs = (rows[0].get("metadata") or {}).get("evidence_refs") or []
+    assert any(str(ref.get("document_id") or "") == "doc1" for ref in refs)
 def test_postgres_conflict_and_supersession_survive_restart() -> None:
     case_id = _unique_case("case_pg_conf")
     store = _fresh_store(case_id)
     store.append_facts_with_supersession(
-        [_mail_fact(case_id=case_id, fact_key="device_model", value="WH-XYZ", message_id="m1", observed_at="2026-08-23T10:00:00Z")]
+        [_mail_fact(case_id=case_id, fact_key="device_model", value="WH-XYZ", message_id="m1", observed_at="2026-08-23T10:00:00Z", subject_kind="DEVICE", subject_identity="device:A")]
     )
     store.append_facts_with_supersession(
-        [_doc_fact(case_id=case_id, fact_key="device_model", value="WH-ABC", document_id="doc1", observed_at="2026-08-23T11:00:00Z")]
+        [_doc_fact(case_id=case_id, fact_key="device_model", value="WH-ABC", document_id="doc1", observed_at="2026-08-23T11:00:00Z", subject_kind="DEVICE", subject_identity="device:A")]
     )
     store2 = PostgresMailboxMemoryStore(POSTGRES_TEST_DATABASE_URL)
+    assert len([f for f in store2.fetch_active_facts_for_case(case_id) if f.get("fact_key") == "device_model"]) == 2
     _, conflicts = split_conflicting_facts(store2.fetch_facts_for_case(case_id))
     assert any(c.get("fact_key") == "device_model" for c in conflicts)
     # Legal supersession: explicit operator correction in BOTH consolidation
@@ -115,13 +157,39 @@ def test_postgres_conflict_and_supersession_survive_restart() -> None:
     store2.append_facts_with_supersession(
         [
             {
-                **_mail_fact(case_id=case_id, fact_key="device_model", value="WH-FINAL", message_id="m2", observed_at="2026-08-23T12:00:00Z"),
+                **_mail_fact(
+                    case_id=case_id,
+                    fact_key="device_model",
+                    value="WH-FINAL",
+                    message_id="m2",
+                    observed_at="2026-08-23T12:00:00Z",
+                    subject_kind="DEVICE",
+                    subject_identity="device:A",
+                    metadata={
+                        "source_origin": "OPERATOR",
+                        "evidence_authority": "OPERATOR_STATEMENT",
+                        "instruction_authority": "NONE",
+                        "allow_subject_supersession": True,
+                    },
+                ),
                 "entity_scope": "customer",
-                "metadata": {"source_origin": "OPERATOR", "evidence_authority": "OPERATOR_STATEMENT", "instruction_authority": "NONE"},
             },
             {
-                **_doc_fact(case_id=case_id, fact_key="device_model", value="WH-FINAL", document_id="doc2", observed_at="2026-08-23T12:00:00Z"),
-                "metadata": {"source_origin": "OPERATOR", "evidence_authority": "OPERATOR_STATEMENT", "instruction_authority": "NONE"},
+                **_doc_fact(
+                    case_id=case_id,
+                    fact_key="device_model",
+                    value="WH-FINAL",
+                    document_id="doc2",
+                    observed_at="2026-08-23T12:00:00Z",
+                    subject_kind="DEVICE",
+                    subject_identity="device:A",
+                    metadata={
+                        "source_origin": "OPERATOR",
+                        "evidence_authority": "OPERATOR_STATEMENT",
+                        "instruction_authority": "NONE",
+                        "allow_subject_supersession": True,
+                    },
+                ),
             }
         ]
     )

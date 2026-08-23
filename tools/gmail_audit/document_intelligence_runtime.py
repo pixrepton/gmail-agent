@@ -18,6 +18,7 @@ from document_intelligence_contract import (
     now_iso,
 )
 from evidence_authority import provenance_defaults
+from mailbox_memory.facts import attach_subject_metadata
 
 DATE_PATTERN = r"(?:[0-9]{4}[.\-/][0-9]{1,2}[.\-/][0-9]{1,2}|[0-9]{1,2}[.\-/][0-9]{1,2}[.\-/][0-9]{2,4})"
 
@@ -281,7 +282,8 @@ def document_fields_to_fact_rows(result: dict[str, Any], *, min_confidence: floa
         source_ref = _evidence_source_ref(evidence_ref)
         fact_id = _document_fact_id(document_id=document_id, field_name=field_name, value=value, source_ref=source_ref)
         rows.append(
-            {
+            attach_subject_metadata(
+                {
                 "fact_id": fact_id,
                 "case_id": case_id,
                 "message_id": "",
@@ -303,7 +305,8 @@ def document_fields_to_fact_rows(result: dict[str, Any], *, min_confidence: floa
                     # structured_fields_to_fact_rows).
                     **provenance_defaults(origin="ATTACHMENT"),
                 },
-            }
+                }
+            )
         )
     return rows
 

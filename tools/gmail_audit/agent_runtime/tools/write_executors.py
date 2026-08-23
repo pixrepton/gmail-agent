@@ -63,12 +63,13 @@ def _write_fact_row(
     source_ref: str = "agent:write_executor",
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from mailbox_memory.facts import stable_id
+    from mailbox_memory.facts import attach_subject_metadata, stable_id
     import datetime
 
     now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     fact_id = stable_id("fact", case_id, fact_key)
-    return {
+    return attach_subject_metadata(
+        {
         "fact_id": fact_id,
         "case_id": case_id,
         "message_id": "agent",
@@ -83,7 +84,8 @@ def _write_fact_row(
         "source_ref": source_ref,
         "status": "active",
         "metadata": metadata or {},
-    }
+        }
+    )
 
 
 def execute_delete_document(

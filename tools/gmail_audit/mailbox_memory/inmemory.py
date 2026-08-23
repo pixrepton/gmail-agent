@@ -7,7 +7,7 @@ from typing import Any
 
 from .protocol import MailboxMemoryStore
 from .schema import _case_payload_with_defaults, _cosine_similarity, _parse_vector_literal_coords
-from .facts import merge_fact_evidence
+from .facts import attach_subject_metadata, fact_subject_ref, merge_fact_evidence, proposition_identity, subject_supersession_allowed
 
 
 @dataclass(slots=True)
@@ -179,18 +179,18 @@ class InMemoryMailboxMemoryStore:
 
     def _apply_replaced_message_fact_rows(self, message_id: str, rows: list[dict[str, Any]]) -> None:
         mid = str(message_id or "").strip()
-        groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        groups: dict[tuple[str, ...], list[dict[str, Any]]] = {}
         for row in rows:
-            payload = dict(row)
+            payload = attach_subject_metadata(dict(row))
             payload.setdefault("status", "active")
             case_id = str(payload.get("case_id") or "").strip()
-            entity_scope = str(payload.get("entity_scope") or "case").strip() or "case"
             fact_key = str(payload.get("fact_key") or "").strip()
             if not case_id or not fact_key:
                 continue
-            groups.setdefault((case_id, entity_scope, fact_key), []).append(payload)
+            groups.setdefault(proposition_identity(payload), []).append(payload)
 
-        for (case_id, entity_scope, fact_key), group_rows in groups.items():
+        for identity, group_rows in groups.items():
+            case_id = str(group_rows[0].get("case_id") or "").strip()
             distinct_values = {
                 str(item.get("normalized_value") or "").strip() for item in group_rows
             }
@@ -203,8 +203,7 @@ class InMemoryMailboxMemoryStore:
                 for item in items:
                     if (
                         str(item.get("case_id") or "") == case_id
-                        and str(item.get("entity_scope") or "case") == entity_scope
-                        and str(item.get("fact_key") or "") == fact_key
+                        and proposition_identity(item) == identity
                         and str(item.get("status") or "active") == "active"
                         and str(item.get("message_id") or "") != mid
                         and (
@@ -228,8 +227,7 @@ class InMemoryMailboxMemoryStore:
                     for item in items:
                         if (
                             str(item.get("case_id") or "") == case_id
-                            and str(item.get("entity_scope") or "case") == entity_scope
-                            and str(item.get("fact_key") or "") == fact_key
+                            and proposition_identity(item) == identity
                             and str(item.get("status") or "active") == "active"
                             and str(item.get("normalized_value") or "").strip() == new_value
                             and str(item.get("message_id") or "") == mid
@@ -270,18 +268,17 @@ class InMemoryMailboxMemoryStore:
         cid = str(case_id or "").strip()
         if not cid:
             return 0
-        groups: dict[tuple[str, str], list[tuple[str, int, dict[str, Any]]]] = {}
+        groups: dict[tuple[str, ...], list[tuple[str, int, dict[str, Any]]]] = {}
         for bucket_key, items in self.facts.items():
             for idx, item in enumerate(items):
                 if str(item.get("case_id") or "") != cid:
                     continue
                 if str(item.get("status") or "active") == "superseded":
                     continue
-                entity_scope = str(item.get("entity_scope") or "case").strip() or "case"
                 fact_key = str(item.get("fact_key") or "").strip()
                 if not fact_key:
                     continue
-                groups.setdefault((entity_scope, fact_key), []).append((bucket_key, idx, item))
+                groups.setdefault(proposition_identity(item), []).append((bucket_key, idx, item))
         reconciled = 0
         for _identity, entries in groups.items():
             if len(entries) < 2:
@@ -310,21 +307,21 @@ class InMemoryMailboxMemoryStore:
         if not rows:
             return stats
         for row in rows:
-            payload = dict(row)
+            payload = attach_subject_metadata(dict(row))
             case_id = str(payload.get("case_id") or "").strip()
-            entity_scope = str(payload.get("entity_scope") or "case").strip() or "case"
             fact_key = str(payload.get("fact_key") or "").strip()
             new_value = str(payload.get("normalized_value") or "").strip()
             if not case_id or not fact_key:
                 continue
+            new_identity = proposition_identity(payload)
+            new_subject_ref = fact_subject_ref(payload)
             skip_insert = False
             for bucket_key, items in list(self.facts.items()):
                 updated_items: list[dict[str, Any]] = []
                 for item in items:
                     if (
                         str(item.get("case_id") or "") == case_id
-                        and str(item.get("entity_scope") or "case") == entity_scope
-                        and str(item.get("fact_key") or "") == fact_key
+                        and proposition_identity(item) == new_identity
                         and str(item.get("status") or "active") == "active"
                     ):
                         old_value = str(item.get("normalized_value") or "").strip()
@@ -334,6 +331,13 @@ class InMemoryMailboxMemoryStore:
                             merged_meta = merge_fact_evidence(item.get("metadata"), payload)
                             if merged_meta != (item.get("metadata") if isinstance(item.get("metadata"), dict) else {}):
                                 item = {**item, "metadata": merged_meta}
+                            updated_items.append(item)
+                            continue
+                        if (
+                            new_subject_ref is not None
+                            and new_subject_ref.kind != "CASE"
+                            and not subject_supersession_allowed(payload)
+                        ):
                             updated_items.append(item)
                             continue
                         meta = dict(item.get("metadata") or {})

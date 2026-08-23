@@ -11,7 +11,13 @@ from datetime import datetime
 from typing import Any
 
 from .protocol import MailboxMemoryStore
-from .facts import merge_fact_evidence
+from .facts import (
+    attach_subject_metadata,
+    fact_subject_ref,
+    merge_fact_evidence,
+    proposition_identity,
+    subject_supersession_allowed,
+)
 
 log = logging.getLogger(__name__)
 
@@ -413,19 +419,24 @@ class PostgresMailboxMemoryStore:
         self, cur: Any, message_id: str, rows: list[dict[str, Any]]
     ) -> None:
         mid = str(message_id or "").strip()
-        groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        groups: dict[tuple[str, ...], list[dict[str, Any]]] = {}
         for raw in rows:
-            row = self._prep(raw, json_fields={"metadata"}, time_fields={"observed_at"})
-            if not str(row.get("status") or "").strip():
-                row["status"] = "active"
-            case_id = str(row.get("case_id") or "").strip()
-            entity_scope = str(row.get("entity_scope") or "case").strip() or "case"
-            fact_key = str(row.get("fact_key") or "").strip()
+            semantic_row = attach_subject_metadata(dict(raw))
+            if not str(semantic_row.get("status") or "").strip():
+                semantic_row["status"] = "active"
+            case_id = str(semantic_row.get("case_id") or "").strip()
+            fact_key = str(semantic_row.get("fact_key") or "").strip()
             if not case_id or not fact_key:
                 continue
-            groups.setdefault((case_id, entity_scope, fact_key), []).append(row)
+            prepared_row = self._prep(
+                dict(semantic_row),
+                json_fields={"metadata"},
+                time_fields={"observed_at"},
+            )
+            groups.setdefault(proposition_identity(semantic_row), []).append(prepared_row)
 
-        for (case_id, entity_scope, fact_key), group_rows in groups.items():
+        for identity, group_rows in groups.items():
+            case_id = str(group_rows[0].get("case_id") or "").strip()
             distinct_values = {
                 str(item.get("normalized_value") or "").strip() for item in group_rows
             }
@@ -435,17 +446,15 @@ class PostgresMailboxMemoryStore:
                 observed_at = observed_at.isoformat()
             cur.execute(
                 """
-                SELECT fact_id, normalized_value, metadata, message_id
+                SELECT fact_id, normalized_value, metadata, message_id, entity_scope, fact_key, document_id, source_ref
                 FROM mailbox_memory_facts
                 WHERE case_id = %(case_id)s
-                  AND entity_scope = %(entity_scope)s
                   AND fact_key = %(fact_key)s
                   AND status = 'active'
                 """,
                 {
                     "case_id": case_id,
-                    "entity_scope": entity_scope,
-                    "fact_key": fact_key,
+                    "fact_key": str(group_rows[0].get("fact_key") or ""),
                 },
             )
             for active in cur.fetchall() or []:
@@ -454,11 +463,35 @@ class PostgresMailboxMemoryStore:
                     old_value = str(active.get("normalized_value") or "").strip()
                     old_meta = active.get("metadata") if isinstance(active.get("metadata"), dict) else {}
                     active_mid = str(active.get("message_id") or "")
+                    active_identity = proposition_identity(
+                        {
+                            "case_id": case_id,
+                            "entity_scope": str(active.get("entity_scope") or "case"),
+                            "fact_key": str(active.get("fact_key") or ""),
+                            "document_id": str(active.get("document_id") or "").strip(),
+                            "message_id": active_mid,
+                            "source_ref": str(active.get("source_ref") or "").strip(),
+                            "metadata": old_meta,
+                        }
+                    )
                 else:
                     fact_id = str(active[0] or "")
                     old_value = str(active[1] or "").strip()
                     old_meta = active[2] if len(active) > 2 and isinstance(active[2], dict) else {}
                     active_mid = str(active[3] or "") if len(active) > 3 else ""
+                    active_identity = proposition_identity(
+                        {
+                            "case_id": case_id,
+                            "entity_scope": str(active[4] or "case") if len(active) > 4 else "case",
+                            "fact_key": str(active[5] or "") if len(active) > 5 else "",
+                            "document_id": str(active[6] or "").strip() if len(active) > 6 else "",
+                            "message_id": active_mid,
+                            "source_ref": str(active[7] or "").strip() if len(active) > 7 else "",
+                            "metadata": old_meta,
+                        }
+                    )
+                if active_identity != identity:
+                    continue
                 if active_mid == mid:
                     continue
                 if len(distinct_values) == 1 and old_value in distinct_values:
@@ -558,7 +591,7 @@ class PostgresMailboxMemoryStore:
             return 0
         cur.execute(
             """
-            SELECT fact_id, entity_scope, fact_key, normalized_value, observed_at, metadata
+            SELECT fact_id, entity_scope, fact_key, normalized_value, observed_at, metadata, document_id, message_id, source_ref
             FROM mailbox_memory_facts
             WHERE case_id = %(case_id)s
               AND status = 'active'
@@ -567,22 +600,42 @@ class PostgresMailboxMemoryStore:
             {"case_id": cid},
         )
         rows = cur.fetchall() or []
-        winners: dict[tuple[str, str], str] = {}
+        winners: dict[tuple[str, ...], str] = {}
         reconciled = 0
         for row in rows:
             if isinstance(row, dict):
                 fact_id = str(row.get("fact_id") or "")
-                entity_scope = str(row.get("entity_scope") or "case")
                 fact_key = str(row.get("fact_key") or "")
                 observed_at = row.get("observed_at")
                 old_meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+                identity = proposition_identity(
+                    {
+                        "case_id": cid,
+                        "entity_scope": str(row.get("entity_scope") or "case"),
+                        "fact_key": fact_key,
+                        "document_id": str(row.get("document_id") or "").strip(),
+                        "message_id": str(row.get("message_id") or "").strip(),
+                        "source_ref": str(row.get("source_ref") or "").strip(),
+                        "metadata": old_meta,
+                    }
+                )
             else:
                 fact_id = str(row[0] or "")
                 entity_scope = str(row[1] or "case")
                 fact_key = str(row[2] or "")
                 observed_at = row[4] if len(row) > 4 else None
                 old_meta = row[5] if len(row) > 5 and isinstance(row[5], dict) else {}
-            identity = (entity_scope, fact_key)
+                identity = proposition_identity(
+                    {
+                        "case_id": cid,
+                        "entity_scope": entity_scope,
+                        "fact_key": fact_key,
+                        "document_id": str(row[6] or "").strip() if len(row) > 6 else "",
+                        "message_id": str(row[7] or "").strip() if len(row) > 7 else "",
+                        "source_ref": str(row[8] or "").strip() if len(row) > 8 else "",
+                        "metadata": old_meta,
+                    }
+                )
             if not fact_key:
                 continue
             if identity not in winners:
@@ -608,25 +661,30 @@ class PostgresMailboxMemoryStore:
     def _append_facts_with_supersession_on_cursor(self, cur: Any, rows: list[dict[str, Any]]) -> dict[str, int]:
         stats = {"inserted": 0, "superseded": 0, "unchanged": 0}
         for raw in rows:
-            row = self._prep(raw, json_fields={"metadata"}, time_fields={"observed_at"})
-            case_id = str(row.get("case_id") or "").strip()
-            entity_scope = str(row.get("entity_scope") or "case").strip() or "case"
-            fact_key = str(row.get("fact_key") or "").strip()
-            new_value = str(row.get("normalized_value") or "").strip()
+            semantic_row = attach_subject_metadata(dict(raw))
+            case_id = str(semantic_row.get("case_id") or "").strip()
+            fact_key = str(semantic_row.get("fact_key") or "").strip()
+            new_value = str(semantic_row.get("normalized_value") or "").strip()
             if not case_id or not fact_key:
                 continue
+            new_identity = proposition_identity(semantic_row)
+            new_subject_ref = fact_subject_ref(semantic_row)
+            allow_subject_supersession = subject_supersession_allowed(semantic_row)
+            row = self._prep(
+                dict(semantic_row),
+                json_fields={"metadata"},
+                time_fields={"observed_at"},
+            )
             cur.execute(
                 """
-                SELECT fact_id, normalized_value, metadata
+                SELECT fact_id, normalized_value, metadata, document_id, entity_scope, message_id, source_ref, fact_key
                 FROM mailbox_memory_facts
                 WHERE case_id = %(case_id)s
-                  AND entity_scope = %(entity_scope)s
                   AND fact_key = %(fact_key)s
                   AND status = 'active'
                 """,
                 {
                     "case_id": case_id,
-                    "entity_scope": entity_scope,
                     "fact_key": fact_key,
                 },
             )
@@ -637,10 +695,34 @@ class PostgresMailboxMemoryStore:
                     old_value = str(active.get("normalized_value") or "").strip()
                     fact_id = str(active.get("fact_id") or "")
                     old_meta = active.get("metadata") if isinstance(active.get("metadata"), dict) else {}
+                    active_identity = proposition_identity(
+                        {
+                            "case_id": case_id,
+                            "entity_scope": str(active.get("entity_scope") or "case"),
+                            "fact_key": str(active.get("fact_key") or fact_key),
+                            "document_id": str(active.get("document_id") or "").strip(),
+                            "message_id": str(active.get("message_id") or "").strip(),
+                            "source_ref": str(active.get("source_ref") or "").strip(),
+                            "metadata": old_meta,
+                        }
+                    )
                 else:
                     fact_id = str(active[0] or "")
                     old_value = str(active[1] or "").strip()
                     old_meta = active[2] if len(active) > 2 and isinstance(active[2], dict) else {}
+                    active_identity = proposition_identity(
+                        {
+                            "case_id": case_id,
+                            "entity_scope": str(active[4] or "case") if len(active) > 4 else "case",
+                            "fact_key": str(active[7] or fact_key) if len(active) > 7 else fact_key,
+                            "document_id": str(active[3] or "").strip() if len(active) > 3 else "",
+                            "message_id": str(active[5] or "").strip() if len(active) > 5 else "",
+                            "source_ref": str(active[6] or "").strip() if len(active) > 6 else "",
+                            "metadata": old_meta,
+                        }
+                    )
+                if active_identity != new_identity:
+                    continue
                 if old_value == new_value:
                     stats["unchanged"] += 1
                     skip_insert = True
@@ -655,6 +737,12 @@ class PostgresMailboxMemoryStore:
                             {"fact_id": fact_id, "metadata": _json_dump(merged_meta)},
                         )
                     break
+                if (
+                    new_subject_ref is not None
+                    and new_subject_ref.kind != "CASE"
+                    and not allow_subject_supersession
+                ):
+                    continue
                 supersede_meta = dict(old_meta)
                 superseded_at = row.get("observed_at")
                 if hasattr(superseded_at, "isoformat"):

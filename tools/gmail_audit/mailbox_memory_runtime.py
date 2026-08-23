@@ -40,6 +40,14 @@ from mailbox_memory_health import (
 from mailbox_memory_models import CaseContextPack, MailboxMemoryIngestResult
 from correlation_registry.service import CorrelationRegistryService, build_correlation_registry_service
 from mailbox_memory.active_facts import annotate_decision_fact_use, fetch_current_facts_for_case
+from mailbox_memory.facts import (
+    attach_subject_metadata,
+    fact_subject_identity,
+    fact_subject_ref,
+    is_subject_aware_fact_key,
+    merge_fact_evidence,
+    proposition_identity,
+)
 from mailbox_memory_store import (
     InMemoryMailboxMemoryStore,
     MailboxMemoryStore,
@@ -1367,58 +1375,32 @@ def build_case_snapshot(
     completeness_gaps = list(drive_enrichment.get("completeness_gaps") or [])
     graph_hints = list(drive_enrichment.get("graph_hints") or [])
     reference_documents = list(drive_enrichment.get("reference_documents") or [])
-    # FACT-01: same live-fact predicate as split_conflicting_facts — drop superseded
-    # before ranking/conflict detection so ingest/finalize/drive paths cannot revive
-    # a settled row via confidence or invent false open_questions.
-    combined_facts = [
-        fact
-        for fact in list(facts) + drive_facts
-        if str(fact.get("status") or "active") != "superseded"
-    ]
-    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for fact in combined_facts:
-        key = (str(fact.get("entity_scope") or "case"), str(fact.get("fact_key") or ""))
-        grouped.setdefault(key, []).append(fact)
-
+    combined_facts = list(facts) + drive_facts
+    active_facts, conflicting_facts = split_conflicting_facts(combined_facts)
     key_facts: list[dict[str, Any]] = []
-    conflicting_facts: list[dict[str, Any]] = []
-    open_questions: list[str] = []
-    for (entity_scope, fact_key), items in grouped.items():
-        unique_values = {
-            str(item.get("normalized_value") or "").strip()
-            for item in items
-            if str(item.get("normalized_value") or "").strip()
-        }
-        ranked = sorted(items, key=lambda item: (-float(item.get("confidence") or 0.0), str(item.get("observed_at") or "")))
-        preferred = ranked[0] if ranked else {}
-        if preferred and str(preferred.get("normalized_value") or "").strip():
-            key_facts.append(
-                {
-                    "entity_scope": entity_scope,
-                    "fact_key": fact_key,
-                    "value": str(preferred.get("normalized_value") or ""),
-                    "confidence": float(preferred.get("confidence") or 0.0),
-                    "source_ref": str(preferred.get("source_ref") or ""),
-                }
-            )
-        if len(unique_values) > 1:
-            conflict_entry = {"entity_scope": entity_scope, "fact_key": fact_key, "values": sorted(unique_values)}
-            conflicting_facts.append(conflict_entry)
-            open_questions.append(f"Konflikt danych dla {fact_key}: {', '.join(conflict_entry['values'])}.")
-
-    cross_scope_values: dict[str, set[str]] = {}
-    for fact in combined_facts:
-        key = str(fact.get("fact_key") or "").strip()
+    for fact in active_facts:
         value = str(fact.get("normalized_value") or "").strip()
-        if key and value:
-            cross_scope_values.setdefault(key, set()).add(value)
-    existing_conflict_keys = {str(item.get("fact_key") or "") for item in conflicting_facts}
-    for fact_key, values in cross_scope_values.items():
-        if len(values) <= 1 or fact_key in existing_conflict_keys:
+        if not value:
             continue
-        conflict_entry = {"entity_scope": "mixed", "fact_key": fact_key, "values": sorted(values)}
-        conflicting_facts.append(conflict_entry)
-        open_questions.append(f"Konflikt danych dla {fact_key}: {', '.join(conflict_entry['values'])}.")
+        meta = fact.get("metadata") if isinstance(fact.get("metadata"), dict) else {}
+        subject_ref = meta.get("subject_ref") if isinstance(meta.get("subject_ref"), dict) else {}
+        key_facts.append(
+            {
+                "entity_scope": str(fact.get("entity_scope") or "case"),
+                "fact_key": str(fact.get("fact_key") or ""),
+                "value": value,
+                "confidence": float(fact.get("confidence") or 0.0),
+                "source_ref": str(fact.get("source_ref") or ""),
+                "subject_kind": str(subject_ref.get("kind") or meta.get("subject_kind") or ""),
+                "subject_identity": str(subject_ref.get("id") or meta.get("subject_identity") or ""),
+                "subject_resolution": str(subject_ref.get("resolution") or meta.get("subject_resolution") or ""),
+            }
+        )
+    open_questions = [
+        f"Konflikt danych dla {item.get('fact_key')}: {', '.join(item.get('values') or [])}."
+        for item in conflicting_facts
+        if item.get("fact_key") and item.get("values")
+    ]
 
     customer_name = str(case_record.get("customer_name") or "")
     customer_email = str(case_record.get("customer_email") or "")
@@ -1658,35 +1640,25 @@ def build_case_context_pack(
     drive_documents = list(drive_enrichment.get("drive_documents") or [])
     drive_facts = list(drive_enrichment.get("drive_facts") or [])
     drive_active_facts, drive_conflicts = split_conflicting_facts(drive_facts)
-    # FACT-05: pack sections and the embedded snapshot must share one active-fact
-    # filter (split_conflicting_facts). Passing raw facts/drive_facts lets
-    # superseded rows re-enter build_case_snapshot key_facts / open_questions.
     snapshot_drive_enrichment = dict(drive_enrichment)
-    snapshot_drive_enrichment["drive_facts"] = list(drive_active_facts)
+    snapshot_drive_enrichment["drive_facts"] = list(drive_facts)
     snapshot = build_current_case_context_snapshot(
         store=store,
         case_id=case_id,
         case_record=case_row,
         messages=messages,
-        facts=active_facts,
+        facts=facts,
         documents=documents,
         events=events,
         next_action=next_action,
         drive_enrichment=snapshot_drive_enrichment,
     )
-    # Winners-only input drops same-scope live disagreements from build_case_snapshot.
-    # Align conflict surfaces with split_conflicting_facts; keep cross-scope "mixed"
-    # conflicts already derived from active winners. Hot-state overlay prefers live
-    # filtered key_facts/conflicts (FACT-01).
+    # P1.5B: the embedded snapshot now resolves facts through the same canonical
+    # path as the pack, so the pack should reuse the snapshot conflict surface
+    # instead of reconstructing a second variant.
     if str(snapshot.get("context_snapshot_source") or "") == "mailbox_memory_live_projection":
-        pack_conflicts = list(conflicting_facts) + list(drive_conflicts)
-        mixed_conflicts = [
-            item
-            for item in list(snapshot.get("conflicting_facts") or [])
-            if str(item.get("entity_scope") or "") == "mixed"
-        ]
-        aligned_conflicts = pack_conflicts + mixed_conflicts
-        snapshot["conflicting_facts"] = aligned_conflicts[:8]
+        aligned_conflicts = list(snapshot.get("conflicting_facts") or [])[:8]
+        snapshot["conflicting_facts"] = aligned_conflicts
         conflict_questions = [
             f"Konflikt danych dla {item.get('fact_key')}: {', '.join(item.get('values') or [])}."
             for item in aligned_conflicts
@@ -1859,7 +1831,7 @@ def build_case_context_pack(
         import logging
         logging.getLogger(__name__).warning("Coherence validator error (non-blocking): %s", exc)
 
-    pack_conflicts = conflicting_facts + drive_conflicts
+    pack_conflicts = list(snapshot.get("conflicting_facts") or []) if str(snapshot.get("context_snapshot_source") or "") == "mailbox_memory_live_projection" else conflicting_facts + drive_conflicts
     pack_active_facts = annotate_decision_fact_use(active_facts + drive_active_facts, pack_conflicts)
 
     return CaseContextPack(
@@ -2074,8 +2046,7 @@ def infer_completeness_gaps(drive_documents: list[dict[str, Any]], drive_facts: 
 
 
 def split_conflicting_facts(facts: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Rank facts per (entity_scope, fact_key) into one active value plus any
-    genuine conflicts.
+    """Rank facts per proposition identity into active rows plus genuine conflicts.
 
     `append_facts_with_supersession` (RP-29) writes a replaced row's `status`
     as `"superseded"`, so a stale row can never outrank the live value for the
@@ -2090,7 +2061,12 @@ def split_conflicting_facts(facts: list[dict[str, Any]]) -> tuple[list[dict[str,
     correction) are settled and excluded. Repeating the same value produces a
     single-value set and no conflict.
     """
-    live_facts = [fact for fact in facts if str(fact.get("status") or "active") != "superseded"]
+    prepared_facts = [
+        attach_subject_metadata(dict(fact))
+        for fact in facts
+        if isinstance(fact, dict)
+    ]
+    live_facts = [fact for fact in prepared_facts if str(fact.get("status") or "active") != "superseded"]
 
     def _dedupe_values(values: Any) -> list[str]:
         """Case-insensitive, whitespace-stripped value dedup for conflict sets.
@@ -2110,8 +2086,8 @@ def split_conflicting_facts(facts: list[dict[str, Any]]) -> tuple[list[dict[str,
             out.append(text)
         return out
 
-    superseded_values: dict[tuple[str, str], set[str]] = {}
-    for fact in facts:
+    superseded_values: dict[tuple[str, ...], set[str]] = {}
+    for fact in prepared_facts:
         if str(fact.get("status") or "active") != "superseded":
             continue
         meta = fact.get("metadata") if isinstance(fact.get("metadata"), dict) else {}
@@ -2120,14 +2096,15 @@ def split_conflicting_facts(facts: list[dict[str, Any]]) -> tuple[list[dict[str,
         value = str(fact.get("normalized_value") or "").strip()
         if not value:
             continue
-        key = (str(fact.get("entity_scope") or "case"), str(fact.get("fact_key") or ""))
+        key = proposition_identity(fact)
         superseded_values.setdefault(key, set()).add(value)
-    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    grouped: dict[tuple[str, ...], list[dict[str, Any]]] = {}
     for fact in live_facts:
-        grouped.setdefault((str(fact.get("entity_scope") or "case"), str(fact.get("fact_key") or "")), []).append(fact)
+        grouped.setdefault(proposition_identity(fact), []).append(fact)
     active: list[dict[str, Any]] = []
     conflicts: list[dict[str, Any]] = []
-    for (entity_scope, fact_key), items in grouped.items():
+    for proposition_key, items in grouped.items():
+        fact_key = str(items[0].get("fact_key") or "").strip()
         # Two stable passes: newest-first, then confidence-descending. A stable
         # sort preserves the newest-first order among ties, so a confidence tie
         # keeps the most recently observed fact active instead of the oldest.
@@ -2137,27 +2114,34 @@ def split_conflicting_facts(facts: list[dict[str, Any]]) -> tuple[list[dict[str,
             active.append(ranked[0])
         values = _dedupe_values(
             [str(item.get("normalized_value") or "") for item in items if str(item.get("normalized_value") or "").strip()]
-            + list(superseded_values.get((entity_scope, fact_key), set()))
+            + list(superseded_values.get(proposition_key, set()))
         )
         if len(values) > 1:
-            conflicts.append({"entity_scope": entity_scope, "fact_key": fact_key, "values": sorted(values)})
-    # P1.5 convergence: cross-scope values for the same fact_key are one
-    # proposition domain (e.g. customer-scope mail vs document-scope attachment
-    # disagreeing on device_model). The snapshot builder already raised these
-    # as "mixed" conflicts; split_conflicting_facts now mirrors that so the
-    # pack's canonical conflict view and P1.3 projection see the same state.
-    cross_scope_values: dict[str, list[str]] = {}
+            entry = {
+                "entity_scope": str(ranked[0].get("entity_scope") or "case"),
+                "fact_key": fact_key,
+                "values": sorted(values),
+            }
+            ref = fact_subject_ref(ranked[0])
+            if ref is not None:
+                entry["subject_kind"] = ref.kind
+                entry["subject_identity"] = ref.id
+                entry["subject_resolution"] = ref.resolution
+            conflicts.append(entry)
+    cross_scope_values: dict[str, list[dict[str, Any]]] = {}
     for fact in live_facts:
         key = str(fact.get("fact_key") or "").strip()
-        value = str(fact.get("normalized_value") or "").strip()
-        if key and value:
-            cross_scope_values.setdefault(key, []).append(value)
+        if key:
+            cross_scope_values.setdefault(key, []).append(fact)
     existing_keys = {str(item.get("fact_key") or "") for item in conflicts}
-    for fact_key, values in cross_scope_values.items():
-        deduped = _dedupe_values(values)
-        if len(deduped) <= 1 or fact_key in existing_keys:
+    for fact_key, rows in cross_scope_values.items():
+        values = _dedupe_values(str(item.get("normalized_value") or "").strip() for item in rows)
+        if len(values) <= 1:
             continue
-        conflicts.append({"entity_scope": "mixed", "fact_key": fact_key, "values": sorted(deduped)})
+        if not is_subject_aware_fact_key(fact_key):
+            if fact_key in existing_keys:
+                continue
+            conflicts.append({"entity_scope": "mixed", "fact_key": fact_key, "values": sorted(values)})
     return active, conflicts
 
 
@@ -2755,7 +2739,8 @@ def _build_fact(
     source_ref: str,
     metadata: dict[str, Any],
 ) -> dict[str, Any]:
-    return {
+    return attach_subject_metadata(
+        {
         "fact_id": stable_id("fact", case_id, message_id, document_id, entity_scope, fact_key, normalized_value),
         "case_id": case_id,
         "message_id": message_id,
@@ -2770,7 +2755,8 @@ def _build_fact(
         "source_ref": source_ref,
         "status": "active",
         "metadata": metadata,
-    }
+        }
+    )
 
 
 def _extract_first_email(text: str) -> str:

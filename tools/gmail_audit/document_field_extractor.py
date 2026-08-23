@@ -9,6 +9,7 @@ from typing import Any
 from document_intelligence_contract import EvidenceRef, ExtractedField, now_iso
 from document_parse_contract import DocumentElement, DocumentParseResult
 from evidence_authority import provenance_defaults
+from mailbox_memory.facts import attach_subject_metadata
 
 # Normalize Polish labels to mailbox fact keys.
 _LABEL_TO_FACT_KEY: dict[str, str] = {
@@ -496,7 +497,8 @@ def structured_fields_to_fact_rows(
         )
         fact_id = "sfact_" + hashlib.sha256(f"{document_id}:{fact_key}:{value}:{source_ref}".encode()).hexdigest()[:24]
         rows.append(
-            {
+            attach_subject_metadata(
+                {
                 "fact_id": fact_id,
                 "case_id": case_id,
                 "message_id": message_id,
@@ -519,7 +521,8 @@ def structured_fields_to_fact_rows(
                     # fact view never degrades document evidence to DERIVED.
                     **provenance_defaults(origin="ATTACHMENT"),
                 },
-            }
+                }
+            )
         )
     return rows
 

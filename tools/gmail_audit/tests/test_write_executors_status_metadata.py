@@ -19,6 +19,7 @@ if str(TOOL_DIR) not in sys.path:
     sys.path.insert(0, str(TOOL_DIR))
 
 from agent_runtime.tools.write_executors import execute_update_case_status
+from business_outcome import record_business_outcome
 from case_routing import desk_eligible, operator_priority_to_label
 from mailbox_memory_store import InMemoryMailboxMemoryStore, PostgresMailboxMemoryStore
 
@@ -271,6 +272,15 @@ def test_postgres_status_change_preserves_metadata() -> None:
                 target_status = "lost"
             else:
                 target_status = "open"
+
+            if target_status == "lost":
+                recorded = record_business_outcome(
+                    store,
+                    case_id=case_id,
+                    outcome="lost",
+                    source="test_postgres_status_change_preserves_metadata",
+                )
+                assert recorded.get("ok") is True, f"{scenario_name}: {recorded}"
 
             result = execute_update_case_status(
                 {"case_id": case_id, "status": target_status},

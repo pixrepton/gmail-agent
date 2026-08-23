@@ -12,6 +12,7 @@ if str(TOOL_DIR) not in sys.path:
     sys.path.insert(0, str(TOOL_DIR))
 
 from mailbox_memory import InMemoryMailboxMemoryStore
+from mailbox_memory.facts import proposition_identity
 from mailbox_memory_runtime import split_conflicting_facts
 
 
@@ -23,12 +24,28 @@ def _row(
     source_ref: str,
     observed_at: str,
     confidence: float = 0.8,
+    metadata: dict | None = None,
+    document_id: str = "",
+    message_id: str = "",
+    subject_kind: str = "",
+    subject_identity: str = "",
+    subject_resolution: str = "",
 ) -> dict:
+    meta = dict(metadata or {})
+    if subject_kind and subject_identity:
+        meta["subject_ref"] = {
+            "kind": subject_kind,
+            "id": subject_identity,
+            "resolution": subject_resolution or "EXPLICIT",
+        }
+        meta["subject_kind"] = subject_kind
+        meta["subject_identity"] = subject_identity
+        meta["subject_resolution"] = subject_resolution or "EXPLICIT"
     return {
         "fact_id": f"f_{source_ref}_{fact_key}_{value}",
         "case_id": "case_p",
-        "message_id": source_ref,
-        "document_id": "",
+        "message_id": message_id or source_ref,
+        "document_id": document_id,
         "entity_scope": entity_scope,
         "fact_key": fact_key,
         "normalized_value": value,
@@ -38,7 +55,7 @@ def _row(
         "source_type": "gmail_message",
         "source_ref": source_ref,
         "status": "active",
-        "metadata": {},
+        "metadata": meta,
     }
 
 
@@ -159,11 +176,122 @@ def test_derived_confidence_change_does_not_change_authority() -> None:
 
 
 def test_source_origin_change_keeps_proposition_identity() -> None:
-    customer = _row(fact_key="device_model", value="WH-XYZ", entity_scope="customer", source_ref="m1", observed_at="2026-08-23T10:00:00Z")
-    customer["metadata"] = {"source_origin": "CUSTOMER_EMAIL"}
-    document = _row(fact_key="device_model", value="WH-XYZ", entity_scope="document", source_ref="d1", observed_at="2026-08-23T11:00:00Z")
-    document["metadata"] = {"source_origin": "ATTACHMENT"}
+    customer = _row(
+        fact_key="device_model",
+        value="WH-XYZ",
+        entity_scope="customer",
+        source_ref="m1",
+        observed_at="2026-08-23T10:00:00Z",
+        metadata={"source_origin": "CUSTOMER_EMAIL"},
+        subject_kind="DEVICE",
+        subject_identity="device:A",
+    )
+    document = _row(
+        fact_key="device_model",
+        value="WH-XYZ",
+        entity_scope="document",
+        source_ref="d1",
+        observed_at="2026-08-23T11:00:00Z",
+        metadata={"source_origin": "ATTACHMENT"},
+        document_id="doc1",
+        subject_kind="DEVICE",
+        subject_identity="device:A",
+    )
     active, conflicts = _resolve([customer, document])
     values = {str(f.get("normalized_value")) for f in active if f.get("fact_key") == "device_model"}
     assert values == {"WH-XYZ"}
     assert not conflicts
+
+
+def test_distinct_document_subjects_with_same_fact_key_do_not_collapse_to_one_active_row() -> None:
+    first = _row(
+        fact_key="device_model",
+        value="WH-XYZ",
+        entity_scope="document",
+        source_ref="doc1",
+        observed_at="2026-08-23T10:00:00Z",
+        document_id="doc1",
+    )
+    second = _row(
+        fact_key="device_model",
+        value="WH-ABC",
+        entity_scope="document",
+        source_ref="doc2",
+        observed_at="2026-08-23T11:00:00Z",
+        document_id="doc2",
+    )
+    active, conflicts = _resolve([first, second])
+    values = {str(f.get("normalized_value")) for f in active if f.get("fact_key") == "device_model"}
+    assert values == {"WH-XYZ", "WH-ABC"}
+    assert not any(c.get("fact_key") == "device_model" for c in conflicts)
+
+
+def test_scope_mutation_same_explicit_subject_keeps_identity() -> None:
+    left = _row(
+        fact_key="device_model",
+        value="WH-XYZ",
+        entity_scope="customer",
+        source_ref="m1",
+        observed_at="2026-08-23T10:00:00Z",
+        subject_kind="DEVICE",
+        subject_identity="device:A",
+    )
+    right = _row(
+        fact_key="device_model",
+        value="WH-XYZ",
+        entity_scope="document",
+        source_ref="doc1",
+        observed_at="2026-08-23T10:00:00Z",
+        document_id="doc1",
+        subject_kind="DEVICE",
+        subject_identity="device:A",
+    )
+    assert proposition_identity(left) == proposition_identity(right)
+
+
+def test_message_id_mutation_same_explicit_subject_keeps_identity() -> None:
+    first = _row(
+        fact_key="device_model",
+        value="WH-XYZ",
+        entity_scope="customer",
+        source_ref="m1",
+        observed_at="2026-08-23T10:00:00Z",
+        message_id="m1",
+        subject_kind="DEVICE",
+        subject_identity="device:A",
+    )
+    second = _row(
+        fact_key="device_model",
+        value="WH-XYZ",
+        entity_scope="customer",
+        source_ref="m2",
+        observed_at="2026-08-23T10:00:00Z",
+        message_id="m2",
+        subject_kind="DEVICE",
+        subject_identity="device:A",
+    )
+    assert proposition_identity(first) == proposition_identity(second)
+
+
+def test_subject_id_mutation_changes_identity() -> None:
+    first = _row(
+        fact_key="device_model",
+        value="WH-XYZ",
+        entity_scope="document",
+        source_ref="doc1",
+        observed_at="2026-08-23T10:00:00Z",
+        document_id="doc1",
+        subject_kind="DEVICE",
+        subject_identity="device:A",
+    )
+    second = _row(
+        fact_key="device_model",
+        value="WH-XYZ",
+        entity_scope="document",
+        source_ref="doc2",
+        observed_at="2026-08-23T10:00:00Z",
+        document_id="doc2",
+        subject_kind="DEVICE",
+        subject_identity="device:B",
+    )
+    assert proposition_identity(first) != proposition_identity(second)

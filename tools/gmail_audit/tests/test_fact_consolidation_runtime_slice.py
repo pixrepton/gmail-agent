@@ -39,6 +39,18 @@ def _mail_fact(*, case_id: str, fact_key: str, value: str, message_id: str, obse
     }
 
 
+def _with_explicit_subject(rows: list[dict], *, subject_kind: str, subject_identity: str) -> list[dict]:
+    out: list[dict] = []
+    for row in rows:
+        meta = dict(row.get("metadata") or {})
+        meta["subject_ref"] = {"kind": subject_kind, "id": subject_identity, "resolution": "EXPLICIT"}
+        meta["subject_kind"] = subject_kind
+        meta["subject_identity"] = subject_identity
+        meta["subject_resolution"] = "EXPLICIT"
+        out.append({**row, "metadata": meta})
+    return out
+
+
 def _attachment_fact_rows(*, case_id: str, document_id: str, fact_key: str, value: str, observed_at: str) -> list[dict]:
     return structured_fields_to_fact_rows(
         [
@@ -65,16 +77,27 @@ def _store(case_id: str = "case_p1_5") -> InMemoryMailboxMemoryStore:
 
 def test_same_value_mail_and_attachment_produce_one_effective_view_in_pack() -> None:
     store = _store()
+    mail = _mail_fact(case_id="case_p1_5", fact_key="device_model", value="WH-XYZ", message_id="m1", observed_at="2026-08-23T10:00:00Z")
+    mail["metadata"]["subject_ref"] = {"kind": "DEVICE", "id": "device:A", "resolution": "EXPLICIT"}
+    mail["metadata"]["subject_kind"] = "DEVICE"
+    mail["metadata"]["subject_identity"] = "device:A"
+    mail["metadata"]["subject_resolution"] = "EXPLICIT"
     store.replace_message_facts(
         message_id="m1",
-        rows=[_mail_fact(case_id="case_p1_5", fact_key="device_model", value="WH-XYZ", message_id="m1", observed_at="2026-08-23T10:00:00Z")],
+        rows=[mail],
     )
     store.append_facts_with_supersession(
-        _attachment_fact_rows(case_id="case_p1_5", document_id="doc1", fact_key="device_model", value="WH-XYZ", observed_at="2026-08-23T11:00:00Z")
+        _with_explicit_subject(
+            _attachment_fact_rows(case_id="case_p1_5", document_id="doc1", fact_key="device_model", value="WH-XYZ", observed_at="2026-08-23T11:00:00Z"),
+            subject_kind="DEVICE",
+            subject_identity="device:A",
+        )
     )
     pack = build_case_context_pack(store=store, case_id="case_p1_5")
     assert pack is not None
     assert not (pack.conflicting_facts or [])
+    snapshot_conflicts = [c for c in ((pack.snapshot or {}).get("conflicting_facts") or []) if c.get("fact_key") == "device_model"]
+    assert not snapshot_conflicts
     active = pack.active_facts or []
     models = [f for f in active if f.get("fact_key") == "device_model"]
     # One effective business value: the two scope rows (customer mail vs
@@ -87,15 +110,26 @@ def test_same_value_mail_and_attachment_produce_one_effective_view_in_pack() -> 
 
 def test_conflicting_attachment_surfaces_in_pack_and_blocks_decision() -> None:
     store = _store()
+    mail = _mail_fact(case_id="case_p1_5", fact_key="device_model", value="WH-XYZ", message_id="m1", observed_at="2026-08-23T10:00:00Z")
+    mail["metadata"]["subject_ref"] = {"kind": "DEVICE", "id": "device:A", "resolution": "EXPLICIT"}
+    mail["metadata"]["subject_kind"] = "DEVICE"
+    mail["metadata"]["subject_identity"] = "device:A"
+    mail["metadata"]["subject_resolution"] = "EXPLICIT"
     store.replace_message_facts(
         message_id="m1",
-        rows=[_mail_fact(case_id="case_p1_5", fact_key="device_model", value="WH-XYZ", message_id="m1", observed_at="2026-08-23T10:00:00Z")],
+        rows=[mail],
     )
     store.append_facts_with_supersession(
-        _attachment_fact_rows(case_id="case_p1_5", document_id="doc1", fact_key="device_model", value="WH-ABC", observed_at="2026-08-23T11:00:00Z")
+        _with_explicit_subject(
+            _attachment_fact_rows(case_id="case_p1_5", document_id="doc1", fact_key="device_model", value="WH-ABC", observed_at="2026-08-23T11:00:00Z"),
+            subject_kind="DEVICE",
+            subject_identity="device:A",
+        )
     )
     pack = build_case_context_pack(store=store, case_id="case_p1_5")
     assert any(c.get("fact_key") == "device_model" for c in (pack.conflicting_facts or []))
+    snapshot_conflicts = [c for c in ((pack.snapshot or {}).get("conflicting_facts") or []) if c.get("fact_key") == "device_model"]
+    assert snapshot_conflicts
     # Decision-critical conflict annotation blocks the premise.
     from mailbox_memory.active_facts import annotate_decision_fact_use
 

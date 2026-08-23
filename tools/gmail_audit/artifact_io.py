@@ -6,6 +6,7 @@ import csv
 import io
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -82,7 +83,14 @@ def write_text(path: Path, text: str) -> None:
     try:
         with temp_path.open("w", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
-        os.replace(temp_path, path)
+        for attempt in range(5):
+            try:
+                os.replace(temp_path, path)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
     finally:
         if temp_path.exists():
             temp_path.unlink(missing_ok=True)

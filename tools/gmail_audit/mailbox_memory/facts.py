@@ -1,8 +1,10 @@
 """Fact extraction from text and HVAC signals for mailbox memory."""
 from __future__ import annotations
+
 import json
 import re
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 
 # Regex patterns for fact extraction
 EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
@@ -108,6 +110,336 @@ def _evidence_key(ref: dict[str, Any]) -> str:
     return json.dumps(ref, sort_keys=True, ensure_ascii=False, default=str)
 
 
+SubjectResolution = Literal["EXPLICIT", "SINGLE_SUBJECT_DEFAULT", "AMBIGUOUS"]
+
+SUBJECT_KIND_CASE = "CASE"
+SUBJECT_KIND_CUSTOMER = "CUSTOMER"
+SUBJECT_KIND_PROPERTY = "PROPERTY"
+SUBJECT_KIND_DEVICE = "DEVICE"
+SUBJECT_KIND_SERVICE_EVENT = "SERVICE_EVENT"
+
+CASE_FACT_KEYS = frozenset(
+    {
+        "agent_draft",
+        "amount_total",
+        "case_deadline",
+        "case_label",
+        "case_note",
+        "deposit_invoice_number",
+        "document_date",
+        "due_date",
+        "invoice_number",
+        "issue_date",
+        "nip",
+        "offer_family",
+        "order_number",
+        "price",
+        "probable_case_key",
+        "reference_token",
+        "service_frequency",
+        "validity_date",
+        "vendor",
+        "warranty_term",
+    }
+)
+CUSTOMER_FACT_KEYS = frozenset({"customer_email", "customer_name", "customer_phone"})
+PROPERTY_FACT_KEYS = frozenset(
+    {
+        "address",
+        "building_type",
+        "city",
+        "current_heating_source",
+        "floor_heating_existing",
+        "floor_heating_scope",
+        "heated_area_m2",
+        "installation_address",
+        "postal_code",
+    }
+)
+DEVICE_FACT_KEYS = frozenset(
+    {
+        "device_brand",
+        "device_model",
+        "error_code",
+        "fault_code",
+        "manufacturer",
+        "power_kw",
+        "product_model",
+        "serial_number",
+    }
+)
+SERVICE_EVENT_FACT_KEYS = frozenset({"preferred_service_date", "service_date"})
+SUBJECT_AWARE_FACT_KEYS = frozenset(
+    CASE_FACT_KEYS | CUSTOMER_FACT_KEYS | PROPERTY_FACT_KEYS | DEVICE_FACT_KEYS | SERVICE_EVENT_FACT_KEYS
+)
+
+SUBJECT_PREFIX_TO_KIND = {
+    "case": SUBJECT_KIND_CASE,
+    "customer": SUBJECT_KIND_CUSTOMER,
+    "property": SUBJECT_KIND_PROPERTY,
+    "device": SUBJECT_KIND_DEVICE,
+    "service": SUBJECT_KIND_SERVICE_EVENT,
+    "service_event": SUBJECT_KIND_SERVICE_EVENT,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class SubjectRef:
+    kind: str
+    id: str
+    resolution: SubjectResolution
+    evidence_basis: str = ""
+
+    def to_metadata(self) -> dict[str, str]:
+        payload = {
+            "kind": str(self.kind or "").strip(),
+            "id": str(self.id or "").strip(),
+            "resolution": str(self.resolution or "").strip(),
+        }
+        if str(self.evidence_basis or "").strip():
+            payload["evidence_basis"] = str(self.evidence_basis or "").strip()
+        return payload
+
+
+def is_subject_aware_fact_key(fact_key: str) -> bool:
+    return str(fact_key or "").strip() in SUBJECT_AWARE_FACT_KEYS
+
+
+def fact_subject_kind(fact_key: str) -> str:
+    key = str(fact_key or "").strip()
+    if key in CASE_FACT_KEYS:
+        return SUBJECT_KIND_CASE
+    if key in CUSTOMER_FACT_KEYS:
+        return SUBJECT_KIND_CUSTOMER
+    if key in PROPERTY_FACT_KEYS:
+        return SUBJECT_KIND_PROPERTY
+    if key in DEVICE_FACT_KEYS:
+        return SUBJECT_KIND_DEVICE
+    if key in SERVICE_EVENT_FACT_KEYS:
+        return SUBJECT_KIND_SERVICE_EVENT
+    return ""
+
+
+def _subject_meta(payload: dict[str, Any]) -> dict[str, Any]:
+    return payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+
+
+def _normalize_subject_kind(value: Any) -> str:
+    key = str(value or "").strip().upper()
+    return key if key in {SUBJECT_KIND_CASE, SUBJECT_KIND_CUSTOMER, SUBJECT_KIND_PROPERTY, SUBJECT_KIND_DEVICE, SUBJECT_KIND_SERVICE_EVENT} else ""
+
+
+def _subject_kind_from_identity(subject_identity: str) -> str:
+    prefix = str(subject_identity or "").strip().split(":", 1)[0].lower()
+    return SUBJECT_PREFIX_TO_KIND.get(prefix, "")
+
+
+def _stored_subject_ref(payload: dict[str, Any]) -> SubjectRef | None:
+    meta = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    meta_ref = meta.get("subject_ref") if isinstance(meta.get("subject_ref"), dict) else {}
+    subject_identity = str(
+        meta_ref.get("id")
+        or meta_ref.get("subject_id")
+        or
+        payload.get("subject_identity")
+        or payload.get("proposition_subject_id")
+        or meta.get("subject_identity")
+        or meta.get("proposition_subject_id")
+        or ""
+    ).strip()
+    if not subject_identity:
+        return None
+    subject_kind = _normalize_subject_kind(
+        meta_ref.get("kind")
+        or payload.get("subject_kind")
+        or meta.get("subject_kind")
+        or _subject_kind_from_identity(subject_identity)
+        or fact_subject_kind(payload.get("fact_key"))
+    )
+    if not subject_kind:
+        return None
+    resolution = str(
+        meta_ref.get("resolution")
+        or payload.get("subject_resolution")
+        or meta.get("subject_resolution")
+        or "EXPLICIT"
+    ).strip().upper()
+    if resolution not in {"EXPLICIT", "SINGLE_SUBJECT_DEFAULT", "AMBIGUOUS"}:
+        resolution = "EXPLICIT"
+    evidence_basis = str(
+        meta_ref.get("evidence_basis")
+        or payload.get("subject_evidence_basis")
+        or meta.get("subject_evidence_basis")
+        or ""
+    ).strip()
+    return SubjectRef(
+        kind=subject_kind,
+        id=subject_identity,
+        resolution=resolution,
+        evidence_basis=evidence_basis,
+    )
+
+
+def _ambiguous_subject_ref(payload: dict[str, Any], *, subject_kind: str) -> SubjectRef | None:
+    case_id = str(payload.get("case_id") or "").strip()
+    fact_key = str(payload.get("fact_key") or "").strip()
+    if not case_id or not fact_key:
+        return None
+    document_id = str(payload.get("document_id") or "").strip()
+    message_id = str(payload.get("message_id") or "").strip()
+    source_ref = str(payload.get("source_ref") or "").strip()
+    fact_id = str(payload.get("fact_id") or "").strip()
+    evidence_basis = ""
+    if document_id:
+        evidence_basis = f"document:{document_id}"
+    elif message_id:
+        evidence_basis = f"message:{message_id}"
+    elif source_ref:
+        evidence_basis = f"source:{source_ref}"
+    elif fact_id:
+        evidence_basis = f"fact:{fact_id}"
+    else:
+        evidence_basis = stable_id(
+            "ambiguous",
+            case_id,
+            fact_key,
+            str(payload.get("normalized_value") or "").strip(),
+        )
+    bucket = stable_id("subject", case_id, subject_kind.lower(), evidence_basis)
+    return SubjectRef(
+        kind=subject_kind,
+        id=f"case:{case_id}:ambiguous_{subject_kind.lower()}:{bucket}",
+        resolution="AMBIGUOUS",
+        evidence_basis=evidence_basis,
+    )
+
+
+def _single_subject_candidate_from_case_facts(
+    case_facts: list[dict[str, Any]] | None,
+    *,
+    subject_kind: str,
+) -> str:
+    if not case_facts:
+        return ""
+    candidates: set[str] = set()
+    for item in case_facts:
+        ref = _stored_subject_ref(item)
+        if ref is None:
+            continue
+        if ref.kind != subject_kind or ref.resolution == "AMBIGUOUS":
+            continue
+        if str(ref.id or "").strip():
+            candidates.add(str(ref.id or "").strip())
+    if len(candidates) == 1:
+        return next(iter(candidates))
+    return ""
+
+
+def fact_subject_ref(
+    payload: dict[str, Any],
+    *,
+    case_facts: list[dict[str, Any]] | None = None,
+) -> SubjectRef | None:
+    stored = _stored_subject_ref(payload)
+    if stored is not None and stored.resolution == "EXPLICIT":
+        return stored
+    fact_key = str(payload.get("fact_key") or "").strip()
+    subject_kind = stored.kind if stored is not None else fact_subject_kind(fact_key)
+    if not subject_kind:
+        return None
+    case_id = str(payload.get("case_id") or "").strip()
+    if subject_kind == SUBJECT_KIND_CASE and case_id:
+        return SubjectRef(
+            kind=SUBJECT_KIND_CASE,
+            id=f"case:{case_id}",
+            resolution="EXPLICIT",
+            evidence_basis="case_id",
+        )
+    if subject_kind == SUBJECT_KIND_CUSTOMER and case_id:
+        return SubjectRef(
+            kind=SUBJECT_KIND_CUSTOMER,
+            id=f"case:{case_id}:primary_customer",
+            resolution="SINGLE_SUBJECT_DEFAULT",
+            evidence_basis="case_primary_customer",
+        )
+    if subject_kind == SUBJECT_KIND_PROPERTY and case_id:
+        return SubjectRef(
+            kind=SUBJECT_KIND_PROPERTY,
+            id=f"case:{case_id}:primary_property",
+            resolution="SINGLE_SUBJECT_DEFAULT",
+            evidence_basis="case_primary_property",
+        )
+    if subject_kind in {SUBJECT_KIND_DEVICE, SUBJECT_KIND_SERVICE_EVENT}:
+        candidate = _single_subject_candidate_from_case_facts(case_facts, subject_kind=subject_kind)
+        if candidate:
+            return SubjectRef(
+                kind=subject_kind,
+                id=candidate,
+                resolution="SINGLE_SUBJECT_DEFAULT",
+                evidence_basis=f"single_{subject_kind.lower()}_candidate",
+            )
+        return _ambiguous_subject_ref(payload, subject_kind=subject_kind)
+    return None
+
+
+def subject_supersession_allowed(payload: dict[str, Any]) -> bool:
+    meta = _subject_meta(payload)
+    if meta.get("allow_subject_supersession") is True:
+        return True
+    mode = str(meta.get("supersession_mode") or "").strip().lower()
+    if mode in {"subject_local_explicit", "explicit_correction"}:
+        return True
+    origin = str(meta.get("source_origin") or "").strip().upper()
+    source_type = str(payload.get("source_type") or "").strip().lower()
+    return origin in {"OPERATOR", "INTERNAL_STATE", "SYSTEM"} or source_type == "agent_write"
+
+
+def attach_subject_metadata(
+    payload: dict[str, Any],
+    *,
+    case_facts: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    out = dict(payload)
+    meta = dict(_subject_meta(out))
+    ref = fact_subject_ref({**out, "metadata": meta}, case_facts=case_facts)
+    if ref is None:
+        out["metadata"] = meta
+        return out
+    meta["subject_ref"] = ref.to_metadata()
+    meta["subject_kind"] = ref.kind
+    meta["subject_identity"] = ref.id
+    meta["subject_resolution"] = ref.resolution
+    if ref.evidence_basis:
+        meta["subject_evidence_basis"] = ref.evidence_basis
+    else:
+        meta.pop("subject_evidence_basis", None)
+    out["metadata"] = meta
+    return out
+
+
+def fact_subject_identity(
+    payload: dict[str, Any],
+    *,
+    case_facts: list[dict[str, Any]] | None = None,
+) -> str:
+    ref = fact_subject_ref(payload, case_facts=case_facts)
+    return str(ref.id if ref is not None else "").strip()
+
+
+def proposition_identity(
+    payload: dict[str, Any],
+    *,
+    case_facts: list[dict[str, Any]] | None = None,
+) -> tuple[str, ...]:
+    scope = str(payload.get("entity_scope") or "case").strip() or "case"
+    fact_key = str(payload.get("fact_key") or "").strip()
+    if is_subject_aware_fact_key(fact_key):
+        ref = fact_subject_ref(payload, case_facts=case_facts)
+        if ref is not None and str(ref.id or "").strip():
+            return (ref.kind, ref.id, fact_key)
+    return (scope, fact_key)
+
+
 def row_evidence_refs(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """Collect evidence refs from one fact row.
 
@@ -133,6 +465,12 @@ def row_evidence_refs(payload: dict[str, Any]) -> list[dict[str, Any]]:
         implied["message_id"] = str(payload.get("message_id") or "").strip()
     if str(payload.get("document_id") or "").strip():
         implied["document_id"] = str(payload.get("document_id") or "").strip()
+    # P1.5B: supporting evidence must keep its own provenance authority, not
+    # only the winning row-level trio.
+    for key in ("source_origin", "evidence_authority", "instruction_authority"):
+        value = str(meta.get(key) or "").strip()
+        if value:
+            implied[key] = value
     if implied:
         refs.append(implied)
     return refs

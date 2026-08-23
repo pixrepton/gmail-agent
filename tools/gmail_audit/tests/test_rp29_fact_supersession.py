@@ -41,6 +41,12 @@ def test_supersession_replaces_active_value() -> None:
         "source_ref": "agent:msg2",
         "normalized_value": "140",
         "observed_at": "2026-08-03T09:00:00Z",
+        "metadata": {
+            "allow_subject_supersession": True,
+            "source_origin": "OPERATOR",
+            "evidence_authority": "OPERATOR_STATEMENT",
+            "instruction_authority": "NONE",
+        },
     }
     stats1 = store.append_facts_with_supersession([row_v1])
     assert stats1["inserted"] == 1
@@ -132,6 +138,12 @@ def test_supersession_survives_into_the_assembled_case_context_pack() -> None:
         "normalized_value": "140",
         "confidence": 0.6,
         "observed_at": "2026-08-03T09:00:00Z",
+        "metadata": {
+            "allow_subject_supersession": True,
+            "source_origin": "OPERATOR",
+            "evidence_authority": "OPERATOR_STATEMENT",
+            "instruction_authority": "NONE",
+        },
     }
     assert store.append_facts_with_supersession([row_v1])["inserted"] == 1
     assert store.append_facts_with_supersession([row_v2])["superseded"] == 1
@@ -178,6 +190,12 @@ def test_pack_embedded_snapshot_uses_same_active_fact_filter_as_pack_sections() 
         "normalized_value": "140",
         "confidence": 0.6,
         "observed_at": "2026-08-03T09:00:00Z",
+        "metadata": {
+            "allow_subject_supersession": True,
+            "source_origin": "OPERATOR",
+            "evidence_authority": "OPERATOR_STATEMENT",
+            "instruction_authority": "NONE",
+        },
     }
     assert store.append_facts_with_supersession([row_v1])["inserted"] == 1
     assert store.append_facts_with_supersession([row_v2])["superseded"] == 1

@@ -66,9 +66,12 @@ def test_conflicting_values_remain_unusable_regardless_of_timestamp_order() -> N
         active, conflicts = split_conflicting_facts(list(rows))
         annotated = annotate_decision_fact_use(active, conflicts)
 
-        assert conflicts == [
-            {"entity_scope": "building", "fact_key": "heated_area_m2", "values": ["180", "220"]}
-        ]
+        assert len(conflicts) == 1
+        assert conflicts[0]["entity_scope"] == "building"
+        assert conflicts[0]["fact_key"] == "heated_area_m2"
+        assert conflicts[0]["values"] == ["180", "220"]
+        assert conflicts[0]["subject_kind"] == "PROPERTY"
+        assert conflicts[0]["subject_resolution"] == "SINGLE_SUBJECT_DEFAULT"
         assert annotated[0]["trust_state"] == "conflicted"
         assert annotated[0]["decision_usable"] is False
         assert annotated[0]["decision_block_reason"] == "fact_conflict"
@@ -81,7 +84,17 @@ def test_explicit_supersession_restores_decision_usable_fact() -> None:
         [_fact(value="180", fact_id="f_old", observed_at="2026-08-20T08:00:00Z")]
     )["inserted"] == 1
     assert store.append_facts_with_supersession(
-        [_fact(value="220", fact_id="f_new", observed_at="2026-08-20T09:00:00Z")]
+        [
+            {
+                **_fact(value="220", fact_id="f_new", observed_at="2026-08-20T09:00:00Z"),
+                "metadata": {
+                    "allow_subject_supersession": True,
+                    "source_origin": "OPERATOR",
+                    "evidence_authority": "OPERATOR_STATEMENT",
+                    "instruction_authority": "NONE",
+                },
+            }
+        ]
     )["superseded"] == 1
 
     current = fetch_current_facts_for_case(store, "case_active_facts")

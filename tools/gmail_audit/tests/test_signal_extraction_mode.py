@@ -44,18 +44,21 @@ def test_floor_heating_signal_is_retained_and_materialized_as_case_facts() -> No
     assert by_key["floor_heating_scope"]["normalized_value"] == "parter"
 
 
-def test_current_floor_heating_signal_supersedes_prior_case_fact_with_source_provenance() -> None:
+def test_current_floor_heating_signal_conflicts_without_legal_supersession() -> None:
     store = InMemoryMailboxMemoryStore()
-    common = {
+    base = {
         "case_id": "c1",
-        "observed_at": "2026-01-01T00:00:00+00:00",
         "source_type": "message",
         "entity_scope": "case",
         "metadata": {"extraction_path": "llm_intake"},
     }
     store.append_facts_with_supersession(
         facts_from_hvac_signals(
-            {"floor_heating_existing": False}, message_id="m0", source_ref="m0", **common
+            {"floor_heating_existing": False},
+            message_id="m0",
+            source_ref="m0",
+            observed_at="2026-01-01T00:00:00+00:00",
+            **base,
         )
     )
     stats = store.append_facts_with_supersession(
@@ -63,15 +66,18 @@ def test_current_floor_heating_signal_supersedes_prior_case_fact_with_source_pro
             {"floor_heating_existing": True, "floor_heating_scope": "parter"},
             message_id="m1",
             source_ref="m1",
-            **common,
+            observed_at="2026-01-01T01:00:00+00:00",
+            **base,
         )
     )
 
     pack = build_case_context_pack(store=store, case_id="c1").to_dict()
     by_key = {row["fact_key"]: row for row in pack["active_facts"]}
-    assert stats["superseded"] == 1
+    conflicts = list(pack.get("conflicting_facts") or [])
+    assert stats["superseded"] == 0
     assert by_key["floor_heating_existing"]["normalized_value"] == "True"
     assert by_key["floor_heating_existing"]["source_ref"] == "m1"
+    assert any(item.get("fact_key") == "floor_heating_existing" for item in conflicts)
     assert by_key["floor_heating_scope"]["normalized_value"] == "parter"
 
 

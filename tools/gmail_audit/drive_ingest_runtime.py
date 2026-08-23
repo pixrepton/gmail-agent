@@ -29,6 +29,7 @@ from mailbox_memory_runtime import (
     stable_id,
     summarize_document_text,
 )
+from mailbox_memory.facts import attach_subject_metadata
 from mailbox_memory.active_facts import fetch_current_facts_for_case, is_live_fact
 from mailbox_memory_store import InMemoryMailboxMemoryStore, MailboxMemoryStore, PostgresMailboxMemoryStore
 
@@ -1958,9 +1959,13 @@ def build_fact(
     source_ref: str,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    return attach_subject_metadata(
+        {
         "fact_id": stable_id("gfact", document_id, fact_key, normalized_value),
         "fact_family": fact_family,
+        "case_id": "",
+        "message_id": "",
+        "document_id": document_id,
         "entity_scope": "document",
         "fact_key": fact_key,
         "normalized_value": normalized_value,
@@ -1970,7 +1975,8 @@ def build_fact(
         "source_ref": source_ref,
         "status": "active",
         "metadata": dict(metadata or {}),
-    }
+        }
+    )
 
 
 def dedupe_facts(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
