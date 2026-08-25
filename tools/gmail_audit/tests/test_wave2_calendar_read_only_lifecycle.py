@@ -57,12 +57,17 @@ def test_calendar_ingest_uses_registered_calendar_source_kind_and_is_idempotent(
     assert result["ok"] is True
     assert result["events"][0]["case_id"] == "case-cal-1"
     assert len(store.calendar_events) == 1
-    assert list(store.signals.values())[-1]["source_kind"] == "calendar"
+    signal = list(store.signals.values())[-1]
+    assert signal["source_kind"] == "calendar"
+    attempts = store.fetch_signal_processing_attempts(signal["signal_id"])
+    assert sorted(a["status"] for a in attempts) == ["reconciled", "started"]
+    assert attempts[0]["signal_id"] == attempts[1]["signal_id"]
 
     client.list_events.return_value = [_event(summary="Zmieniony termin")]
     CalendarRuntime(settings=_settings(), store=store, client=client).ingest_events(dry_run=False)
 
     assert len(store.calendar_events) == 1
+    assert len(store.fetch_signal_processing_attempts(signal["signal_id"])) == len(attempts)
     assert store.calendar_events["evt-1"]["summary"] == "Zmieniony termin"
     context = CalendarRuntime(settings=_settings(), store=store, client=client).context_for_case("case-cal-1")
     assert context["visit_lifecycle"] == "scheduled_visit"

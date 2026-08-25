@@ -18,6 +18,7 @@ from calendar_signal_adapter import build_calendar_raw_observation, build_calend
 from config import Settings
 from log_config import get_logger
 from mailbox_memory.active_facts import fetch_current_facts_for_case
+from signal_journal import SignalJournal
 
 log = get_logger(__name__)
 
@@ -72,7 +73,22 @@ class CalendarRuntime:
                 raw_obs = build_calendar_raw_observation(source_ref=source_ref, observed_at=observed_at, payload=event_row)
                 self.store.append_raw_observation(raw_obs.to_dict())
                 signal = build_calendar_signal(source_ref=source_ref, observed_at=observed_at, payload=event_row, raw_observation=raw_obs)
-                self.store.append_signal(signal.to_dict())
+                journal = SignalJournal(self.store)
+                append_result = journal.append(signal)
+                if append_result.inserted:
+                    from signal_reconciler import SignalRuntimeContext, reconcile_signal
+
+                    reconcile_signal(
+                        append_result.signal,
+                        runtime_context=SignalRuntimeContext(
+                            settings=self.settings,
+                            journal=journal,
+                            store=self.store,
+                            mode="calendar_ingest",
+                            trace_id=append_result.signal.signal_id,
+                        ),
+                        dry_run=False,
+                    )
             except Exception as exc:
                 log.warning(
                     "CALENDAR_EVENT_INGEST_FAILED",
