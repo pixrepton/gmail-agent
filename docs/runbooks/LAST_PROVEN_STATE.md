@@ -1,10 +1,39 @@
 # Last Proven State
 
 **Status:** aktywny runbook proof  
-**Ostatnia aktualizacja:** 2026-08-20 (`SVC-05` final live proof + AI-OS truth sync)
-**Zakres:** lokalny Docker Compose; bez deployu na VPS/produkcję
+**Ostatnia aktualizacja:** 2026-08-29 (`NODE_B_PRODUCTION_OPERABILITY_01`)
+**Zakres aktualny:** lokalny Docker Compose oraz produkcyjny Node B na `aios1` (Case OS offer visibility); bez zmian w customer workflow.
 
 ## Executive verdict
+
+**`NODE_B_PRODUCTION_OPERABILITY_01` (2026-08-29): CLOSED / PASS.**
+Production Node B is now deployed on `aios1` and proven recoverable for the
+Offer -> Case OS visibility path. Current production topology:
+
+- host: `aios1`
+- Node B API: `127.0.0.1:8765` (loopback-only)
+- Node B Postgres host port: `127.0.0.1:54129` (loopback-only)
+- runtime: `/opt/gmail-agent/current`
+- env: `/etc/topinstal/gmail-agent.env` (`600 root:root`)
+- persistent volume: `gmail-agent-mailbox-memory-pgdata`
+- production `gmail-agent` revision:
+  `b3aaad0edc6594940be498672d8e2dc14a619c07`
+- production `cieplo-orchestrator` revision:
+  `964e784460261e7c3adf61d2aa51ca8ccef52e21`
+
+Fresh operability proof: Docker service `enabled/active`; Node B API and
+Postgres containers use restart policy `unless-stopped`; named volume exists;
+API and DB are not publicly exposed; free space on `/` was 31G available
+(`16%` used); `/health` returned `ok=true`. Production DB backup was created at
+`/opt/topinstal/backups/nodeb-mailbox-memory-20260828T234240Z.dump`
+(`sha256=c4be045e9a17044d01b586fb2bae1293c81c2ad5dd4d4c02bcbb3f90408acfae`,
+113309 bytes) and restored into a disposable DB, not the active production DB.
+Restore proof found 47 schema tables, `unified_os_events`, `mailbox_memory_cases`,
+`correlation_links`, and the real offer observation. Controlled restart of only
+`gmail-agent-nodeb-api` preserved health and
+`GET /cases/case_6c7972a708d8/offers/latest` returned the real Cieplo offer
+`cieplo:1ff01a40-c642-4abd-b8b7-a1a0b6369c32`, model `KIT-WC09K3E8`, price
+`36856`, status `done`, `conflicts=[]`. Customer side effects: `0`.
 
 Lokalny baseline stabilizacji AI-OS TOP-INSTAL ma status **PASS**. Faza 0 (Final Foundation Closeout) zamknięta 2026-07-15 z werdyktem `PASS — FOUNDATION CLOSED` (`knowledge/memory/OPERATOR_DECISIONS.md`); general stabilization jako program jest zamknięty, następny kierunek to Intelligence Evolution — obecnie w toku (`A1 → X1 v0 → EVAL-1 → Roadmap Checkpoint 1 → DELIVERY-1 → EVAL-1.1 rerun → Checkpoint 1.1 → Clean EVAL Rerun → EVAL-RECOVERY-1`).
 
