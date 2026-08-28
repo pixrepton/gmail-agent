@@ -19,6 +19,7 @@ OFFER_GENERATED_EVENT = "offer.generated"
 OFFER_STATUS_UPDATED_EVENT = "offer.status_updated"
 OFFER_EVENT_TYPES = frozenset({OFFER_GENERATED_EVENT, OFFER_STATUS_UPDATED_EVENT})
 OFFER_CONFLICT_FIELDS = ("selected_model", "final_price_pln", "document_id", "document_url")
+OFFER_FIELD_PROVENANCE_FIELDS = ("selected_model", "final_price_pln", "document", "delivery_status")
 
 
 class OfferObservationError(ValueError):
@@ -389,6 +390,126 @@ def detect_offer_conflicts_for_case(events: list[dict[str, Any]], *, case_id: st
 
 def fetch_offer_conflicts_for_case(database_url: str, case_id: str) -> list[dict[str, Any]]:
     return detect_offer_conflicts_for_case(fetch_offer_events_for_case(database_url, case_id), case_id=case_id)
+
+
+def _conflicted_offer_fields(conflicts: list[dict[str, Any]], offer_id: str) -> set[str]:
+    oid = _clean(offer_id)
+    out: set[str] = set()
+    for conflict in conflicts:
+        if _clean(conflict.get("offer_id")) != oid:
+            continue
+        field = _clean(conflict.get("field"))
+        if field in {"document_id", "document_url"}:
+            out.add("document")
+        elif field:
+            out.add(field)
+    return out
+
+
+def _field_value(offer: dict[str, Any], field: str) -> Any:
+    if field == "document":
+        return offer.get("document") if isinstance(offer.get("document"), dict) else {}
+    return offer.get(field)
+
+
+def _field_observed_at(offer: dict[str, Any], field: str) -> str:
+    if field == "delivery_status":
+        return _clean(offer.get("updated_at") or offer.get("created_at"))
+    return _clean(offer.get("created_at") or offer.get("updated_at"))
+
+
+def _field_source_path(field: str) -> str:
+    return {
+        "selected_model": "offer_json.engineering.selection.pumpModel",
+        "final_price_pln": "offer_json.pricing.totals.gross",
+        "document": "generator_response.document | workflow.pdf_download_url",
+        "delivery_status": "workflow.customer_delivery_decision",
+    }.get(field, field)
+
+
+def _field_origin_kind(field: str) -> str:
+    return {
+        "selected_model": "calculated",
+        "final_price_pln": "calculated",
+        "document": "generated",
+        "delivery_status": "execution_fact",
+    }.get(field, "derived")
+
+
+def _field_trust_reason(field: str, status: str) -> str:
+    if status == "DISPUTED":
+        return f"{field} has contradictory observations for the same offer_id"
+    if status == "INCOMPLETE":
+        return f"{field} is missing value or source provenance"
+    return {
+        "selected_model": "selected_model comes from persisted OfferDTO engineering selection",
+        "final_price_pln": "final_price_pln comes from persisted OfferDTO pricing totals",
+        "document": "document comes from verified generated artifact reference",
+        "delivery_status": "delivery_status comes from workflow execution state",
+    }.get(field, f"{field} has deterministic source provenance")
+
+
+def build_offer_field_provenance(
+    offer: dict[str, Any],
+    *,
+    conflicts: list[dict[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Build machine-readable provenance for operator-visible offer fields."""
+    active_conflicts = list(conflicts or [])
+    offer_id = _clean(offer.get("offer_id"))
+    provenance = dict(offer.get("provenance") or {}) if isinstance(offer.get("provenance"), dict) else {}
+    conflicted = _conflicted_offer_fields(active_conflicts, offer_id)
+    source_repo = _clean(provenance.get("source_repo"))
+    source_workflow = _clean(provenance.get("workflow_id") or provenance.get("source_workflow_id"))
+    latest_event_id = _clean(offer.get("latest_event_id"))
+
+    out: dict[str, dict[str, Any]] = {}
+    for field in OFFER_FIELD_PROVENANCE_FIELDS:
+        value = _field_value(offer, field)
+        has_value = value not in ("", None, {}, [])
+        has_source = bool(source_repo and source_workflow)
+        canonical_status = "VERIFIED"
+        if field in conflicted:
+            canonical_status = "DISPUTED"
+        elif not has_value or not has_source:
+            canonical_status = "INCOMPLETE"
+        item = {
+            "value": value,
+            "source_repo": source_repo,
+            "source_workflow": source_workflow,
+            "source_path": _field_source_path(field),
+            "evidence_reference": latest_event_id or offer_id,
+            "origin_kind": _field_origin_kind(field),
+            "observed_at": _field_observed_at(offer, field),
+            "canonical_status": canonical_status,
+        }
+        out[field] = {k: v for k, v in item.items() if v not in ("", None)}
+    return out
+
+
+def derive_offer_trust_status(
+    offer: dict[str, Any],
+    *,
+    conflicts: list[dict[str, Any]] | None = None,
+    field_provenance: dict[str, dict[str, Any]] | None = None,
+) -> str:
+    active_conflicts = list(conflicts or [])
+    if _conflicted_offer_fields(active_conflicts, _clean(offer.get("offer_id"))):
+        return "CONFLICTED"
+    fp = field_provenance or build_offer_field_provenance(offer, conflicts=active_conflicts)
+    for field in OFFER_FIELD_PROVENANCE_FIELDS:
+        item = fp.get(field) if isinstance(fp.get(field), dict) else {}
+        if item.get("canonical_status") != "VERIFIED":
+            return "INCOMPLETE"
+    return "VERIFIED"
+
+
+def build_offer_trust_reasons(field_provenance: dict[str, dict[str, Any]]) -> list[str]:
+    reasons: list[str] = []
+    for field in OFFER_FIELD_PROVENANCE_FIELDS:
+        item = field_provenance.get(field) if isinstance(field_provenance.get(field), dict) else {}
+        reasons.append(_field_trust_reason(field, _clean(item.get("canonical_status") or "INCOMPLETE")))
+    return reasons
 
 
 def project_latest_offer_for_case(events: list[dict[str, Any]], *, case_id: str) -> dict[str, Any] | None:

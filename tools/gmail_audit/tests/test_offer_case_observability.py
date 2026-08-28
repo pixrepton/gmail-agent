@@ -17,6 +17,9 @@ from offer_observability import (
     OFFER_GENERATED_EVENT,
     OFFER_STATUS_UPDATED_EVENT,
     OfferObservationError,
+    build_offer_field_provenance,
+    build_offer_trust_reasons,
+    derive_offer_trust_status,
     detect_offer_conflicts_for_case,
     project_latest_offer_for_case,
     record_offer_generated_from_os_event,
@@ -50,6 +53,26 @@ def _raw_offer_event(**overrides):
     }
     payload.update(overrides)
     return payload
+
+
+def _projected_offer(**overrides):
+    offer = {
+        "case_id": "case_offer_1",
+        "offer_id": "cieplo:wf-1",
+        "source": "cieplo",
+        "created_at": "2026-08-28T10:00:00+00:00",
+        "updated_at": "2026-08-28T10:05:00+00:00",
+        "selected_model": "KIT-WC09K3E8",
+        "final_price_pln": 36856,
+        "document": {"document_id": "pdf-1", "url": "https://topinstal.example/pdf-1.pdf", "status": "ready"},
+        "delivery_status": "WARN",
+        "status": "done",
+        "provenance": {"source_repo": "cieplo-orchestrator", "workflow_id": "wf-1"},
+        "producer_revision": "964e784",
+        "latest_event_id": "osevt_latest",
+    }
+    offer.update(overrides)
+    return offer
 
 
 def test_offer_generated_records_canonical_observation_reference() -> None:
@@ -381,6 +404,141 @@ def test_offer_conflict_detection_ignores_status_only_update() -> None:
     assert detect_offer_conflicts_for_case([generated, status], case_id="case_offer_1") == []
 
 
+def test_offer_field_provenance_complete_real_offer_is_verified() -> None:
+    offer = _projected_offer()
+
+    field_provenance = build_offer_field_provenance(offer, conflicts=[])
+
+    assert derive_offer_trust_status(offer, conflicts=[], field_provenance=field_provenance) == "VERIFIED"
+    assert field_provenance["selected_model"]["value"] == "KIT-WC09K3E8"
+    assert field_provenance["selected_model"]["source_repo"] == "cieplo-orchestrator"
+    assert field_provenance["selected_model"]["source_workflow"] == "wf-1"
+    assert field_provenance["selected_model"]["source_path"] == "offer_json.engineering.selection.pumpModel"
+    assert field_provenance["final_price_pln"]["origin_kind"] == "calculated"
+    assert field_provenance["document"]["origin_kind"] == "generated"
+    assert field_provenance["delivery_status"]["origin_kind"] == "execution_fact"
+    assert all(item["canonical_status"] == "VERIFIED" for item in field_provenance.values())
+    assert "final_price_pln comes from persisted OfferDTO pricing totals" in build_offer_trust_reasons(field_provenance)
+
+
+def test_offer_field_provenance_missing_critical_field_is_incomplete() -> None:
+    offer = _projected_offer(document={})
+
+    field_provenance = build_offer_field_provenance(offer, conflicts=[])
+
+    assert field_provenance["document"]["canonical_status"] == "INCOMPLETE"
+    assert derive_offer_trust_status(offer, conflicts=[], field_provenance=field_provenance) == "INCOMPLETE"
+
+
+def test_offer_field_provenance_conflicting_price_marks_disputed() -> None:
+    offer = _projected_offer()
+    conflicts = [
+        {
+            "case_id": "case_offer_1",
+            "offer_id": "cieplo:wf-1",
+            "field": "final_price_pln",
+            "kind": "contradictory_offer_observation",
+            "values": [{"value": 36856}, {"value": 37856}],
+        }
+    ]
+
+    field_provenance = build_offer_field_provenance(offer, conflicts=conflicts)
+
+    assert field_provenance["final_price_pln"]["canonical_status"] == "DISPUTED"
+    assert derive_offer_trust_status(offer, conflicts=conflicts, field_provenance=field_provenance) == "CONFLICTED"
+
+
+def test_offer_field_provenance_conflicting_model_marks_disputed() -> None:
+    offer = _projected_offer()
+    conflicts = [
+        {
+            "case_id": "case_offer_1",
+            "offer_id": "cieplo:wf-1",
+            "field": "selected_model",
+            "kind": "contradictory_offer_observation",
+            "values": [{"value": "KIT-WC09K3E8"}, {"value": "KIT-WC12K3E8"}],
+        }
+    ]
+
+    field_provenance = build_offer_field_provenance(offer, conflicts=conflicts)
+
+    assert field_provenance["selected_model"]["canonical_status"] == "DISPUTED"
+    assert derive_offer_trust_status(offer, conflicts=conflicts, field_provenance=field_provenance) == "CONFLICTED"
+
+
+def test_offer_field_provenance_status_update_only_stays_verified() -> None:
+    generated = {
+        "event_id": "osevt_generated",
+        "event_type": OFFER_GENERATED_EVENT,
+        "source_repo": "cieplo-orchestrator",
+        "engagement_id": "eng_offer_1",
+        "case_id": "case_offer_1",
+        "occurred_at": "2026-08-28T10:00:00+00:00",
+        "payload": {
+            "case_id": "case_offer_1",
+            "offer_id": "cieplo:wf-1",
+            "source": "cieplo",
+            "selected_model": "KIT-WC09K3E8",
+            "final_price_pln": 36856,
+            "document": {"document_id": "pdf-1", "url": "https://topinstal.example/pdf-1.pdf"},
+            "status": "generated",
+            "provenance": {"source_repo": "cieplo-orchestrator", "workflow_id": "wf-1"},
+        },
+        "correlation": {"case_id": "case_offer_1", "offer_id": "cieplo:wf-1"},
+    }
+    status = {
+        "event_id": "osevt_done",
+        "event_type": OFFER_STATUS_UPDATED_EVENT,
+        "source_repo": "cieplo-orchestrator",
+        "engagement_id": "eng_offer_1",
+        "case_id": "case_offer_1",
+        "occurred_at": "2026-08-28T10:02:00+00:00",
+        "payload": {
+            "case_id": "case_offer_1",
+            "offer_id": "cieplo:wf-1",
+            "status": "done",
+            "delivery_status": "WARN",
+            "provenance": {"source_repo": "cieplo-orchestrator", "workflow_id": "wf-1"},
+        },
+        "correlation": {"case_id": "case_offer_1", "offer_id": "cieplo:wf-1"},
+    }
+    conflicts = detect_offer_conflicts_for_case([generated, status], case_id="case_offer_1")
+    latest = project_latest_offer_for_case([generated, status], case_id="case_offer_1")
+
+    assert conflicts == []
+    field_provenance = build_offer_field_provenance(latest, conflicts=conflicts)
+    assert derive_offer_trust_status(latest, conflicts=conflicts, field_provenance=field_provenance) == "VERIFIED"
+
+
+def test_offer_field_provenance_two_distinct_offers_do_not_false_conflict() -> None:
+    latest = _projected_offer(offer_id="cieplo:wf-new")
+    older_conflict = [
+        {
+            "case_id": "case_offer_1",
+            "offer_id": "cieplo:wf-old",
+            "field": "final_price_pln",
+            "kind": "contradictory_offer_observation",
+            "values": [{"value": 30000}, {"value": 31000}],
+        }
+    ]
+
+    field_provenance = build_offer_field_provenance(latest, conflicts=older_conflict)
+
+    assert all(item["canonical_status"] == "VERIFIED" for item in field_provenance.values())
+    assert derive_offer_trust_status(latest, conflicts=older_conflict, field_provenance=field_provenance) == "VERIFIED"
+
+
+def test_offer_field_provenance_missing_source_is_not_fabricated() -> None:
+    offer = _projected_offer(provenance={})
+
+    field_provenance = build_offer_field_provenance(offer, conflicts=[])
+
+    assert "source_repo" not in field_provenance["selected_model"]
+    assert "source_workflow" not in field_provenance["selected_model"]
+    assert field_provenance["selected_model"]["canonical_status"] == "INCOMPLETE"
+    assert derive_offer_trust_status(offer, conflicts=[], field_provenance=field_provenance) == "INCOMPLETE"
+
+
 def test_case_latest_offer_route_is_read_only_and_owner_explicit() -> None:
     runtime = SimpleNamespace(store=SimpleNamespace(fetch_case=lambda case_id: {"case_id": case_id}))
     sample = {
@@ -404,6 +562,9 @@ def test_case_latest_offer_route_is_read_only_and_owner_explicit() -> None:
     assert body["read_only"] is True
     assert body["offer"]["selected_model"] == "PANASONIC KIT-WC09K3E8"
     assert body["offer"]["final_price_pln"] == 33346
+    assert body["field_provenance"]["selected_model"]["canonical_status"] == "INCOMPLETE"
+    assert body["trust_status"] == "INCOMPLETE"
+    assert body["trust_reasons"]
     assert body["conflicts"] == []
     assert body["owner"]["offer_dto"] == "kalk-top"
     assert body["owner"]["projection"] == "gmail-agent/unified_os_events"

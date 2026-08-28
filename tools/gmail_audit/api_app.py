@@ -42,6 +42,9 @@ from offer_observability import (
     OFFER_GENERATED_EVENT,
     OFFER_STATUS_UPDATED_EVENT,
     OfferObservationError,
+    build_offer_field_provenance,
+    build_offer_trust_reasons,
+    derive_offer_trust_status,
     fetch_offer_conflicts_for_case,
     fetch_latest_offer_for_case,
     record_offer_generated_from_os_event,
@@ -690,12 +693,21 @@ def create_app(
         if not offer:
             raise HTTPException(status_code=404, detail="offer_not_found")
         conflicts = fetch_offer_conflicts_for_case(db_url, cid)
+        field_provenance = build_offer_field_provenance(offer, conflicts=conflicts)
+        trust_status = derive_offer_trust_status(
+            offer,
+            conflicts=conflicts,
+            field_provenance=field_provenance,
+        )
         return {
             "ok": True,
             "schema_version": "topinstal.case_offer_visibility.v1",
             "read_only": True,
             "case_id": cid,
             "offer": offer,
+            "field_provenance": field_provenance,
+            "trust_status": trust_status,
+            "trust_reasons": build_offer_trust_reasons(field_provenance),
             "conflicts": conflicts,
             "owner": {
                 "case": "gmail-agent",
