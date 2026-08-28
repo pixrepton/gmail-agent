@@ -22,7 +22,7 @@ from attachment_download import resolve_attachment_bytes
 
 from case_context_contract import build_case_context_pack_vnext
 from case_family_boundary import ACTIVE_CUSTOMER_CASES_SQL_WHERE
-from case_engagement_bridge import resolve_engagement_id
+from case_engagement_bridge import resolve_case_id, resolve_engagement_id
 from case_routing import case_row_requires_action, desk_eligible
 from cieplo_orchestrator_hook import maybe_apply_cieplo_hook_from_os_event
 from daszek_v3_operational_feed import build_feed_and_api_case_dict as _feed_and_api_case_dict
@@ -1041,8 +1041,8 @@ def create_app(
             body = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
             corr = payload.get("correlation") if isinstance(payload.get("correlation"), dict) else {}
             case_hint = str(payload.get("case_id") or corr.get("case_id") or body.get("case_id") or "").strip()
+            registry = get_registry()
             if not engagement_id and case_hint:
-                registry = get_registry()
                 if registry is not None:
                     try:
                         lookup = registry.lookup_by_case_id(case_hint)
@@ -1050,6 +1050,20 @@ def create_app(
                             engagement_id = str(lookup.get("engagement_id") or "")
                     except Exception:  # noqa: BLE001
                         logger.warning("offer observation engagement lookup failed", exc_info=True)
+            if not case_hint and engagement_id and registry is not None:
+                try:
+                    resolved_case = resolve_case_id(engagement_id, registry_store=getattr(registry, "store", None))
+                    if resolved_case:
+                        payload = dict(payload)
+                        body = dict(body)
+                        corr = dict(corr)
+                        body["case_id"] = resolved_case
+                        corr["case_id"] = resolved_case
+                        payload["case_id"] = resolved_case
+                        payload["payload"] = body
+                        payload["correlation"] = corr
+                except Exception:  # noqa: BLE001
+                    logger.warning("offer observation case lookup failed", exc_info=True)
         if event_type == OFFER_GENERATED_EVENT:
             try:
                 return record_offer_generated_from_os_event(

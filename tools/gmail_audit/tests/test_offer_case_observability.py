@@ -240,6 +240,57 @@ def test_latest_offer_projection_answers_operator_question() -> None:
     }
 
 
+def test_latest_offer_projection_picks_newest_distinct_real_offer() -> None:
+    events = [
+        {
+            "event_id": "osevt_old",
+            "event_type": OFFER_GENERATED_EVENT,
+            "source_repo": "cieplo-orchestrator",
+            "engagement_id": "eng_offer_1",
+            "case_id": "case_offer_1",
+            "occurred_at": "2026-08-28T09:00:00+00:00",
+            "payload": {
+                "case_id": "case_offer_1",
+                "offer_id": "cieplo:wf-old",
+                "source": "cieplo",
+                "selected_model": "PANASONIC OLD",
+                "final_price_pln": 30000,
+                "document": {"document_id": "pdf-old", "status": "ready"},
+                "status": "generated",
+                "provenance": {"workflow_id": "wf-old"},
+            },
+            "correlation": {"case_id": "case_offer_1", "offer_id": "cieplo:wf-old"},
+        },
+        {
+            "event_id": "osevt_new",
+            "event_type": OFFER_GENERATED_EVENT,
+            "source_repo": "cieplo-orchestrator",
+            "engagement_id": "eng_offer_1",
+            "case_id": "case_offer_1",
+            "occurred_at": "2026-08-28T12:00:00+00:00",
+            "payload": {
+                "case_id": "case_offer_1",
+                "offer_id": "cieplo:wf-new",
+                "source": "cieplo",
+                "selected_model": "PANASONIC NEW",
+                "final_price_pln": 41000,
+                "document": {"document_id": "pdf-new", "status": "ready"},
+                "status": "generated",
+                "provenance": {"workflow_id": "wf-new"},
+            },
+            "correlation": {"case_id": "case_offer_1", "offer_id": "cieplo:wf-new"},
+        },
+    ]
+
+    latest = project_latest_offer_for_case(events, case_id="case_offer_1")
+
+    assert latest
+    assert latest["offer_id"] == "cieplo:wf-new"
+    assert latest["selected_model"] == "PANASONIC NEW"
+    assert latest["final_price_pln"] == 41000
+    assert latest["document"]["document_id"] == "pdf-new"
+
+
 def test_case_latest_offer_route_is_read_only_and_owner_explicit() -> None:
     runtime = SimpleNamespace(store=SimpleNamespace(fetch_case=lambda case_id: {"case_id": case_id}))
     sample = {
@@ -300,3 +351,46 @@ def test_internal_os_events_offer_route_resolves_case_engagement_binding() -> No
     assert response.status_code == 200
     assert captured["engagement_id"] == "eng_from_registry"
     assert captured["source_repo"] == "cieplo-orchestrator"
+
+
+def test_internal_os_events_offer_route_resolves_case_from_engagement_binding() -> None:
+    class Store:
+        def list_links_for_engagement(self, engagement_id: str):
+            assert engagement_id == "eng_case_bound"
+            return [
+                {
+                    "link_type": "mailbox_case",
+                    "target_id": "case_offer_1",
+                    "source_repo": "gmail-agent",
+                }
+            ]
+
+    class Registry:
+        store = Store()
+
+    captured = {}
+
+    def _record(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "event_id": "osevt_offer_1", "idempotent": False}
+
+    event = _raw_offer_event(
+        engagement_id="eng_case_bound",
+        correlation={"workflow_id": "wf-2zahe", "offer_id": "offer-2zahe"},
+    )
+
+    with patch("api_app.verify_registry_bearer", return_value=True):
+        with patch("api_app.load_settings", return_value=SimpleNamespace(mailbox_memory_database_url="postgresql://test")):
+            with patch("api_app.record_offer_generated_from_os_event", side_effect=_record):
+                client = TestClient(create_app(runtime_provider=lambda: None, registry_provider=lambda: Registry()))
+                response = client.post(
+                    "/internal/os-events",
+                    headers={"Authorization": "Bearer test"},
+                    json=event,
+                )
+
+    assert response.status_code == 200
+    assert captured["engagement_id"] == "eng_case_bound"
+    assert captured["raw_event"]["case_id"] == "case_offer_1"
+    assert captured["raw_event"]["payload"]["case_id"] == "case_offer_1"
+    assert captured["raw_event"]["correlation"]["case_id"] == "case_offer_1"
