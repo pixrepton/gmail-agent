@@ -578,7 +578,9 @@ FastAPI `create_app()` — Node B API. Route’y read i write mają różne kont
 
 ### Cases (read + context)
 
-`GET /cases` (lista spraw klienckich; params `requires_action`, `case_family`, `source_kind`, `desk_only`, `view=actionable|informational`, `limit`), `GET /cases/{id}/context-pack`, `/evidence`, `/conflicts`, `/gaps`, `/context-trays`, `/state-summary`, `GET /cases/{id}/attachments/{ref}` (registry bearer jeśli skonfigurowany), `GET /cases/{id}/engagement`, `POST /cases/{id}/operator-action`, `GET /cohort-runs/{run_id}`.
+`GET /cases` (lista spraw klienckich; params `requires_action`, `case_family`, `source_kind`, `desk_only`, `view=actionable|informational`, `limit`), `GET /cases/{id}/context-pack`, `/evidence`, `/conflicts`, `/gaps`, `/context-trays`, `/state-summary`, `GET /cases/{id}/attachments/{ref}` (registry bearer jeśli skonfigurowany), `GET /cases/{id}/engagement`, `GET /cases/{id}/offers/latest`, `POST /cases/{id}/operator-action`, `GET /cohort-runs/{run_id}`.
+
+`GET /cases/{id}/offers/latest` jest read-only projekcją Case OS z `unified_os_events`. Node B nie przejmuje `OfferDTO`: `kalk-top` pozostaje właścicielem pricing/sizing/OfferDTO, `top-instal-generator` właścicielem dokumentu, a `gmail-agent` przechowuje tylko kanoniczną obserwowalność i provenance (`offer.generated` / `offer.status_updated`) powiązane z Case/Engagement.
 
 ### Engagements / materialize / HITL
 
@@ -609,6 +611,8 @@ FastAPI `create_app()` — Node B API. Route’y read i write mają różne kont
 ### Internal (cross-repo, registry bearer wymagany)
 
 `POST /internal/os-events` (publikacja OS event + hook Cieplo), `POST /internal/registry/links` (rejestracja correlation links), `POST /internal/email/personalize-offer`.
+
+Offer visibility korzysta z istniejącego `POST /internal/os-events`: producenci publikują `offer.generated` oraz opcjonalne `offer.status_updated` z `case_id`, `offer_id`, `source`, timestampem, ceną/model/document reference/status i provenance. Brak jednoznacznego `case_id` albo `engagement_id` failuje jawnie; retry tego samego offer nie tworzy drugiej obserwacji.
 
 ## 3g. Schemat bazy (Postgres)
 

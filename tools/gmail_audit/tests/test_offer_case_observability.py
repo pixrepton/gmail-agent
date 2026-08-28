@@ -1,0 +1,302 @@
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+from fastapi.testclient import TestClient
+
+TOOL_DIR = Path(__file__).resolve().parent.parent
+if str(TOOL_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOL_DIR))
+
+from api_app import create_app
+from offer_observability import (
+    OFFER_GENERATED_EVENT,
+    OFFER_STATUS_UPDATED_EVENT,
+    OfferObservationError,
+    project_latest_offer_for_case,
+    record_offer_generated_from_os_event,
+    record_offer_status_update_from_os_event,
+)
+
+
+def _raw_offer_event(**overrides):
+    payload = {
+        "event_type": OFFER_GENERATED_EVENT,
+        "source_repo": "cieplo-orchestrator",
+        "engagement_id": "eng_offer_1",
+        "occurred_at": "2026-08-28T10:00:00+00:00",
+        "payload": {
+            "offer_id": "offer-2zahe",
+            "source": "cieplo",
+            "selected_model": "PANASONIC KIT-WC09K3E8",
+            "final_price_pln": 33346,
+            "document": {
+                "document_id": "pdf-2zahe",
+                "url": "https://topinstal.example/offers/pdf-2zahe.pdf",
+                "sha256": "abc123",
+                "status": "ready",
+            },
+            "delivery_status": "held_for_review",
+            "status": "generated",
+            "producer_revision": "cieplo-orchestrator:ccf4aad",
+            "provenance": {"workflow_id": "wf-2zahe", "result_id": "2zahe"},
+        },
+        "correlation": {"case_id": "case_offer_1", "workflow_id": "wf-2zahe"},
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_offer_generated_records_canonical_observation_reference() -> None:
+    published = []
+
+    def _publisher(**kwargs):
+        published.append(kwargs)
+        return "osevt_offer_1"
+
+    result = record_offer_generated_from_os_event(
+        database_url="postgresql://test",
+        raw_event=_raw_offer_event(),
+        source_repo="cieplo-orchestrator",
+        engagement_id="eng_offer_1",
+        existing_lookup=lambda *_args, **_kwargs: None,
+        publisher=_publisher,
+    )
+
+    assert result["ok"] is True
+    assert result["idempotent"] is False
+    assert published[0]["event_type"] == OFFER_GENERATED_EVENT
+    assert published[0]["case_id"] == "case_offer_1"
+    assert published[0]["engagement_id"] == "eng_offer_1"
+    assert published[0]["payload"]["selected_model"] == "PANASONIC KIT-WC09K3E8"
+    assert published[0]["payload"]["final_price_pln"] == 33346
+    assert published[0]["payload"]["document"]["document_id"] == "pdf-2zahe"
+    assert published[0]["payload"]["provenance"]["workflow_id"] == "wf-2zahe"
+
+
+def test_offer_generated_retry_is_idempotent_for_same_offer() -> None:
+    existing = {
+        "event_id": "osevt_existing",
+        "event_type": OFFER_GENERATED_EVENT,
+        "source_repo": "cieplo-orchestrator",
+        "engagement_id": "eng_offer_1",
+        "case_id": "case_offer_1",
+        "occurred_at": "2026-08-28T10:00:00+00:00",
+        "payload": {"case_id": "case_offer_1", "offer_id": "offer-2zahe", "status": "generated"},
+        "correlation": {"case_id": "case_offer_1", "offer_id": "offer-2zahe"},
+    }
+
+    result = record_offer_generated_from_os_event(
+        database_url="postgresql://test",
+        raw_event=_raw_offer_event(),
+        source_repo="cieplo-orchestrator",
+        engagement_id="eng_offer_1",
+        existing_lookup=lambda *_args, **_kwargs: existing,
+        publisher=lambda **_kwargs: pytest.fail("duplicate generated event must not publish"),
+    )
+
+    assert result["ok"] is True
+    assert result["event_id"] == "osevt_existing"
+    assert result["idempotent"] is True
+
+
+def test_offer_status_update_merges_without_conflicting_offer_fact() -> None:
+    generated = {
+        "event_id": "osevt_generated",
+        "event_type": OFFER_GENERATED_EVENT,
+        "source_repo": "cieplo-orchestrator",
+        "engagement_id": "eng_offer_1",
+        "case_id": "case_offer_1",
+        "occurred_at": "2026-08-28T10:00:00+00:00",
+        "payload": {
+            "case_id": "case_offer_1",
+            "offer_id": "offer-2zahe",
+            "selected_model": "PANASONIC KIT-WC09K3E8",
+            "final_price_pln": 33346,
+            "document": {"document_id": "pdf-2zahe", "status": "ready"},
+            "status": "generated",
+        },
+        "correlation": {"case_id": "case_offer_1", "offer_id": "offer-2zahe"},
+    }
+    published = []
+
+    def _status_lookup(*_args, **kwargs):
+        assert kwargs["event_type"] == OFFER_STATUS_UPDATED_EVENT
+        return None
+
+    def _publisher(**kwargs):
+        published.append(kwargs)
+        return "osevt_status_1"
+
+    raw = _raw_offer_event(
+        event_type=OFFER_STATUS_UPDATED_EVENT,
+        occurred_at="2026-08-28T10:05:00+00:00",
+        payload={"case_id": "case_offer_1", "offer_id": "offer-2zahe", "status": "sent", "delivery_status": "sent_to_customer"},
+    )
+    result = record_offer_status_update_from_os_event(
+        database_url="postgresql://test",
+        raw_event=raw,
+        source_repo="cieplo-orchestrator",
+        engagement_id="eng_offer_1",
+        existing_generated_lookup=lambda *_args, **_kwargs: generated,
+        existing_status_lookup=_status_lookup,
+        publisher=_publisher,
+    )
+
+    assert result["ok"] is True
+    assert published[0]["event_type"] == OFFER_STATUS_UPDATED_EVENT
+    latest = project_latest_offer_for_case([generated, {
+        "event_id": "osevt_status_1",
+        "event_type": OFFER_STATUS_UPDATED_EVENT,
+        "source_repo": "cieplo-orchestrator",
+        "engagement_id": "eng_offer_1",
+        "case_id": "case_offer_1",
+        "occurred_at": "2026-08-28T10:05:00+00:00",
+        "payload": published[0]["payload"],
+        "correlation": published[0]["correlation"],
+    }], case_id="case_offer_1")
+    assert latest
+    assert latest["offer_id"] == "offer-2zahe"
+    assert latest["status"] == "sent"
+    assert latest["delivery_status"] == "sent_to_customer"
+
+
+def test_offer_observation_fails_closed_without_case_or_engagement_binding() -> None:
+    with pytest.raises(OfferObservationError) as missing_case:
+        record_offer_generated_from_os_event(
+            database_url="postgresql://test",
+            raw_event=_raw_offer_event(correlation={}),
+            source_repo="cieplo-orchestrator",
+            engagement_id="eng_offer_1",
+            existing_lookup=lambda *_args, **_kwargs: None,
+        )
+    assert missing_case.value.code == "case_binding_required"
+
+    with pytest.raises(OfferObservationError) as missing_engagement:
+        record_offer_generated_from_os_event(
+            database_url="postgresql://test",
+            raw_event=_raw_offer_event(engagement_id=""),
+            source_repo="cieplo-orchestrator",
+            engagement_id="",
+            existing_lookup=lambda *_args, **_kwargs: None,
+        )
+    assert missing_engagement.value.code == "engagement_binding_required"
+
+
+def test_latest_offer_projection_answers_operator_question() -> None:
+    latest = project_latest_offer_for_case(
+        [
+            {
+                "event_id": "osevt_generated",
+                "event_type": OFFER_GENERATED_EVENT,
+                "source_repo": "cieplo-orchestrator",
+                "engagement_id": "eng_offer_1",
+                "case_id": "case_offer_1",
+                "occurred_at": "2026-08-28T10:00:00+00:00",
+                "payload": {
+                    "case_id": "case_offer_1",
+                    "offer_id": "offer-2zahe",
+                    "source": "cieplo",
+                    "selected_model": "PANASONIC KIT-WC09K3E8",
+                    "final_price_pln": 33346,
+                    "document": {"document_id": "pdf-2zahe", "status": "ready"},
+                    "status": "generated",
+                    "provenance": {"workflow_id": "wf-2zahe"},
+                },
+                "correlation": {"case_id": "case_offer_1", "offer_id": "offer-2zahe"},
+            },
+            {
+                "event_id": "osevt_status",
+                "event_type": OFFER_STATUS_UPDATED_EVENT,
+                "source_repo": "cieplo-orchestrator",
+                "engagement_id": "eng_offer_1",
+                "case_id": "case_offer_1",
+                "occurred_at": "2026-08-28T10:05:00+00:00",
+                "payload": {"case_id": "case_offer_1", "offer_id": "offer-2zahe", "status": "review_required"},
+                "correlation": {"case_id": "case_offer_1", "offer_id": "offer-2zahe"},
+            },
+        ],
+        case_id="case_offer_1",
+    )
+
+    assert latest == {
+        "case_id": "case_offer_1",
+        "offer_id": "offer-2zahe",
+        "source": "cieplo",
+        "created_at": "2026-08-28T10:00:00+00:00",
+        "updated_at": "2026-08-28T10:05:00+00:00",
+        "selected_model": "PANASONIC KIT-WC09K3E8",
+        "final_price_pln": 33346,
+        "document": {"document_id": "pdf-2zahe", "status": "ready"},
+        "delivery_status": "",
+        "status": "review_required",
+        "provenance": {"workflow_id": "wf-2zahe"},
+        "producer_revision": "",
+        "latest_event_id": "osevt_status",
+    }
+
+
+def test_case_latest_offer_route_is_read_only_and_owner_explicit() -> None:
+    runtime = SimpleNamespace(store=SimpleNamespace(fetch_case=lambda case_id: {"case_id": case_id}))
+    sample = {
+        "case_id": "case_offer_1",
+        "offer_id": "offer-2zahe",
+        "source": "cieplo",
+        "selected_model": "PANASONIC KIT-WC09K3E8",
+        "final_price_pln": 33346,
+        "document": {"document_id": "pdf-2zahe", "status": "ready"},
+        "status": "generated",
+        "provenance": {"workflow_id": "wf-2zahe"},
+    }
+    with patch("api_app.load_settings", return_value=SimpleNamespace(mailbox_memory_database_url="postgresql://test")):
+        with patch("api_app.fetch_latest_offer_for_case", return_value=sample):
+            client = TestClient(create_app(runtime_provider=lambda: runtime, registry_provider=lambda: None))
+            response = client.get("/cases/case_offer_1/offers/latest")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["read_only"] is True
+    assert body["offer"]["selected_model"] == "PANASONIC KIT-WC09K3E8"
+    assert body["offer"]["final_price_pln"] == 33346
+    assert body["owner"]["offer_dto"] == "kalk-top"
+    assert body["owner"]["projection"] == "gmail-agent/unified_os_events"
+
+
+def test_case_latest_offer_route_fails_closed_for_unknown_case() -> None:
+    runtime = SimpleNamespace(store=SimpleNamespace(fetch_case=lambda _case_id: None))
+    with patch("api_app.load_settings", return_value=SimpleNamespace(mailbox_memory_database_url="postgresql://test")):
+        client = TestClient(create_app(runtime_provider=lambda: runtime, registry_provider=lambda: None))
+        response = client.get("/cases/case_missing/offers/latest")
+
+    assert response.status_code == 404
+    assert response.json()["error"]["message"] == "case_not_found"
+
+
+def test_internal_os_events_offer_route_resolves_case_engagement_binding() -> None:
+    class Registry:
+        def lookup_by_case_id(self, case_id: str):
+            return {"case_id": case_id, "engagement_id": "eng_from_registry"}
+
+    captured = {}
+
+    def _record(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "event_id": "osevt_offer_1", "idempotent": False}
+
+    with patch("api_app.verify_registry_bearer", return_value=True):
+        with patch("api_app.load_settings", return_value=SimpleNamespace(mailbox_memory_database_url="postgresql://test")):
+            with patch("api_app.record_offer_generated_from_os_event", side_effect=_record):
+                client = TestClient(create_app(runtime_provider=lambda: None, registry_provider=lambda: Registry()))
+                response = client.post(
+                    "/internal/os-events",
+                    headers={"Authorization": "Bearer test"},
+                    json=_raw_offer_event(engagement_id=""),
+                )
+
+    assert response.status_code == 200
+    assert captured["engagement_id"] == "eng_from_registry"
+    assert captured["source_repo"] == "cieplo-orchestrator"

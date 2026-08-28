@@ -38,6 +38,14 @@ from event_spine.emitter import publish_os_event
 from event_spine.health_monitor import build_health_status
 from event_spine.query import fetch_os_events_for_engagement, fetch_recent_os_events
 from event_spine.timeline import fetch_merged_engagement_timeline
+from offer_observability import (
+    OFFER_GENERATED_EVENT,
+    OFFER_STATUS_UPDATED_EVENT,
+    OfferObservationError,
+    fetch_latest_offer_for_case,
+    record_offer_generated_from_os_event,
+    record_offer_status_update_from_os_event,
+)
 from skrzat_case_context import pack_lineage_from_contract, validate_operator_case_context_pack
 from skrzat_copilot import resolve_skrzat_answer
 
@@ -652,6 +660,48 @@ def create_app(
             raise HTTPException(status_code=404, detail="Engagement not found for case.")
         return lookup
 
+    @app.get("/cases/{case_id}/offers/latest")
+    def case_latest_offer(case_id: str) -> dict[str, Any]:
+        cid = str(case_id or "").strip()
+        if not cid:
+            raise HTTPException(status_code=400, detail="case_id is required.")
+        settings = load_settings(require_groq=False, require_google=False)
+        db_url = str(
+            getattr(settings, "mailbox_memory_database_url", "")
+            or os.environ.get("MAILBOX_MEMORY_DATABASE_URL")
+            or ""
+        ).strip()
+        if not db_url:
+            raise HTTPException(status_code=503, detail="Mailbox memory database is not configured.")
+
+        runtime = get_runtime()
+        store = getattr(runtime, "store", None) if runtime is not None else None
+        if store is not None and hasattr(store, "fetch_case"):
+            try:
+                if not store.fetch_case(cid):
+                    raise HTTPException(status_code=404, detail="case_not_found")
+            except HTTPException:
+                raise
+            except Exception:
+                logger.warning("case_latest_offer: case existence check failed", exc_info=True)
+
+        offer = fetch_latest_offer_for_case(db_url, cid)
+        if not offer:
+            raise HTTPException(status_code=404, detail="offer_not_found")
+        return {
+            "ok": True,
+            "schema_version": "topinstal.case_offer_visibility.v1",
+            "read_only": True,
+            "case_id": cid,
+            "offer": offer,
+            "owner": {
+                "case": "gmail-agent",
+                "offer_dto": "kalk-top",
+                "document": "top-instal-generator",
+                "projection": "gmail-agent/unified_os_events",
+            },
+        }
+
     @app.get("/engagements/{engagement_id}/timeline")
     def engagement_timeline(engagement_id: str, limit: int = 100) -> dict[str, Any]:
         eid = str(engagement_id or "").strip()
@@ -985,14 +1035,53 @@ def create_app(
         event_type = str(payload.get("event_type") or "").strip()
         if not event_type:
             raise HTTPException(status_code=400, detail="event_type is required.")
+        source_repo = str(payload.get("source_repo") or "gmail-agent")
+        engagement_id = str(payload.get("engagement_id") or "")
+        if event_type in {OFFER_GENERATED_EVENT, OFFER_STATUS_UPDATED_EVENT}:
+            body = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+            corr = payload.get("correlation") if isinstance(payload.get("correlation"), dict) else {}
+            case_hint = str(payload.get("case_id") or corr.get("case_id") or body.get("case_id") or "").strip()
+            if not engagement_id and case_hint:
+                registry = get_registry()
+                if registry is not None:
+                    try:
+                        lookup = registry.lookup_by_case_id(case_hint)
+                        if isinstance(lookup, dict):
+                            engagement_id = str(lookup.get("engagement_id") or "")
+                    except Exception:  # noqa: BLE001
+                        logger.warning("offer observation engagement lookup failed", exc_info=True)
+        if event_type == OFFER_GENERATED_EVENT:
+            try:
+                return record_offer_generated_from_os_event(
+                    database_url=db_url,
+                    raw_event=payload,
+                    source_repo=source_repo,
+                    engagement_id=engagement_id,
+                )
+            except OfferObservationError as exc:
+                status_code = 409 if exc.code.endswith("_binding_required") else 400
+                raise HTTPException(status_code=status_code, detail=exc.code) from exc
+        if event_type == OFFER_STATUS_UPDATED_EVENT:
+            try:
+                return record_offer_status_update_from_os_event(
+                    database_url=db_url,
+                    raw_event=payload,
+                    source_repo=source_repo,
+                    engagement_id=engagement_id,
+                )
+            except OfferObservationError as exc:
+                raise HTTPException(status_code=409, detail=exc.code) from exc
+        corr = payload.get("correlation") if isinstance(payload.get("correlation"), dict) else {}
+        case_hint = str(payload.get("case_id") or corr.get("case_id") or "").strip()
         event_id = publish_os_event(
             database_url=db_url,
             event_type=event_type,
-            engagement_id=str(payload.get("engagement_id") or ""),
-            source_repo=str(payload.get("source_repo") or "gmail-agent"),
+            engagement_id=engagement_id,
+            source_repo=source_repo,
             payload=payload.get("payload") if isinstance(payload.get("payload"), dict) else {},
-            correlation=payload.get("correlation") if isinstance(payload.get("correlation"), dict) else {},
+            correlation=corr,
             occurred_at=str(payload.get("occurred_at") or "").strip() or None,
+            case_id=case_hint,
         )
         if not event_id:
             return {"ok": False, "event_id": None, "message": "publish_failed_best_effort"}

@@ -1,0 +1,429 @@
+"""Offer -> Case OS visibility projection.
+
+Node B owns the canonical case/engagement observation. It does not become the
+OfferDTO or PDF renderer source of truth; those stay in kalk-top and
+top-instal-generator. This module stores and reads only a durable offer
+observation/reference in the existing unified OS event stream.
+"""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from typing import Any, Callable
+
+from event_spine.emitter import publish_os_event
+from event_spine.query import event_to_api_item
+
+OFFER_GENERATED_EVENT = "offer.generated"
+OFFER_STATUS_UPDATED_EVENT = "offer.status_updated"
+OFFER_EVENT_TYPES = frozenset({OFFER_GENERATED_EVENT, OFFER_STATUS_UPDATED_EVENT})
+
+
+class OfferObservationError(ValueError):
+    """Invalid or unsafe offer observation."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class OfferObservation:
+    case_id: str
+    engagement_id: str
+    offer_id: str
+    source: str
+    occurred_at: str
+    selected_model: str
+    final_price_pln: float | int | None
+    document: dict[str, Any]
+    delivery_status: str
+    status: str
+    provenance: dict[str, Any]
+    producer_revision: str
+
+
+def _clean(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _payload(payload: dict[str, Any]) -> dict[str, Any]:
+    raw = payload.get("payload")
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _correlation(payload: dict[str, Any]) -> dict[str, Any]:
+    raw = payload.get("correlation")
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _case_id(payload: dict[str, Any]) -> str:
+    body = _payload(payload)
+    corr = _correlation(payload)
+    return _clean(payload.get("case_id") or corr.get("case_id") or body.get("case_id"))
+
+
+def _offer_id(payload: dict[str, Any]) -> str:
+    body = _payload(payload)
+    corr = _correlation(payload)
+    doc = body.get("document") if isinstance(body.get("document"), dict) else {}
+    return _clean(
+        payload.get("offer_id")
+        or corr.get("offer_id")
+        or body.get("offer_id")
+        or doc.get("offer_id")
+    )
+
+
+def _document_identity(body: dict[str, Any], corr: dict[str, Any]) -> dict[str, Any]:
+    doc = dict(body.get("document")) if isinstance(body.get("document"), dict) else {}
+    document_id = _clean(
+        doc.get("document_id")
+        or doc.get("pdf_id")
+        or body.get("document_id")
+        or corr.get("document_id")
+        or corr.get("pdf_id")
+    )
+    url = _clean(doc.get("url") or doc.get("pdf_url") or body.get("document_url") or body.get("pdf_url"))
+    sha256 = _clean(doc.get("sha256") or doc.get("pdf_sha256") or body.get("document_sha256"))
+    status = _clean(doc.get("status") or body.get("document_status") or body.get("pdf_status"))
+    out = {k: v for k, v in {
+        "document_id": document_id,
+        "url": url,
+        "sha256": sha256,
+        "status": status,
+    }.items() if v}
+    return out
+
+
+def _selected_model(body: dict[str, Any]) -> str:
+    return _clean(
+        body.get("selected_model")
+        or body.get("model")
+        or body.get("recommended_model")
+        or body.get("heat_pump_model")
+    )
+
+
+def _final_price(body: dict[str, Any]) -> float | int | None:
+    for key in ("final_price_pln", "price_pln", "total_price_pln", "cena_finalna_pln", "cena_min"):
+        raw = body.get(key)
+        if raw in (None, ""):
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        return int(value) if value.is_integer() else value
+    return None
+
+
+def normalize_offer_observation(
+    event_payload: dict[str, Any],
+    *,
+    source_repo: str,
+    engagement_id: str,
+) -> OfferObservation:
+    body = _payload(event_payload)
+    corr = _correlation(event_payload)
+    case_id = _case_id(event_payload)
+    offer_id = _offer_id(event_payload)
+    eid = _clean(engagement_id or event_payload.get("engagement_id"))
+    source = _clean(body.get("source") or event_payload.get("source") or source_repo)
+    occurred_at = _clean(event_payload.get("occurred_at") or body.get("generated_at"))
+    if not occurred_at:
+        occurred_at = datetime.now(timezone.utc).isoformat()
+    document = _document_identity(body, corr)
+
+    if not case_id:
+        raise OfferObservationError("case_binding_required", "case_id is required for offer observation")
+    if not eid:
+        raise OfferObservationError("engagement_binding_required", "engagement_id is required for offer observation")
+    if not offer_id:
+        raise OfferObservationError("offer_id_required", "offer_id is required for offer observation")
+
+    provenance = dict(body.get("provenance")) if isinstance(body.get("provenance"), dict) else {}
+    if not provenance:
+        provenance = {"source_repo": source_repo, "source": source}
+    provenance.setdefault("source_repo", source_repo)
+    provenance.setdefault("case_id", case_id)
+    provenance.setdefault("offer_id", offer_id)
+
+    return OfferObservation(
+        case_id=case_id,
+        engagement_id=eid,
+        offer_id=offer_id,
+        source=source,
+        occurred_at=occurred_at,
+        selected_model=_selected_model(body),
+        final_price_pln=_final_price(body),
+        document=document,
+        delivery_status=_clean(body.get("delivery_status") or body.get("delivery") or body.get("mail_status")),
+        status=_clean(body.get("status") or body.get("offer_status") or "generated"),
+        provenance=provenance,
+        producer_revision=_clean(body.get("producer_revision") or body.get("runtime_revision")),
+    )
+
+
+def observation_to_event_payload(observation: OfferObservation, raw_payload: dict[str, Any]) -> dict[str, Any]:
+    body = _payload(raw_payload)
+    out = dict(body)
+    out.update(
+        {
+            "schema_version": "topinstal.offer_observation.v1",
+            "summary_pl": f"Oferta {observation.offer_id} dla sprawy {observation.case_id}",
+            "case_id": observation.case_id,
+            "offer_id": observation.offer_id,
+            "source": observation.source,
+            "selected_model": observation.selected_model,
+            "final_price_pln": observation.final_price_pln,
+            "document": observation.document,
+            "delivery_status": observation.delivery_status,
+            "status": observation.status,
+            "provenance": observation.provenance,
+            "producer_revision": observation.producer_revision,
+        }
+    )
+    return {k: v for k, v in out.items() if v not in ("", None, {}, [])}
+
+
+def find_existing_offer_event(
+    database_url: str,
+    *,
+    event_type: str,
+    case_id: str,
+    offer_id: str,
+    source_repo: str,
+    status: str = "",
+) -> dict[str, Any] | None:
+    if not _clean(database_url) or not _clean(case_id) or not _clean(offer_id):
+        return None
+    try:
+        import psycopg
+    except ImportError:
+        return None
+
+    from event_spine.query import _SELECT_EVENT_COLUMNS
+
+    try:
+        with psycopg.connect(database_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT {_SELECT_EVENT_COLUMNS}
+                    FROM unified_os_events
+                    WHERE event_type = %s
+                      AND source_repo = %s
+                      AND (
+                        case_id = %s
+                        OR correlation->>'case_id' = %s
+                        OR payload->>'case_id' = %s
+                      )
+                      AND (
+                        correlation->>'offer_id' = %s
+                        OR payload->>'offer_id' = %s
+                      )
+                      AND (%s = '' OR payload->>'status' = %s)
+                    ORDER BY occurred_at ASC
+                    LIMIT 1
+                    """,
+                    (
+                        event_type,
+                        source_repo,
+                        case_id,
+                        case_id,
+                        case_id,
+                        offer_id,
+                        offer_id,
+                        status,
+                        status,
+                    ),
+                )
+                row = cur.fetchone()
+    except Exception:
+        return None
+    return event_to_api_item(row) if row else None
+
+
+def find_existing_generated_offer_event(database_url: str, *, case_id: str, offer_id: str, source_repo: str) -> dict[str, Any] | None:
+    return find_existing_offer_event(
+        database_url,
+        event_type=OFFER_GENERATED_EVENT,
+        case_id=case_id,
+        offer_id=offer_id,
+        source_repo=source_repo,
+    )
+
+
+def fetch_offer_events_for_case(database_url: str, case_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+    cid = _clean(case_id)
+    if not _clean(database_url) or not cid:
+        return []
+    try:
+        import psycopg
+    except ImportError:
+        return []
+
+    from event_spine.query import _SELECT_EVENT_COLUMNS
+
+    capped = max(1, min(int(limit or 100), 200))
+    try:
+        with psycopg.connect(database_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT {_SELECT_EVENT_COLUMNS}
+                    FROM unified_os_events
+                    WHERE event_type = ANY(%s)
+                      AND (
+                        case_id = %s
+                        OR correlation->>'case_id' = %s
+                        OR payload->>'case_id' = %s
+                      )
+                    ORDER BY occurred_at ASC
+                    LIMIT %s
+                    """,
+                    (list(OFFER_EVENT_TYPES), cid, cid, cid, capped),
+                )
+                rows = cur.fetchall()
+    except Exception:
+        return []
+    return [event_to_api_item(row) for row in rows]
+
+
+def project_latest_offer_for_case(events: list[dict[str, Any]], *, case_id: str) -> dict[str, Any] | None:
+    cid = _clean(case_id)
+    by_offer: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for event in events:
+        payload = dict(event.get("payload") or {})
+        corr = dict(event.get("correlation") or {})
+        event_case = _clean(event.get("case_id") or corr.get("case_id") or payload.get("case_id"))
+        if cid and event_case and event_case != cid:
+            continue
+        offer_id = _clean(payload.get("offer_id") or corr.get("offer_id"))
+        if not offer_id:
+            continue
+        if offer_id not in by_offer:
+            by_offer[offer_id] = {
+                "case_id": cid or event_case,
+                "offer_id": offer_id,
+                "source": _clean(payload.get("source") or event.get("source_repo")),
+                "created_at": _clean(event.get("occurred_at")),
+                "updated_at": _clean(event.get("occurred_at")),
+                "selected_model": "",
+                "final_price_pln": None,
+                "document": {},
+                "delivery_status": "",
+                "status": "generated",
+                "provenance": {},
+                "producer_revision": "",
+                "latest_event_id": "",
+            }
+            order.append(offer_id)
+        current = by_offer[offer_id]
+        current["updated_at"] = _clean(event.get("occurred_at")) or current["updated_at"]
+        current["latest_event_id"] = _clean(event.get("event_id")) or current["latest_event_id"]
+        for key in ("source", "selected_model", "delivery_status", "status", "producer_revision"):
+            value = _clean(payload.get(key))
+            if value:
+                current[key] = value
+        if payload.get("final_price_pln") is not None:
+            current["final_price_pln"] = payload.get("final_price_pln")
+        if isinstance(payload.get("document"), dict) and payload["document"]:
+            current["document"] = dict(payload["document"])
+        if isinstance(payload.get("provenance"), dict) and payload["provenance"]:
+            current["provenance"] = dict(payload["provenance"])
+    if not order:
+        return None
+    latest_id = max(order, key=lambda oid: str(by_offer[oid].get("updated_at") or ""))
+    return by_offer[latest_id]
+
+
+def fetch_latest_offer_for_case(database_url: str, case_id: str) -> dict[str, Any] | None:
+    return project_latest_offer_for_case(fetch_offer_events_for_case(database_url, case_id), case_id=case_id)
+
+
+def record_offer_generated_from_os_event(
+    *,
+    database_url: str,
+    raw_event: dict[str, Any],
+    source_repo: str,
+    engagement_id: str,
+    existing_lookup: Callable[..., dict[str, Any] | None] = find_existing_generated_offer_event,
+    publisher: Callable[..., str | None] = publish_os_event,
+) -> dict[str, Any]:
+    observation = normalize_offer_observation(raw_event, source_repo=source_repo, engagement_id=engagement_id)
+    existing = existing_lookup(
+        database_url,
+        case_id=observation.case_id,
+        offer_id=observation.offer_id,
+        source_repo=source_repo,
+    )
+    if existing:
+        return {"ok": True, "event_id": existing.get("event_id"), "idempotent": True, "offer": project_latest_offer_for_case([existing], case_id=observation.case_id)}
+
+    correlation = _correlation(raw_event)
+    correlation.update({"case_id": observation.case_id, "offer_id": observation.offer_id})
+    if observation.document.get("document_id"):
+        correlation.setdefault("document_id", observation.document["document_id"])
+    event_id = publisher(
+        database_url=database_url,
+        event_type=OFFER_GENERATED_EVENT,
+        engagement_id=observation.engagement_id,
+        source_repo=source_repo,
+        payload=observation_to_event_payload(observation, raw_event),
+        correlation=correlation,
+        occurred_at=observation.occurred_at,
+        case_id=observation.case_id,
+        success=True,
+    )
+    return {"ok": bool(event_id), "event_id": event_id, "idempotent": False, "offer": asdict(observation)}
+
+
+def record_offer_status_update_from_os_event(
+    *,
+    database_url: str,
+    raw_event: dict[str, Any],
+    source_repo: str,
+    engagement_id: str,
+    existing_generated_lookup: Callable[..., dict[str, Any] | None] = find_existing_generated_offer_event,
+    existing_status_lookup: Callable[..., dict[str, Any] | None] = find_existing_offer_event,
+    publisher: Callable[..., str | None] = publish_os_event,
+) -> dict[str, Any]:
+    observation = normalize_offer_observation(raw_event, source_repo=source_repo, engagement_id=engagement_id)
+    existing_generated = existing_generated_lookup(
+        database_url,
+        case_id=observation.case_id,
+        offer_id=observation.offer_id,
+        source_repo=source_repo,
+    )
+    if not existing_generated:
+        raise OfferObservationError("offer_observation_required", "offer status update requires an existing generated offer observation")
+    existing_status = existing_status_lookup(
+        database_url,
+        event_type=OFFER_STATUS_UPDATED_EVENT,
+        case_id=observation.case_id,
+        offer_id=observation.offer_id,
+        source_repo=source_repo,
+        status=observation.status,
+    )
+    if existing_status:
+        latest = project_latest_offer_for_case([existing_generated, existing_status], case_id=observation.case_id)
+        return {"ok": True, "event_id": existing_status.get("event_id"), "idempotent": True, "offer": latest}
+
+    correlation = _correlation(raw_event)
+    correlation.update({"case_id": observation.case_id, "offer_id": observation.offer_id})
+    event_id = publisher(
+        database_url=database_url,
+        event_type=OFFER_STATUS_UPDATED_EVENT,
+        engagement_id=observation.engagement_id,
+        source_repo=source_repo,
+        payload=observation_to_event_payload(observation, raw_event),
+        correlation=correlation,
+        occurred_at=observation.occurred_at,
+        case_id=observation.case_id,
+        success=True,
+    )
+    return {"ok": bool(event_id), "event_id": event_id, "idempotent": False, "offer": asdict(observation)}
