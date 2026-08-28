@@ -18,6 +18,7 @@ from event_spine.query import event_to_api_item
 OFFER_GENERATED_EVENT = "offer.generated"
 OFFER_STATUS_UPDATED_EVENT = "offer.status_updated"
 OFFER_EVENT_TYPES = frozenset({OFFER_GENERATED_EVENT, OFFER_STATUS_UPDATED_EVENT})
+OFFER_CONFLICT_FIELDS = ("selected_model", "final_price_pln", "document_id", "document_url")
 
 
 class OfferObservationError(ValueError):
@@ -290,6 +291,104 @@ def fetch_offer_events_for_case(database_url: str, case_id: str, *, limit: int =
     except Exception:
         return []
     return [event_to_api_item(row) for row in rows]
+
+
+def _event_case_id(event: dict[str, Any]) -> str:
+    payload = dict(event.get("payload") or {})
+    corr = dict(event.get("correlation") or {})
+    return _clean(event.get("case_id") or corr.get("case_id") or payload.get("case_id"))
+
+
+def _event_offer_id(event: dict[str, Any]) -> str:
+    payload = dict(event.get("payload") or {})
+    corr = dict(event.get("correlation") or {})
+    return _clean(payload.get("offer_id") or corr.get("offer_id"))
+
+
+def _event_document_identity(event: dict[str, Any]) -> dict[str, str]:
+    payload = dict(event.get("payload") or {})
+    doc = dict(payload.get("document") or {}) if isinstance(payload.get("document"), dict) else {}
+    return {
+        "document_id": _clean(doc.get("document_id") or doc.get("pdf_id")),
+        "document_url": _clean(doc.get("url") or doc.get("pdf_url")),
+    }
+
+
+def _event_offer_field(event: dict[str, Any], field: str) -> Any:
+    payload = dict(event.get("payload") or {})
+    if field == "document_id" or field == "document_url":
+        return _event_document_identity(event).get(field)
+    return payload.get(field)
+
+
+def _conflict_value_key(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        import json
+
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value)
+
+
+def detect_offer_conflicts_for_case(events: list[dict[str, Any]], *, case_id: str) -> list[dict[str, Any]]:
+    """Detect contradictory immutable offer observation fields.
+
+    Case OS owns the observation/projection, not the OfferDTO. A status change is
+    not a conflict. A conflict is only reported when the same business offer
+    identifier is observed with different model, price or document identity.
+    """
+    cid = _clean(case_id)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for event in events:
+        event_case = _event_case_id(event)
+        if cid and event_case and event_case != cid:
+            continue
+        offer_id = _event_offer_id(event)
+        if not offer_id:
+            continue
+        grouped.setdefault(offer_id, []).append(event)
+
+    conflicts: list[dict[str, Any]] = []
+    for offer_id, offer_events in grouped.items():
+        for field in OFFER_CONFLICT_FIELDS:
+            values: dict[str, dict[str, Any]] = {}
+            for event in offer_events:
+                value = _event_offer_field(event, field)
+                if value in ("", None, {}, []):
+                    continue
+                key = _conflict_value_key(value)
+                values.setdefault(
+                    key,
+                    {
+                        "value": value,
+                        "events": [],
+                    },
+                )
+                values[key]["events"].append(
+                    {
+                        "event_id": _clean(event.get("event_id")),
+                        "event_type": _clean(event.get("event_type")),
+                        "occurred_at": _clean(event.get("occurred_at")),
+                        "source_repo": _clean(event.get("source_repo")),
+                    }
+                )
+            if len(values) <= 1:
+                continue
+            conflicts.append(
+                {
+                    "conflict_id": f"offer_conflict:{cid}:{offer_id}:{field}",
+                    "case_id": cid,
+                    "offer_id": offer_id,
+                    "field": field,
+                    "kind": "contradictory_offer_observation",
+                    "values": list(values.values()),
+                    "resolution_status": "unresolved",
+                }
+            )
+    return conflicts
+
+
+def fetch_offer_conflicts_for_case(database_url: str, case_id: str) -> list[dict[str, Any]]:
+    return detect_offer_conflicts_for_case(fetch_offer_events_for_case(database_url, case_id), case_id=case_id)
 
 
 def project_latest_offer_for_case(events: list[dict[str, Any]], *, case_id: str) -> dict[str, Any] | None:

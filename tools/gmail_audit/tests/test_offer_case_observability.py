@@ -17,6 +17,7 @@ from offer_observability import (
     OFFER_GENERATED_EVENT,
     OFFER_STATUS_UPDATED_EVENT,
     OfferObservationError,
+    detect_offer_conflicts_for_case,
     project_latest_offer_for_case,
     record_offer_generated_from_os_event,
     record_offer_status_update_from_os_event,
@@ -291,6 +292,95 @@ def test_latest_offer_projection_picks_newest_distinct_real_offer() -> None:
     assert latest["document"]["document_id"] == "pdf-new"
 
 
+def test_offer_conflict_detection_flags_same_offer_price_divergence() -> None:
+    events = [
+        {
+            "event_id": "osevt_a",
+            "event_type": OFFER_GENERATED_EVENT,
+            "source_repo": "cieplo-orchestrator",
+            "engagement_id": "eng_offer_1",
+            "case_id": "case_offer_1",
+            "occurred_at": "2026-08-28T10:00:00+00:00",
+            "payload": {
+                "case_id": "case_offer_1",
+                "offer_id": "cieplo:wf-1",
+                "source": "cieplo",
+                "selected_model": "KIT-WC09K3E8",
+                "final_price_pln": 36856,
+                "document": {"document_id": "pdf-1", "url": "https://topinstal.example/pdf-1.pdf"},
+                "status": "generated",
+                "provenance": {"workflow_id": "wf-1"},
+            },
+            "correlation": {"case_id": "case_offer_1", "offer_id": "cieplo:wf-1"},
+        },
+        {
+            "event_id": "osevt_b",
+            "event_type": OFFER_GENERATED_EVENT,
+            "source_repo": "cieplo-orchestrator",
+            "engagement_id": "eng_offer_1",
+            "case_id": "case_offer_1",
+            "occurred_at": "2026-08-28T10:01:00+00:00",
+            "payload": {
+                "case_id": "case_offer_1",
+                "offer_id": "cieplo:wf-1",
+                "source": "cieplo",
+                "selected_model": "KIT-WC09K3E8",
+                "final_price_pln": 37856,
+                "document": {"document_id": "pdf-1", "url": "https://topinstal.example/pdf-1.pdf"},
+                "status": "generated",
+                "provenance": {"workflow_id": "wf-1"},
+            },
+            "correlation": {"case_id": "case_offer_1", "offer_id": "cieplo:wf-1"},
+        },
+    ]
+
+    conflicts = detect_offer_conflicts_for_case(events, case_id="case_offer_1")
+
+    assert len(conflicts) == 1
+    assert conflicts[0]["offer_id"] == "cieplo:wf-1"
+    assert conflicts[0]["field"] == "final_price_pln"
+    assert conflicts[0]["resolution_status"] == "unresolved"
+    assert {item["value"] for item in conflicts[0]["values"]} == {36856, 37856}
+
+
+def test_offer_conflict_detection_ignores_status_only_update() -> None:
+    generated = {
+        "event_id": "osevt_generated",
+        "event_type": OFFER_GENERATED_EVENT,
+        "source_repo": "cieplo-orchestrator",
+        "engagement_id": "eng_offer_1",
+        "case_id": "case_offer_1",
+        "occurred_at": "2026-08-28T10:00:00+00:00",
+        "payload": {
+            "case_id": "case_offer_1",
+            "offer_id": "cieplo:wf-1",
+            "source": "cieplo",
+            "selected_model": "KIT-WC09K3E8",
+            "final_price_pln": 36856,
+            "document": {"document_id": "pdf-1", "url": "https://topinstal.example/pdf-1.pdf"},
+            "status": "generated",
+        },
+        "correlation": {"case_id": "case_offer_1", "offer_id": "cieplo:wf-1"},
+    }
+    status = {
+        "event_id": "osevt_done",
+        "event_type": OFFER_STATUS_UPDATED_EVENT,
+        "source_repo": "cieplo-orchestrator",
+        "engagement_id": "eng_offer_1",
+        "case_id": "case_offer_1",
+        "occurred_at": "2026-08-28T10:02:00+00:00",
+        "payload": {
+            "case_id": "case_offer_1",
+            "offer_id": "cieplo:wf-1",
+            "status": "done",
+            "delivery_status": "WARN",
+        },
+        "correlation": {"case_id": "case_offer_1", "offer_id": "cieplo:wf-1"},
+    }
+
+    assert detect_offer_conflicts_for_case([generated, status], case_id="case_offer_1") == []
+
+
 def test_case_latest_offer_route_is_read_only_and_owner_explicit() -> None:
     runtime = SimpleNamespace(store=SimpleNamespace(fetch_case=lambda case_id: {"case_id": case_id}))
     sample = {
@@ -305,14 +395,16 @@ def test_case_latest_offer_route_is_read_only_and_owner_explicit() -> None:
     }
     with patch("api_app.load_settings", return_value=SimpleNamespace(mailbox_memory_database_url="postgresql://test")):
         with patch("api_app.fetch_latest_offer_for_case", return_value=sample):
-            client = TestClient(create_app(runtime_provider=lambda: runtime, registry_provider=lambda: None))
-            response = client.get("/cases/case_offer_1/offers/latest")
+            with patch("api_app.fetch_offer_conflicts_for_case", return_value=[]):
+                client = TestClient(create_app(runtime_provider=lambda: runtime, registry_provider=lambda: None))
+                response = client.get("/cases/case_offer_1/offers/latest")
 
     assert response.status_code == 200
     body = response.json()
     assert body["read_only"] is True
     assert body["offer"]["selected_model"] == "PANASONIC KIT-WC09K3E8"
     assert body["offer"]["final_price_pln"] == 33346
+    assert body["conflicts"] == []
     assert body["owner"]["offer_dto"] == "kalk-top"
     assert body["owner"]["projection"] == "gmail-agent/unified_os_events"
 

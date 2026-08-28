@@ -42,6 +42,7 @@ from offer_observability import (
     OFFER_GENERATED_EVENT,
     OFFER_STATUS_UPDATED_EVENT,
     OfferObservationError,
+    fetch_offer_conflicts_for_case,
     fetch_latest_offer_for_case,
     record_offer_generated_from_os_event,
     record_offer_status_update_from_os_event,
@@ -688,12 +689,14 @@ def create_app(
         offer = fetch_latest_offer_for_case(db_url, cid)
         if not offer:
             raise HTTPException(status_code=404, detail="offer_not_found")
+        conflicts = fetch_offer_conflicts_for_case(db_url, cid)
         return {
             "ok": True,
             "schema_version": "topinstal.case_offer_visibility.v1",
             "read_only": True,
             "case_id": cid,
             "offer": offer,
+            "conflicts": conflicts,
             "owner": {
                 "case": "gmail-agent",
                 "offer_dto": "kalk-top",
