@@ -229,7 +229,13 @@ def find_existing_offer_event(
                         OR payload->>'offer_id' = %s
                       )
                       AND (%s = '' OR payload->>'status' = %s)
-                      AND (%s = FALSE OR payload ? 'field_provenance')
+                      AND (
+                        %s = FALSE
+                        OR (
+                          payload ? 'field_provenance'
+                          AND payload->'field_provenance'->'final_price_pln'->>'provenance_quality' IS NOT NULL
+                        )
+                      )
                     ORDER BY occurred_at ASC
                     LIMIT 1
                     """,
