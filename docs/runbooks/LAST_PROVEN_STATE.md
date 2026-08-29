@@ -17,7 +17,7 @@ Offer -> Case OS visibility path. Current production topology:
 - env: `/etc/topinstal/gmail-agent.env` (`600 root:root`)
 - persistent volume: `gmail-agent-mailbox-memory-pgdata`
 - production `gmail-agent` revision:
-  `b3aaad0edc6594940be498672d8e2dc14a619c07`
+  `8e713ecc32007512f866aa335e069ba15d1c97d9`
 - production `cieplo-orchestrator` revision:
   `964e784460261e7c3adf61d2aa51ca8ccef52e21`
 
@@ -33,7 +33,9 @@ Restore proof found 47 schema tables, `unified_os_events`, `mailbox_memory_cases
 `gmail-agent-nodeb-api` preserved health and
 `GET /cases/case_6c7972a708d8/offers/latest` returned the real Cieplo offer
 `cieplo:1ff01a40-c642-4abd-b8b7-a1a0b6369c32`, model `KIT-WC09K3E8`, price
-`36856`, status `done`, `conflicts=[]`. Customer side effects: `0`.
+`36856`, status `done`, `trust_status=INCOMPLETE`,
+`final_price_pln.provenance_quality=INFERRED`, `conflicts=[]`. Customer side
+effects: `0`.
 
 Lokalny baseline stabilizacji AI-OS TOP-INSTAL ma status **PASS**. Faza 0 (Final Foundation Closeout) zamknięta 2026-07-15 z werdyktem `PASS — FOUNDATION CLOSED` (`knowledge/memory/OPERATOR_DECISIONS.md`); general stabilization jako program jest zamknięty, następny kierunek to Intelligence Evolution — obecnie w toku (`A1 → X1 v0 → EVAL-1 → Roadmap Checkpoint 1 → DELIVERY-1 → EVAL-1.1 rerun → Checkpoint 1.1 → Clean EVAL Rerun → EVAL-RECOVERY-1`).
 
