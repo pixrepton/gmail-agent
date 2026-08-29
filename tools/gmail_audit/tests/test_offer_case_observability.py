@@ -53,6 +53,7 @@ def _source_field_provenance(
             "observed_at": "2026-08-28T10:00:00+00:00",
             "revision": "964e784",
             "canonical_status": "VERIFIED",
+            "provenance_quality": "PROVEN",
         },
         "final_price_pln": {
             "value": price,
@@ -71,6 +72,7 @@ def _source_field_provenance(
             "observed_at": "2026-08-28T10:00:00+00:00",
             "revision": "964e784",
             "canonical_status": "VERIFIED",
+            "provenance_quality": "PROVEN",
         },
         "document": {
             "value": doc,
@@ -84,6 +86,7 @@ def _source_field_provenance(
             "observed_at": "2026-08-28T10:00:00+00:00",
             "revision": "964e784",
             "canonical_status": "VERIFIED",
+            "provenance_quality": "PROVEN",
         },
         "delivery_status": {
             "value": delivery_status,
@@ -97,6 +100,7 @@ def _source_field_provenance(
             "observed_at": "2026-08-28T10:00:00+00:00",
             "revision": "964e784",
             "canonical_status": "VERIFIED",
+            "provenance_quality": "PROVEN",
         },
     }
 
@@ -593,6 +597,7 @@ def test_offer_field_provenance_complete_real_offer_is_verified() -> None:
     assert field_provenance["final_price_pln"]["origin_kind"] == "derived"
     assert field_provenance["final_price_pln"]["source_value"] == 35856
     assert field_provenance["final_price_pln"]["adjustment"] == 1000
+    assert field_provenance["final_price_pln"]["provenance_quality"] == "PROVEN"
     assert field_provenance["document"]["origin_kind"] == "generated"
     assert field_provenance["delivery_status"]["origin_kind"] == "execution_fact"
     assert all(item["canonical_status"] == "VERIFIED" for item in field_provenance.values())
@@ -605,6 +610,19 @@ def test_offer_field_provenance_missing_critical_field_is_incomplete() -> None:
     field_provenance = build_offer_field_provenance(offer, conflicts=[])
 
     assert field_provenance["document"]["canonical_status"] == "INCOMPLETE"
+    assert field_provenance["document"]["provenance_quality"] == "MISSING"
+    assert derive_offer_trust_status(offer, conflicts=[], field_provenance=field_provenance) == "INCOMPLETE"
+
+
+def test_offer_field_provenance_inferred_price_makes_whole_offer_incomplete() -> None:
+    offer = _projected_offer()
+    offer["field_provenance"]["final_price_pln"]["provenance_quality"] = "INFERRED"
+    offer["field_provenance"]["final_price_pln"]["incomplete_reason"] = "historical_price_source_reconstructed_from_current_adjustment"
+
+    field_provenance = build_offer_field_provenance(offer, conflicts=[])
+
+    assert field_provenance["final_price_pln"]["canonical_status"] == "VERIFIED"
+    assert field_provenance["final_price_pln"]["provenance_quality"] == "INFERRED"
     assert derive_offer_trust_status(offer, conflicts=[], field_provenance=field_provenance) == "INCOMPLETE"
 
 
@@ -623,6 +641,7 @@ def test_offer_field_provenance_conflicting_price_marks_disputed() -> None:
     field_provenance = build_offer_field_provenance(offer, conflicts=conflicts)
 
     assert field_provenance["final_price_pln"]["canonical_status"] == "DISPUTED"
+    assert field_provenance["final_price_pln"]["provenance_quality"] == "CONFLICTED"
     assert derive_offer_trust_status(offer, conflicts=conflicts, field_provenance=field_provenance) == "CONFLICTED"
 
 
@@ -641,6 +660,7 @@ def test_offer_field_provenance_conflicting_model_marks_disputed() -> None:
     field_provenance = build_offer_field_provenance(offer, conflicts=conflicts)
 
     assert field_provenance["selected_model"]["canonical_status"] == "DISPUTED"
+    assert field_provenance["selected_model"]["provenance_quality"] == "CONFLICTED"
     assert derive_offer_trust_status(offer, conflicts=conflicts, field_provenance=field_provenance) == "CONFLICTED"
 
 
@@ -715,6 +735,7 @@ def test_offer_field_provenance_missing_source_is_not_fabricated() -> None:
     assert "source_repo" not in field_provenance["selected_model"]
     assert "source_workflow" not in field_provenance["selected_model"]
     assert field_provenance["selected_model"]["canonical_status"] == "INCOMPLETE"
+    assert field_provenance["selected_model"]["provenance_quality"] == "MISSING"
     assert derive_offer_trust_status(offer, conflicts=[], field_provenance=field_provenance) == "INCOMPLETE"
 
 
@@ -727,6 +748,7 @@ def test_case_latest_offer_route_is_read_only_and_owner_explicit() -> None:
         "selected_model": "PANASONIC KIT-WC09K3E8",
         "final_price_pln": 33346,
         "document": {"document_id": "pdf-2zahe", "status": "ready"},
+        "delivery_status": "WARN",
         "status": "generated",
         "provenance": {"workflow_id": "wf-2zahe"},
         "field_provenance": _source_field_provenance(

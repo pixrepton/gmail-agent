@@ -20,6 +20,7 @@ OFFER_STATUS_UPDATED_EVENT = "offer.status_updated"
 OFFER_EVENT_TYPES = frozenset({OFFER_GENERATED_EVENT, OFFER_STATUS_UPDATED_EVENT})
 OFFER_CONFLICT_FIELDS = ("selected_model", "final_price_pln", "document_id", "document_url")
 OFFER_FIELD_PROVENANCE_FIELDS = ("selected_model", "final_price_pln", "document", "delivery_status")
+PROVENANCE_QUALITIES = frozenset({"PROVEN", "INFERRED", "MISSING", "CONFLICTED"})
 
 
 class OfferObservationError(ValueError):
@@ -439,8 +440,14 @@ def _field_provenance_is_complete(item: dict[str, Any]) -> bool:
         "evidence_reference",
         "observed_at",
         "revision",
+        "provenance_quality",
     )
     return all(item.get(key) not in ("", None, {}, []) for key in required)
+
+
+def _provenance_quality(item: dict[str, Any]) -> str:
+    quality = _clean(item.get("provenance_quality")).upper()
+    return quality if quality in PROVENANCE_QUALITIES else "MISSING"
 
 
 def _field_trust_reason(field: str, status: str) -> str:
@@ -473,6 +480,7 @@ def build_offer_field_provenance(
                 "evidence_reference": latest_event_id or offer_id,
                 "observed_at": _field_observed_at(offer, field),
                 "canonical_status": "INCOMPLETE",
+                "provenance_quality": "MISSING",
                 "incomplete_reason": "producer_source_provenance_missing",
             }
             out[field] = {k: v for k, v in item.items() if v not in ("", None)}
@@ -486,9 +494,16 @@ def build_offer_field_provenance(
         canonical_status = _clean(item.get("canonical_status") or "VERIFIED")
         if field in conflicted:
             canonical_status = "DISPUTED"
+            item["provenance_quality"] = "CONFLICTED"
         elif not _field_provenance_is_complete(item):
             canonical_status = "INCOMPLETE"
+            if item.get("value") in ("", None, {}, []):
+                item["provenance_quality"] = "MISSING"
+            else:
+                item["provenance_quality"] = _provenance_quality(item)
             item.setdefault("incomplete_reason", "producer_source_provenance_incomplete")
+        else:
+            item["provenance_quality"] = _provenance_quality(item)
         item["canonical_status"] = canonical_status
         out[field] = {k: v for k, v in item.items() if v not in ("", None)}
     return out
@@ -506,7 +521,14 @@ def derive_offer_trust_status(
     fp = field_provenance or build_offer_field_provenance(offer, conflicts=active_conflicts)
     for field in OFFER_FIELD_PROVENANCE_FIELDS:
         item = fp.get(field) if isinstance(fp.get(field), dict) else {}
+        if field in _conflicted_offer_fields(active_conflicts, _clean(offer.get("offer_id"))):
+            return "CONFLICTED"
+        value = _field_value(offer, field)
+        if value in ("", None, {}, []):
+            return "INCOMPLETE"
         if item.get("canonical_status") != "VERIFIED":
+            return "INCOMPLETE"
+        if _provenance_quality(item) != "PROVEN":
             return "INCOMPLETE"
     return "VERIFIED"
 
