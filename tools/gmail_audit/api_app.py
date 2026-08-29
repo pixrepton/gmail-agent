@@ -47,6 +47,8 @@ from offer_observability import (
     derive_offer_trust_status,
     fetch_offer_conflicts_for_case,
     fetch_latest_offer_for_case,
+    reconcile_offer_truth_resolutions,
+    record_operator_offer_resolution,
     record_offer_generated_from_os_event,
     record_offer_status_update_from_os_event,
 )
@@ -701,7 +703,7 @@ def create_app(
         )
         return {
             "ok": True,
-            "schema_version": "topinstal.case_offer_visibility.v1",
+            "schema_version": "topinstal.case_offer_visibility.v2",
             "read_only": True,
             "case_id": cid,
             "offer": offer,
@@ -715,6 +717,68 @@ def create_app(
                 "document": "top-instal-generator",
                 "projection": "gmail-agent/unified_os_events",
             },
+        }
+
+    @app.post("/cases/{case_id}/offers/{offer_id}/conflicts/resolve")
+    def case_offer_conflict_resolve(
+        case_id: str,
+        offer_id: str,
+        payload: dict[str, Any] = Body(default_factory=dict),
+        principal=Depends(_require_mutation_principal),
+    ) -> dict[str, Any]:
+        cid = str(case_id or "").strip()
+        oid = str(offer_id or "").strip()
+        if not cid or not oid:
+            raise HTTPException(status_code=400, detail="case_id and offer_id are required")
+        settings = load_settings(require_groq=False, require_google=False)
+        db_url = str(
+            getattr(settings, "mailbox_memory_database_url", "")
+            or os.environ.get("MAILBOX_MEMORY_DATABASE_URL")
+            or ""
+        ).strip()
+        if not db_url:
+            raise HTTPException(status_code=503, detail="Mailbox memory database is not configured.")
+        runtime = get_runtime()
+        store = getattr(runtime, "store", None) if runtime is not None else None
+        if store is not None and hasattr(store, "fetch_case"):
+            try:
+                if not store.fetch_case(cid):
+                    raise HTTPException(status_code=404, detail="case_not_found")
+            except HTTPException:
+                raise
+            except Exception:
+                logger.warning("case_offer_conflict_resolve: case existence check failed", exc_info=True)
+        try:
+            result = record_operator_offer_resolution(
+                database_url=db_url,
+                case_id=cid,
+                offer_id=oid,
+                conflict_id=str(payload.get("conflict_id") or "").strip(),
+                expected_revision=str(payload.get("expected_revision") or "").strip(),
+                candidate_id=str(payload.get("candidate_id") or "").strip(),
+                principal_id=principal.operator_id,
+                reason=str(payload.get("reason") or "").strip(),
+            )
+        except OfferObservationError as exc:
+            status_code = 404 if exc.code == "conflict_not_found" else 409
+            if exc.code in {"conflict_identity_required", "mutation_principal_required"}:
+                status_code = 400
+            raise HTTPException(status_code=status_code, detail=exc.code) from exc
+        offer = fetch_latest_offer_for_case(db_url, cid)
+        conflicts = fetch_offer_conflicts_for_case(db_url, cid)
+        field_provenance = build_offer_field_provenance(offer or {}, conflicts=conflicts)
+        return {
+            **result,
+            "case_id": cid,
+            "offer_id": oid,
+            "offer": offer,
+            "field_provenance": field_provenance,
+            "trust_status": derive_offer_trust_status(
+                offer or {},
+                conflicts=conflicts,
+                field_provenance=field_provenance,
+            ),
+            "conflicts": conflicts,
         }
 
     @app.get("/engagements/{engagement_id}/timeline")
@@ -1081,23 +1145,65 @@ def create_app(
                     logger.warning("offer observation case lookup failed", exc_info=True)
         if event_type == OFFER_GENERATED_EVENT:
             try:
-                return record_offer_generated_from_os_event(
+                result = record_offer_generated_from_os_event(
                     database_url=db_url,
                     raw_event=payload,
                     source_repo=source_repo,
                     engagement_id=engagement_id,
                 )
+                observation = result.get("offer") if isinstance(result.get("offer"), dict) else {}
+                case_id = str(
+                    payload.get("case_id")
+                    or (payload.get("correlation") or {}).get("case_id")
+                    or (payload.get("payload") or {}).get("case_id")
+                    or observation.get("case_id")
+                    or ""
+                ).strip()
+                offer_id = str(
+                    (payload.get("correlation") or {}).get("offer_id")
+                    or (payload.get("payload") or {}).get("offer_id")
+                    or observation.get("offer_id")
+                    or ""
+                ).strip()
+                result["truth_resolution"] = reconcile_offer_truth_resolutions(
+                    db_url,
+                    case_id=case_id,
+                    offer_id=offer_id,
+                    engagement_id=engagement_id,
+                )
+                return result
             except OfferObservationError as exc:
                 status_code = 409 if exc.code.endswith("_binding_required") else 400
                 raise HTTPException(status_code=status_code, detail=exc.code) from exc
         if event_type == OFFER_STATUS_UPDATED_EVENT:
             try:
-                return record_offer_status_update_from_os_event(
+                result = record_offer_status_update_from_os_event(
                     database_url=db_url,
                     raw_event=payload,
                     source_repo=source_repo,
                     engagement_id=engagement_id,
                 )
+                observation = result.get("offer") if isinstance(result.get("offer"), dict) else {}
+                case_id = str(
+                    payload.get("case_id")
+                    or (payload.get("correlation") or {}).get("case_id")
+                    or (payload.get("payload") or {}).get("case_id")
+                    or observation.get("case_id")
+                    or ""
+                ).strip()
+                offer_id = str(
+                    (payload.get("correlation") or {}).get("offer_id")
+                    or (payload.get("payload") or {}).get("offer_id")
+                    or observation.get("offer_id")
+                    or ""
+                ).strip()
+                result["truth_resolution"] = reconcile_offer_truth_resolutions(
+                    db_url,
+                    case_id=case_id,
+                    offer_id=offer_id,
+                    engagement_id=engagement_id,
+                )
+                return result
             except OfferObservationError as exc:
                 raise HTTPException(status_code=409, detail=exc.code) from exc
         corr = payload.get("correlation") if isinstance(payload.get("correlation"), dict) else {}

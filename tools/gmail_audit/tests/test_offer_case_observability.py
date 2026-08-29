@@ -14,6 +14,8 @@ if str(TOOL_DIR) not in sys.path:
 
 from api_app import create_app
 from offer_observability import (
+    OFFER_CONFLICT_DETECTED_EVENT,
+    OFFER_CONFLICT_RESOLVED_EVENT,
     OFFER_GENERATED_EVENT,
     OFFER_STATUS_UPDATED_EVENT,
     OfferObservationError,
@@ -21,6 +23,8 @@ from offer_observability import (
     build_offer_trust_reasons,
     derive_offer_trust_status,
     detect_offer_conflicts_for_case,
+    record_operator_offer_resolution,
+    reconcile_offer_truth_resolutions,
     project_latest_offer_for_case,
     record_offer_generated_from_os_event,
     record_offer_status_update_from_os_event,
@@ -542,7 +546,7 @@ def test_offer_conflict_detection_flags_same_offer_price_divergence() -> None:
     assert len(conflicts) == 1
     assert conflicts[0]["offer_id"] == "cieplo:wf-1"
     assert conflicts[0]["field"] == "final_price_pln"
-    assert conflicts[0]["resolution_status"] == "unresolved"
+    assert conflicts[0]["resolution_status"] == "OPERATOR_REQUIRED"
     assert {item["value"] for item in conflicts[0]["values"]} == {36856, 37856}
 
 
@@ -855,3 +859,281 @@ def test_internal_os_events_offer_route_resolves_case_from_engagement_binding() 
     assert captured["raw_event"]["case_id"] == "case_offer_1"
     assert captured["raw_event"]["payload"]["case_id"] == "case_offer_1"
     assert captured["raw_event"]["correlation"]["case_id"] == "case_offer_1"
+
+
+def _truth_event(
+    *,
+    event_id: str,
+    value: int | str,
+    quality: str,
+    field: str = "final_price_pln",
+    occurred_at: str = "2026-08-28T10:00:00+00:00",
+    offer_id: str = "cieplo:wf-truth",
+) -> dict:
+    model = "KIT-WC09K3E8"
+    price = 36856
+    if field == "final_price_pln":
+        price = int(value)
+    elif field == "selected_model":
+        model = str(value)
+    fp = _source_field_provenance(workflow_id="wf-truth", model=model, price=price)
+    fp[field]["provenance_quality"] = quality
+    if quality != "PROVEN":
+        fp[field]["incomplete_reason"] = "historical_reconstruction"
+    return {
+        "event_id": event_id,
+        "event_type": OFFER_GENERATED_EVENT,
+        "source_repo": "cieplo-orchestrator",
+        "engagement_id": "eng_truth",
+        "case_id": "case_truth",
+        "occurred_at": occurred_at,
+        "payload": {
+            "case_id": "case_truth",
+            "offer_id": offer_id,
+            "source": "cieplo",
+            "selected_model": model,
+            "final_price_pln": price,
+            "document": {"document_id": "pdf-truth", "url": "https://topinstal.example/pdf-truth.pdf"},
+            "delivery_status": "WARN",
+            "status": "generated",
+            "field_provenance": fp,
+        },
+        "correlation": {"case_id": "case_truth", "offer_id": offer_id},
+    }
+
+
+def test_truth_resolver_auto_selects_proven_over_inferred_order_independently() -> None:
+    inferred = _truth_event(event_id="osevt_inferred", value=35856, quality="INFERRED")
+    proven = _truth_event(event_id="osevt_proven", value=36856, quality="PROVEN", occurred_at="2026-08-28T09:00:00+00:00")
+
+    forward = detect_offer_conflicts_for_case([inferred, proven], case_id="case_truth")
+    reverse = detect_offer_conflicts_for_case([proven, inferred], case_id="case_truth")
+
+    assert forward == reverse
+    assert len(forward) == 1
+    conflict = forward[0]
+    assert conflict["resolution_status"] == "AUTO_RESOLVED"
+    assert conflict["resolution_basis"] == "STRONGER_PROVENANCE"
+    assert conflict["canonical_value"] == 36856
+    assert conflict["requires_operator"] is False
+    assert "dowód zapisany przez producenta" in conflict["explanation"]["human_summary"]
+    projected = project_latest_offer_for_case([inferred, proven], case_id="case_truth")
+    assert projected["final_price_pln"] == 36856
+    assert projected["truth_resolution"]["final_price_pln"]["current_value"] == 35856
+
+
+@pytest.mark.parametrize("quality", ["PROVEN", "INFERRED"])
+def test_truth_resolver_equal_strength_conflict_requires_operator(quality: str) -> None:
+    first = _truth_event(event_id="osevt_a", value=36856, quality=quality)
+    second = _truth_event(event_id="osevt_b", value=37856, quality=quality, occurred_at="2026-08-28T10:01:00+00:00")
+
+    conflict = detect_offer_conflicts_for_case([first, second], case_id="case_truth")[0]
+
+    assert conflict["resolution_status"] == "OPERATOR_REQUIRED"
+    assert conflict["canonical_value"] is None
+    assert conflict["requires_operator"] is True
+
+
+def test_truth_resolver_same_value_status_only_and_distinct_offers_do_not_conflict() -> None:
+    first = _truth_event(event_id="osevt_a", value=36856, quality="PROVEN")
+    duplicate = _truth_event(event_id="osevt_b", value=36856, quality="PROVEN")
+    other_offer = _truth_event(event_id="osevt_c", value=37856, quality="PROVEN", offer_id="cieplo:wf-other")
+    status = {
+        **first,
+        "event_id": "osevt_status",
+        "event_type": OFFER_STATUS_UPDATED_EVENT,
+        "payload": {"case_id": "case_truth", "offer_id": "cieplo:wf-truth", "status": "done", "delivery_status": "sent"},
+    }
+
+    assert detect_offer_conflicts_for_case([first, duplicate, other_offer, status], case_id="case_truth") == []
+
+
+def test_truth_resolution_reconcile_persists_once_and_retry_is_idempotent() -> None:
+    events = [
+        _truth_event(event_id="osevt_inferred", value=35856, quality="INFERRED"),
+        _truth_event(event_id="osevt_proven", value=36856, quality="PROVEN"),
+    ]
+    published: list[dict] = []
+
+    def _publisher(**kwargs):
+        published.append(kwargs)
+        return "osevt_resolution_1"
+
+    with patch("offer_observability.fetch_offer_events_for_case", return_value=events):
+        first = reconcile_offer_truth_resolutions(
+            "postgresql://test",
+            case_id="case_truth",
+            offer_id="cieplo:wf-truth",
+            engagement_id="eng_truth",
+            publisher=_publisher,
+        )
+    resolution_event = {
+        "event_id": "osevt_resolution_1",
+        "event_type": OFFER_CONFLICT_RESOLVED_EVENT,
+        "source_repo": "gmail-agent",
+        "engagement_id": "eng_truth",
+        "case_id": "case_truth",
+        "occurred_at": "2026-08-28T10:02:00+00:00",
+        "payload": published[0]["payload"],
+        "correlation": published[0]["correlation"],
+    }
+    with patch("offer_observability.fetch_offer_events_for_case", return_value=[*events, resolution_event]):
+        second = reconcile_offer_truth_resolutions(
+            "postgresql://test",
+            case_id="case_truth",
+            offer_id="cieplo:wf-truth",
+            engagement_id="eng_truth",
+            publisher=_publisher,
+        )
+
+    assert first["published"] == ["osevt_resolution_1"]
+    assert second["published"] == []
+    assert len(published) == 1
+    persisted = detect_offer_conflicts_for_case([*events, resolution_event], case_id="case_truth")[0]
+    assert persisted["resolution_event_id"] == "osevt_resolution_1"
+    assert persisted["resolved_at"] == "2026-08-28T10:02:00+00:00"
+
+
+def test_operator_cannot_override_an_auto_resolved_conflict() -> None:
+    events = [
+        _truth_event(event_id="osevt_inferred", value=35856, quality="INFERRED"),
+        _truth_event(event_id="osevt_proven", value=36856, quality="PROVEN"),
+    ]
+    conflict = detect_offer_conflicts_for_case(events, case_id="case_truth")[0]
+
+    with pytest.raises(OfferObservationError, match="operator"):
+        record_operator_offer_resolution(
+            database_url="postgresql://test",
+            case_id="case_truth",
+            offer_id="cieplo:wf-truth",
+            conflict_id=conflict["conflict_id"],
+            expected_revision=conflict["resolution_version"],
+            candidate_id=conflict["canonical_candidate_id"],
+            principal_id="operator",
+            events=events,
+        )
+
+
+def test_operator_resolution_is_durable_idempotent_and_reopens_on_new_proven_evidence() -> None:
+    first = _truth_event(event_id="osevt_a", value=36856, quality="PROVEN")
+    second = _truth_event(event_id="osevt_b", value=37856, quality="PROVEN")
+    events = [first, second]
+    conflict = detect_offer_conflicts_for_case(events, case_id="case_truth")[0]
+    chosen = next(item for item in conflict["candidate_evidence"] if item["value"] == 36856)
+    published: list[dict] = []
+
+    def _publisher(**kwargs):
+        published.append(kwargs)
+        return "osevt_operator_resolution"
+
+    first_result = record_operator_offer_resolution(
+        database_url="postgresql://test",
+        case_id="case_truth",
+        offer_id="cieplo:wf-truth",
+        conflict_id=conflict["conflict_id"],
+        expected_revision=conflict["resolution_version"],
+        candidate_id=chosen["candidate_id"],
+        principal_id="operator",
+        reason="Potwierdzone z dokumentem źródłowym",
+        events=events,
+        publisher=_publisher,
+    )
+    resolution_event = {
+        "event_id": "osevt_operator_resolution",
+        "event_type": OFFER_CONFLICT_RESOLVED_EVENT,
+        "source_repo": "gmail-agent",
+        "engagement_id": "eng_truth",
+        "case_id": "case_truth",
+        "occurred_at": "2026-08-28T10:02:00+00:00",
+        "payload": published[0]["payload"],
+        "correlation": published[0]["correlation"],
+    }
+    resolved_events = [*events, resolution_event]
+    duplicate = record_operator_offer_resolution(
+        database_url="postgresql://test",
+        case_id="case_truth",
+        offer_id="cieplo:wf-truth",
+        conflict_id=conflict["conflict_id"],
+        expected_revision=conflict["resolution_version"],
+        candidate_id=chosen["candidate_id"],
+        principal_id="operator",
+        events=resolved_events,
+        publisher=_publisher,
+    )
+    resolved = detect_offer_conflicts_for_case(resolved_events, case_id="case_truth")[0]
+    # Event identity, not wall-clock ordering, proves this evidence was not part
+    # of the prior operator decision (producer clocks may be skewed).
+    new_proven = _truth_event(event_id="osevt_c", value=38856, quality="PROVEN", occurred_at="2026-08-28T09:00:00+00:00")
+    reopened = detect_offer_conflicts_for_case([*resolved_events, new_proven], case_id="case_truth")[0]
+
+    assert first_result["resolution_status"] == "OPERATOR_RESOLVED"
+    assert duplicate["idempotent"] is True
+    assert len(published) == 1
+    assert resolved["canonical_value"] == 36856
+    assert project_latest_offer_for_case(resolved_events, case_id="case_truth")["final_price_pln"] == 36856
+    assert reopened["resolution_status"] == "OPERATOR_REQUIRED"
+    assert reopened["resolution_basis"] == "NEW_STRONG_EVIDENCE_AFTER_OPERATOR_RESOLUTION"
+
+
+def test_operator_resolution_fails_closed_for_stale_revision_or_foreign_candidate() -> None:
+    events = [
+        _truth_event(event_id="osevt_a", value=36856, quality="PROVEN"),
+        _truth_event(event_id="osevt_b", value=37856, quality="PROVEN"),
+    ]
+    conflict = detect_offer_conflicts_for_case(events, case_id="case_truth")[0]
+
+    with pytest.raises(OfferObservationError, match="stale"):
+        record_operator_offer_resolution(
+            database_url="postgresql://test",
+            case_id="case_truth",
+            offer_id="cieplo:wf-truth",
+            conflict_id=conflict["conflict_id"],
+            expected_revision="stale",
+            candidate_id=conflict["candidate_evidence"][0]["candidate_id"],
+            principal_id="operator",
+            events=events,
+        )
+    with pytest.raises(OfferObservationError, match="candidate"):
+        record_operator_offer_resolution(
+            database_url="postgresql://test",
+            case_id="case_truth",
+            offer_id="cieplo:wf-truth",
+            conflict_id=conflict["conflict_id"],
+            expected_revision=conflict["resolution_version"],
+            candidate_id="foreign",
+            principal_id="operator",
+            events=events,
+        )
+
+
+def test_operator_resolution_api_requires_principal_and_uses_verified_identity() -> None:
+    runtime = SimpleNamespace(store=SimpleNamespace(fetch_case=lambda case_id: {"case_id": case_id}))
+    conflict = {
+        "conflict_id": "offer_conflict:case_truth:cieplo:wf-truth:final_price_pln",
+        "resolution_version": "rev-1",
+        "candidate_evidence": [{"candidate_id": "candidate-a", "value": 36856}],
+    }
+    with patch("api_app.load_settings", return_value=SimpleNamespace(mailbox_memory_database_url="postgresql://test")):
+        client = TestClient(create_app(runtime_provider=lambda: runtime, registry_provider=lambda: None))
+        denied = client.post(
+            "/cases/case_truth/offers/cieplo:wf-truth/conflicts/resolve",
+            json={"conflict_id": conflict["conflict_id"], "expected_revision": "rev-1", "candidate_id": "candidate-a"},
+        )
+    assert denied.status_code == 401
+
+    with patch("api_app.load_settings", return_value=SimpleNamespace(mailbox_memory_database_url="postgresql://test")):
+        with patch("api_app._require_mutation_principal", new=lambda: SimpleNamespace(operator_id="verified-operator", scope="operator")):
+            with patch("api_app.record_operator_offer_resolution", return_value={"ok": True, "resolution_status": "OPERATOR_RESOLVED"}) as record:
+                client = TestClient(create_app(runtime_provider=lambda: runtime, registry_provider=lambda: None))
+                accepted = client.post(
+                    "/cases/case_truth/offers/cieplo:wf-truth/conflicts/resolve",
+                    headers={"Authorization": "Bearer test"},
+                    json={
+                        "conflict_id": conflict["conflict_id"],
+                        "expected_revision": "rev-1",
+                        "candidate_id": "candidate-a",
+                        "operator_id": "spoofed",
+                    },
+                )
+    assert accepted.status_code == 200
+    assert record.call_args.kwargs["principal_id"] == "verified-operator"
