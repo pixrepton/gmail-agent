@@ -27,7 +27,87 @@ from offer_observability import (
 )
 
 
+def _source_field_provenance(
+    *,
+    workflow_id: str = "wf-1",
+    model: str = "KIT-WC09K3E8",
+    price: int = 36856,
+    document: dict | None = None,
+    delivery_status: str = "WARN",
+) -> dict:
+    doc = (
+        {"document_id": "pdf-1", "url": "https://topinstal.example/pdf-1.pdf", "status": "ready"}
+        if document is None
+        else document
+    )
+    return {
+        "selected_model": {
+            "value": model,
+            "producer": "cieplo-orchestrator",
+            "source_repo": "cieplo-orchestrator",
+            "source_workflow": workflow_id,
+            "source_object": "kalk-top OfferDTO engineering selection",
+            "source_path": "engineering.selection.pumpModel",
+            "origin_kind": "calculated",
+            "evidence_reference": "workflow.offer_json.engineering.selection",
+            "observed_at": "2026-08-28T10:00:00+00:00",
+            "revision": "964e784",
+            "canonical_status": "VERIFIED",
+        },
+        "final_price_pln": {
+            "value": price,
+            "producer": "cieplo-orchestrator",
+            "source_repo": "cieplo-orchestrator",
+            "source_workflow": workflow_id,
+            "source_object": "kalk-top OfferDTO pricing",
+            "source_path": "pricing.totals.gross",
+            "source_value": price - 1000,
+            "origin_kind": "derived",
+            "operation": "gross_price_adjustment",
+            "transformation": "CIEPLO_PRICE_ADJUSTMENT_GROSS_PLN",
+            "adjustment": 1000,
+            "result": price,
+            "evidence_reference": "workflow.offer_json.pricing.totals.gross",
+            "observed_at": "2026-08-28T10:00:00+00:00",
+            "revision": "964e784",
+            "canonical_status": "VERIFIED",
+        },
+        "document": {
+            "value": doc,
+            "producer": "cieplo-orchestrator",
+            "source_repo": "cieplo-orchestrator",
+            "source_workflow": workflow_id,
+            "source_object": "top-instal-generator response",
+            "source_path": "generator_response.document | generator_response.readiness | workflow.pdf_download_url",
+            "origin_kind": "generated",
+            "evidence_reference": doc.get("document_id") or doc.get("url"),
+            "observed_at": "2026-08-28T10:00:00+00:00",
+            "revision": "964e784",
+            "canonical_status": "VERIFIED",
+        },
+        "delivery_status": {
+            "value": delivery_status,
+            "producer": "cieplo-orchestrator",
+            "source_repo": "cieplo-orchestrator",
+            "source_workflow": workflow_id,
+            "source_object": "cieplo workflow execution",
+            "source_path": "workflow.customer_delivery_decision",
+            "origin_kind": "execution_fact",
+            "evidence_reference": "workflow.customer_delivery_decision",
+            "observed_at": "2026-08-28T10:00:00+00:00",
+            "revision": "964e784",
+            "canonical_status": "VERIFIED",
+        },
+    }
+
+
 def _raw_offer_event(**overrides):
+    document = {
+        "document_id": "pdf-2zahe",
+        "url": "https://topinstal.example/offers/pdf-2zahe.pdf",
+        "sha256": "abc123",
+        "status": "ready",
+    }
     payload = {
         "event_type": OFFER_GENERATED_EVENT,
         "source_repo": "cieplo-orchestrator",
@@ -38,16 +118,18 @@ def _raw_offer_event(**overrides):
             "source": "cieplo",
             "selected_model": "PANASONIC KIT-WC09K3E8",
             "final_price_pln": 33346,
-            "document": {
-                "document_id": "pdf-2zahe",
-                "url": "https://topinstal.example/offers/pdf-2zahe.pdf",
-                "sha256": "abc123",
-                "status": "ready",
-            },
+            "document": document,
             "delivery_status": "held_for_review",
             "status": "generated",
             "producer_revision": "cieplo-orchestrator:ccf4aad",
             "provenance": {"workflow_id": "wf-2zahe", "result_id": "2zahe"},
+            "field_provenance": _source_field_provenance(
+                workflow_id="wf-2zahe",
+                model="PANASONIC KIT-WC09K3E8",
+                price=33346,
+                document=document,
+                delivery_status="held_for_review",
+            ),
         },
         "correlation": {"case_id": "case_offer_1", "workflow_id": "wf-2zahe"},
     }
@@ -56,6 +138,7 @@ def _raw_offer_event(**overrides):
 
 
 def _projected_offer(**overrides):
+    document = {"document_id": "pdf-1", "url": "https://topinstal.example/pdf-1.pdf", "status": "ready"}
     offer = {
         "case_id": "case_offer_1",
         "offer_id": "cieplo:wf-1",
@@ -64,7 +147,7 @@ def _projected_offer(**overrides):
         "updated_at": "2026-08-28T10:05:00+00:00",
         "selected_model": "KIT-WC09K3E8",
         "final_price_pln": 36856,
-        "document": {"document_id": "pdf-1", "url": "https://topinstal.example/pdf-1.pdf", "status": "ready"},
+        "document": document,
         "delivery_status": "WARN",
         "status": "done",
         "provenance": {"source_repo": "cieplo-orchestrator", "workflow_id": "wf-1"},
@@ -72,6 +155,14 @@ def _projected_offer(**overrides):
         "latest_event_id": "osevt_latest",
     }
     offer.update(overrides)
+    if "field_provenance" not in overrides:
+        offer["field_provenance"] = _source_field_provenance(
+            workflow_id=offer["provenance"].get("workflow_id", "wf-1") if isinstance(offer.get("provenance"), dict) else "wf-1",
+            model=offer.get("selected_model", ""),
+            price=offer.get("final_price_pln") or 0,
+            document=offer.get("document") if isinstance(offer.get("document"), dict) else {},
+            delivery_status=offer.get("delivery_status", ""),
+        )
     return offer
 
 
@@ -100,6 +191,8 @@ def test_offer_generated_records_canonical_observation_reference() -> None:
     assert published[0]["payload"]["final_price_pln"] == 33346
     assert published[0]["payload"]["document"]["document_id"] == "pdf-2zahe"
     assert published[0]["payload"]["provenance"]["workflow_id"] == "wf-2zahe"
+    assert published[0]["payload"]["field_provenance"]["final_price_pln"]["origin_kind"] == "derived"
+    assert published[0]["payload"]["field_provenance"]["final_price_pln"]["transformation"] == "CIEPLO_PRICE_ADJUSTMENT_GROSS_PLN"
 
 
 def test_offer_generated_retry_is_idempotent_for_same_offer() -> None:
@@ -150,6 +243,7 @@ def test_offer_status_update_merges_without_conflicting_offer_fact() -> None:
 
     def _status_lookup(*_args, **kwargs):
         assert kwargs["event_type"] == OFFER_STATUS_UPDATED_EVENT
+        assert kwargs["require_field_provenance"] is False
         return None
 
     def _publisher(**kwargs):
@@ -187,6 +281,88 @@ def test_offer_status_update_merges_without_conflicting_offer_fact() -> None:
     assert latest["offer_id"] == "offer-2zahe"
     assert latest["status"] == "sent"
     assert latest["delivery_status"] == "sent_to_customer"
+
+
+def test_offer_status_update_can_enrich_existing_status_with_source_provenance_once() -> None:
+    generated = {
+        "event_id": "osevt_generated",
+        "event_type": OFFER_GENERATED_EVENT,
+        "source_repo": "cieplo-orchestrator",
+        "engagement_id": "eng_offer_1",
+        "case_id": "case_offer_1",
+        "occurred_at": "2026-08-28T10:00:00+00:00",
+        "payload": {
+            "case_id": "case_offer_1",
+            "offer_id": "offer-2zahe",
+            "selected_model": "PANASONIC KIT-WC09K3E8",
+            "final_price_pln": 33346,
+            "document": {"document_id": "pdf-2zahe", "status": "ready"},
+            "status": "generated",
+        },
+        "correlation": {"case_id": "case_offer_1", "offer_id": "offer-2zahe"},
+    }
+    existing_enriched = {
+        "event_id": "osevt_status_enriched",
+        "event_type": OFFER_STATUS_UPDATED_EVENT,
+        "source_repo": "cieplo-orchestrator",
+        "engagement_id": "eng_offer_1",
+        "case_id": "case_offer_1",
+        "occurred_at": "2026-08-28T10:06:00+00:00",
+        "payload": {
+            "case_id": "case_offer_1",
+            "offer_id": "offer-2zahe",
+            "status": "done",
+            "field_provenance": _source_field_provenance(
+                workflow_id="wf-2zahe",
+                model="PANASONIC KIT-WC09K3E8",
+                price=33346,
+                document={"document_id": "pdf-2zahe", "status": "ready"},
+            ),
+        },
+        "correlation": {"case_id": "case_offer_1", "offer_id": "offer-2zahe"},
+    }
+    calls = []
+
+    def _status_lookup(*_args, **kwargs):
+        calls.append(kwargs)
+        assert kwargs["require_field_provenance"] is True
+        return None if len(calls) == 1 else existing_enriched
+
+    raw = _raw_offer_event(
+        event_type=OFFER_STATUS_UPDATED_EVENT,
+        occurred_at="2026-08-28T10:06:00+00:00",
+        payload={
+            "case_id": "case_offer_1",
+            "offer_id": "offer-2zahe",
+            "status": "done",
+            "delivery_status": "WARN",
+            "field_provenance": existing_enriched["payload"]["field_provenance"],
+        },
+    )
+    published = []
+    first = record_offer_status_update_from_os_event(
+        database_url="postgresql://test",
+        raw_event=raw,
+        source_repo="cieplo-orchestrator",
+        engagement_id="eng_offer_1",
+        existing_generated_lookup=lambda *_args, **_kwargs: generated,
+        existing_status_lookup=_status_lookup,
+        publisher=lambda **kwargs: published.append(kwargs) or "osevt_status_enriched",
+    )
+    second = record_offer_status_update_from_os_event(
+        database_url="postgresql://test",
+        raw_event=raw,
+        source_repo="cieplo-orchestrator",
+        engagement_id="eng_offer_1",
+        existing_generated_lookup=lambda *_args, **_kwargs: generated,
+        existing_status_lookup=_status_lookup,
+        publisher=lambda **_kwargs: pytest.fail("second enriched status must be idempotent"),
+    )
+
+    assert first["idempotent"] is False
+    assert second["idempotent"] is True
+    assert len(published) == 1
+    assert published[0]["payload"]["field_provenance"]["final_price_pln"]["origin_kind"] == "derived"
 
 
 def test_offer_observation_fails_closed_without_case_or_engagement_binding() -> None:
@@ -413,12 +589,14 @@ def test_offer_field_provenance_complete_real_offer_is_verified() -> None:
     assert field_provenance["selected_model"]["value"] == "KIT-WC09K3E8"
     assert field_provenance["selected_model"]["source_repo"] == "cieplo-orchestrator"
     assert field_provenance["selected_model"]["source_workflow"] == "wf-1"
-    assert field_provenance["selected_model"]["source_path"] == "offer_json.engineering.selection.pumpModel"
-    assert field_provenance["final_price_pln"]["origin_kind"] == "calculated"
+    assert field_provenance["selected_model"]["source_path"] == "engineering.selection.pumpModel"
+    assert field_provenance["final_price_pln"]["origin_kind"] == "derived"
+    assert field_provenance["final_price_pln"]["source_value"] == 35856
+    assert field_provenance["final_price_pln"]["adjustment"] == 1000
     assert field_provenance["document"]["origin_kind"] == "generated"
     assert field_provenance["delivery_status"]["origin_kind"] == "execution_fact"
     assert all(item["canonical_status"] == "VERIFIED" for item in field_provenance.values())
-    assert "final_price_pln comes from persisted OfferDTO pricing totals" in build_offer_trust_reasons(field_provenance)
+    assert "final_price_pln has producer-supplied source provenance" in build_offer_trust_reasons(field_provenance)
 
 
 def test_offer_field_provenance_missing_critical_field_is_incomplete() -> None:
@@ -474,18 +652,19 @@ def test_offer_field_provenance_status_update_only_stays_verified() -> None:
         "engagement_id": "eng_offer_1",
         "case_id": "case_offer_1",
         "occurred_at": "2026-08-28T10:00:00+00:00",
-        "payload": {
-            "case_id": "case_offer_1",
-            "offer_id": "cieplo:wf-1",
-            "source": "cieplo",
-            "selected_model": "KIT-WC09K3E8",
-            "final_price_pln": 36856,
-            "document": {"document_id": "pdf-1", "url": "https://topinstal.example/pdf-1.pdf"},
-            "status": "generated",
-            "provenance": {"source_repo": "cieplo-orchestrator", "workflow_id": "wf-1"},
-        },
-        "correlation": {"case_id": "case_offer_1", "offer_id": "cieplo:wf-1"},
-    }
+            "payload": {
+                "case_id": "case_offer_1",
+                "offer_id": "cieplo:wf-1",
+                "source": "cieplo",
+                "selected_model": "KIT-WC09K3E8",
+                "final_price_pln": 36856,
+                "document": {"document_id": "pdf-1", "url": "https://topinstal.example/pdf-1.pdf"},
+                "status": "generated",
+                "provenance": {"source_repo": "cieplo-orchestrator", "workflow_id": "wf-1"},
+                "field_provenance": _source_field_provenance(),
+            },
+            "correlation": {"case_id": "case_offer_1", "offer_id": "cieplo:wf-1"},
+        }
     status = {
         "event_id": "osevt_done",
         "event_type": OFFER_STATUS_UPDATED_EVENT,
@@ -529,7 +708,7 @@ def test_offer_field_provenance_two_distinct_offers_do_not_false_conflict() -> N
 
 
 def test_offer_field_provenance_missing_source_is_not_fabricated() -> None:
-    offer = _projected_offer(provenance={})
+    offer = _projected_offer(field_provenance={})
 
     field_provenance = build_offer_field_provenance(offer, conflicts=[])
 
@@ -550,6 +729,12 @@ def test_case_latest_offer_route_is_read_only_and_owner_explicit() -> None:
         "document": {"document_id": "pdf-2zahe", "status": "ready"},
         "status": "generated",
         "provenance": {"workflow_id": "wf-2zahe"},
+        "field_provenance": _source_field_provenance(
+            workflow_id="wf-2zahe",
+            model="PANASONIC KIT-WC09K3E8",
+            price=33346,
+            document={"document_id": "pdf-2zahe", "status": "ready"},
+        ),
     }
     with patch("api_app.load_settings", return_value=SimpleNamespace(mailbox_memory_database_url="postgresql://test")):
         with patch("api_app.fetch_latest_offer_for_case", return_value=sample):
@@ -562,8 +747,9 @@ def test_case_latest_offer_route_is_read_only_and_owner_explicit() -> None:
     assert body["read_only"] is True
     assert body["offer"]["selected_model"] == "PANASONIC KIT-WC09K3E8"
     assert body["offer"]["final_price_pln"] == 33346
-    assert body["field_provenance"]["selected_model"]["canonical_status"] == "INCOMPLETE"
-    assert body["trust_status"] == "INCOMPLETE"
+    assert body["field_provenance"]["selected_model"]["canonical_status"] == "VERIFIED"
+    assert body["field_provenance"]["final_price_pln"]["transformation"] == "CIEPLO_PRICE_ADJUSTMENT_GROSS_PLN"
+    assert body["trust_status"] == "VERIFIED"
     assert body["trust_reasons"]
     assert body["conflicts"] == []
     assert body["owner"]["offer_dto"] == "kalk-top"

@@ -198,6 +198,7 @@ def find_existing_offer_event(
     offer_id: str,
     source_repo: str,
     status: str = "",
+    require_field_provenance: bool = False,
 ) -> dict[str, Any] | None:
     if not _clean(database_url) or not _clean(case_id) or not _clean(offer_id):
         return None
@@ -227,6 +228,7 @@ def find_existing_offer_event(
                         OR payload->>'offer_id' = %s
                       )
                       AND (%s = '' OR payload->>'status' = %s)
+                      AND (%s = FALSE OR payload ? 'field_provenance')
                     ORDER BY occurred_at ASC
                     LIMIT 1
                     """,
@@ -240,6 +242,7 @@ def find_existing_offer_event(
                         offer_id,
                         status,
                         status,
+                        require_field_provenance,
                     ),
                 )
                 row = cur.fetchone()
@@ -418,22 +421,26 @@ def _field_observed_at(offer: dict[str, Any], field: str) -> str:
     return _clean(offer.get("created_at") or offer.get("updated_at"))
 
 
-def _field_source_path(field: str) -> str:
-    return {
-        "selected_model": "offer_json.engineering.selection.pumpModel",
-        "final_price_pln": "offer_json.pricing.totals.gross",
-        "document": "generator_response.document | workflow.pdf_download_url",
-        "delivery_status": "workflow.customer_delivery_decision",
-    }.get(field, field)
+def _producer_field_provenance(offer: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    raw = offer.get("field_provenance")
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): dict(v) for k, v in raw.items() if isinstance(v, dict)}
 
 
-def _field_origin_kind(field: str) -> str:
-    return {
-        "selected_model": "calculated",
-        "final_price_pln": "calculated",
-        "document": "generated",
-        "delivery_status": "execution_fact",
-    }.get(field, "derived")
+def _field_provenance_is_complete(item: dict[str, Any]) -> bool:
+    required = (
+        "value",
+        "producer",
+        "source_workflow",
+        "source_object",
+        "source_path",
+        "origin_kind",
+        "evidence_reference",
+        "observed_at",
+        "revision",
+    )
+    return all(item.get(key) not in ("", None, {}, []) for key in required)
 
 
 def _field_trust_reason(field: str, status: str) -> str:
@@ -441,12 +448,7 @@ def _field_trust_reason(field: str, status: str) -> str:
         return f"{field} has contradictory observations for the same offer_id"
     if status == "INCOMPLETE":
         return f"{field} is missing value or source provenance"
-    return {
-        "selected_model": "selected_model comes from persisted OfferDTO engineering selection",
-        "final_price_pln": "final_price_pln comes from persisted OfferDTO pricing totals",
-        "document": "document comes from verified generated artifact reference",
-        "delivery_status": "delivery_status comes from workflow execution state",
-    }.get(field, f"{field} has deterministic source provenance")
+    return f"{field} has producer-supplied source provenance"
 
 
 def build_offer_field_provenance(
@@ -457,32 +459,37 @@ def build_offer_field_provenance(
     """Build machine-readable provenance for operator-visible offer fields."""
     active_conflicts = list(conflicts or [])
     offer_id = _clean(offer.get("offer_id"))
-    provenance = dict(offer.get("provenance") or {}) if isinstance(offer.get("provenance"), dict) else {}
+    producer_provenance = _producer_field_provenance(offer)
     conflicted = _conflicted_offer_fields(active_conflicts, offer_id)
-    source_repo = _clean(provenance.get("source_repo"))
-    source_workflow = _clean(provenance.get("workflow_id") or provenance.get("source_workflow_id"))
     latest_event_id = _clean(offer.get("latest_event_id"))
 
     out: dict[str, dict[str, Any]] = {}
     for field in OFFER_FIELD_PROVENANCE_FIELDS:
         value = _field_value(offer, field)
-        has_value = value not in ("", None, {}, [])
-        has_source = bool(source_repo and source_workflow)
-        canonical_status = "VERIFIED"
+        item = dict(producer_provenance.get(field) or {})
+        if not item:
+            item = {
+                "value": value,
+                "evidence_reference": latest_event_id or offer_id,
+                "observed_at": _field_observed_at(offer, field),
+                "canonical_status": "INCOMPLETE",
+                "incomplete_reason": "producer_source_provenance_missing",
+            }
+            out[field] = {k: v for k, v in item.items() if v not in ("", None)}
+            continue
+        item.setdefault("value", value)
+        item.setdefault("evidence_reference", latest_event_id or offer_id)
+        if item.get("value") in ("", None, {}, []):
+            item["value"] = value
+        if item.get("observed_at") in ("", None):
+            item["observed_at"] = _field_observed_at(offer, field)
+        canonical_status = _clean(item.get("canonical_status") or "VERIFIED")
         if field in conflicted:
             canonical_status = "DISPUTED"
-        elif not has_value or not has_source:
+        elif not _field_provenance_is_complete(item):
             canonical_status = "INCOMPLETE"
-        item = {
-            "value": value,
-            "source_repo": source_repo,
-            "source_workflow": source_workflow,
-            "source_path": _field_source_path(field),
-            "evidence_reference": latest_event_id or offer_id,
-            "origin_kind": _field_origin_kind(field),
-            "observed_at": _field_observed_at(offer, field),
-            "canonical_status": canonical_status,
-        }
+            item.setdefault("incomplete_reason", "producer_source_provenance_incomplete")
+        item["canonical_status"] = canonical_status
         out[field] = {k: v for k, v in item.items() if v not in ("", None)}
     return out
 
@@ -555,6 +562,8 @@ def project_latest_offer_for_case(events: list[dict[str, Any]], *, case_id: str)
             current["document"] = dict(payload["document"])
         if isinstance(payload.get("provenance"), dict) and payload["provenance"]:
             current["provenance"] = dict(payload["provenance"])
+        if isinstance(payload.get("field_provenance"), dict) and payload["field_provenance"]:
+            current["field_provenance"] = dict(payload["field_provenance"])
     if not order:
         return None
     latest_id = max(order, key=lambda oid: str(by_offer[oid].get("updated_at") or ""))
@@ -621,6 +630,7 @@ def record_offer_status_update_from_os_event(
     )
     if not existing_generated:
         raise OfferObservationError("offer_observation_required", "offer status update requires an existing generated offer observation")
+    incoming_has_source_provenance = isinstance(_payload(raw_event).get("field_provenance"), dict)
     existing_status = existing_status_lookup(
         database_url,
         event_type=OFFER_STATUS_UPDATED_EVENT,
@@ -628,6 +638,7 @@ def record_offer_status_update_from_os_event(
         offer_id=observation.offer_id,
         source_repo=source_repo,
         status=observation.status,
+        require_field_provenance=incoming_has_source_provenance,
     )
     if existing_status:
         latest = project_latest_offer_for_case([existing_generated, existing_status], case_id=observation.case_id)
