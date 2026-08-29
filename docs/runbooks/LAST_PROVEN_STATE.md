@@ -11,7 +11,8 @@ Production Node B is now deployed on `aios1` and proven recoverable for the
 Offer -> Case OS visibility path. Current production topology:
 
 - host: `aios1`
-- Node B API: `127.0.0.1:8765` (loopback-only)
+- Node B API: `127.0.0.1:8765` (canonical loopback runtime)
+- public authenticated Node B path: `https://converter.topinstal.com.pl/nodeb`
 - Node B Postgres host port: `127.0.0.1:54129` (loopback-only)
 - runtime: `/opt/gmail-agent/current`
 - env: `/etc/topinstal/gmail-agent.env` (`600 root:root`)
@@ -36,6 +37,16 @@ Restore proof found 47 schema tables, `unified_os_events`, `mailbox_memory_cases
 `36856`, status `done`, `trust_status=INCOMPLETE`,
 `final_price_pln.provenance_quality=INFERRED`, `conflicts=[]`. Customer side
 effects: `0`.
+
+Production Node A recovery for this vertical is also proven: historical Hostido
+`DASZEK_NODE_B_API_BASE` still pointed to a dead ngrok URL, so production
+connectivity was reattached through the existing `converter.topinstal.com.pl`
+Caddy surface as `/nodeb/* -> 127.0.0.1:8765`, the exposed Node B bearer was
+rotated across `aios1` and Hostido consumers, and Hostido plugin `daszek`
+version `1.3.4` was deployed and activated at `/daszek/`. Fresh Hostido
+read-only proof via production `daszek_node_b_get_json('/cases/.../offers/latest')`
+returned the same real offer with `trust_status=INCOMPLETE`,
+`final_price_pln.provenance_quality=INFERRED`, and `conflicts=[]`.
 
 Lokalny baseline stabilizacji AI-OS TOP-INSTAL ma status **PASS**. Faza 0 (Final Foundation Closeout) zamknięta 2026-07-15 z werdyktem `PASS — FOUNDATION CLOSED` (`knowledge/memory/OPERATOR_DECISIONS.md`); general stabilization jako program jest zamknięty, następny kierunek to Intelligence Evolution — obecnie w toku (`A1 → X1 v0 → EVAL-1 → Roadmap Checkpoint 1 → DELIVERY-1 → EVAL-1.1 rerun → Checkpoint 1.1 → Clean EVAL Rerun → EVAL-RECOVERY-1`).
 
