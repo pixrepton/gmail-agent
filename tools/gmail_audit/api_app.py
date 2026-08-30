@@ -6,6 +6,7 @@ from log_config import get_logger
 import asyncio
 import json
 import os
+import re
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import datetime
@@ -59,6 +60,50 @@ from skrzat_copilot import resolve_skrzat_answer
 RuntimeProvider = Callable[[], Any]
 CohortReader = Callable[[str], dict[str, Any] | None]
 RegistryProvider = Callable[[], CorrelationRegistryService | None]
+
+
+_PUBLIC_EDGE_SERVICE_HEADER = "x-node-b-service-authorization"
+_PUBLIC_EDGE_MARKER_HEADER = "x-node-b-public-edge"
+
+
+_PUBLIC_EDGE_ALLOWED_ROUTES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("GET", re.compile(r"^/health$")),
+    ("GET", re.compile(r"^/cases$")),
+    ("GET", re.compile(r"^/cases/[^/]+/(?:engagement|offers/latest|state-summary)$")),
+    ("GET", re.compile(r"^/cases/[^/]+/attachments/[^/]+$")),
+    ("POST", re.compile(r"^/cases/[^/]+/offers/[^/]+/conflicts/resolve$")),
+    ("POST", re.compile(r"^/cases/[^/]+/(?:business-outcome|operator-action|skrzat/ask)$")),
+    ("GET", re.compile(r"^/engagements/[^/]+/(?:snapshot|timeline|os-events)$")),
+    ("POST", re.compile(r"^/engagements/[^/]+/(?:hitl/approve|materialize/approve|feed-visibility/override)$")),
+    ("GET", re.compile(r"^/system/(?:os-events/recent|decision-queue|health/status|operational-feed|briefing|cost-summary|quality-summary|constitution|correction-ledger)$")),
+    ("GET", re.compile(r"^/learning/rule-candidates$")),
+    ("POST", re.compile(r"^/learning/rule-candidates/[^/]+/status$")),
+    ("GET", re.compile(r"^/identity/(?:suggestions|binding-suggestions|binding-suggestions/[^/]+)$")),
+    ("POST", re.compile(r"^/identity/binding-suggestions(?:/scan|/[^/]+/status)$")),
+    ("POST", re.compile(r"^/agent-chat(?:/async|/stream|/feedback)?$")),
+    ("GET", re.compile(r"^/agent-chat/jobs/[^/]+$")),
+)
+
+
+_PUBLIC_EDGE_MUTATION_ROUTES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
+    (method, pattern)
+    for method, pattern in _PUBLIC_EDGE_ALLOWED_ROUTES
+    if method not in {"GET", "HEAD"}
+)
+
+
+def _matches_public_edge_route(
+    *,
+    method: str,
+    path: str,
+    routes: tuple[tuple[str, re.Pattern[str]], ...],
+) -> bool:
+    request_method = method.upper()
+    return any(route_method == request_method and pattern.fullmatch(path) for route_method, pattern in routes)
+
+
+def _public_edge_error(status_code: int, code: str, message: str) -> JSONResponse:
+    return JSONResponse(status_code=status_code, content={"error": {"code": code, "message": message}})
 
 _cached_registry: CorrelationRegistryService | None = None
 _registry_init_attempted = False
@@ -347,6 +392,35 @@ def create_app(
         detail = exc.detail
         message = detail if isinstance(detail, str) else str(detail)
         return JSONResponse(status_code=exc.status_code, content={"error": {"code": code, "message": message}})
+
+    @app.middleware("http")
+    async def _public_edge_security_guard(request: Request, call_next):
+        """Second-layer guard for Caddy-exposed /nodeb/* traffic.
+
+        Loopback/internal Node B callers are unchanged. Caddy marks only the
+        public /nodeb/* proxy path with X-Node-B-Public-Edge: 1 after stripping
+        the /nodeb prefix, so this guard can enforce public-edge deny-by-default
+        without changing the canonical local/internal runtime surface.
+        """
+        if request.headers.get(_PUBLIC_EDGE_MARKER_HEADER, "").strip() != "1":
+            return await call_next(request)
+
+        method = request.method.upper()
+        path = request.url.path
+        if not _matches_public_edge_route(method=method, path=path, routes=_PUBLIC_EDGE_ALLOWED_ROUTES):
+            return _public_edge_error(404, "not_found", "Node B route is not exposed on the public edge.")
+
+        is_mutation = _matches_public_edge_route(method=method, path=path, routes=_PUBLIC_EDGE_MUTATION_ROUTES)
+        service_authorization = request.headers.get(_PUBLIC_EDGE_SERVICE_HEADER)
+        if is_mutation:
+            if not verify_registry_bearer(service_authorization):
+                return _public_edge_error(401, "unauthorized", "Public Node B mutation requires service bearer.")
+        else:
+            authorization = service_authorization or request.headers.get("authorization")
+            if not verify_registry_bearer(authorization):
+                return _public_edge_error(401, "unauthorized", "Public Node B read requires service bearer.")
+
+        return await call_next(request)
 
     get_runtime = runtime_provider or _default_runtime_provider
     read_cohort = cohort_reader or _default_cohort_reader
