@@ -1,7 +1,7 @@
 # Last Proven State
 
 **Status:** aktywny runbook proof  
-**Ostatnia aktualizacja:** 2026-08-29 (`NODE_B_PRODUCTION_OPERABILITY_01`)
+**Ostatnia aktualizacja:** 2026-08-30 (`NODE_B_PUBLIC_EDGE_SECURITY_01`)
 **Zakres aktualny:** lokalny Docker Compose oraz produkcyjny Node B na `aios1` (Case OS offer visibility); bez zmian w customer workflow.
 
 ## Executive verdict
@@ -13,12 +13,13 @@ Offer -> Case OS visibility path. Current production topology:
 - host: `aios1`
 - Node B API: `127.0.0.1:8765` (canonical loopback runtime)
 - public authenticated Node B path: `https://converter.topinstal.com.pl/nodeb`
+  with Caddy allowlist and `X-Node-B-Public-Edge: 1` app-side guard
 - Node B Postgres host port: `127.0.0.1:54129` (loopback-only)
 - runtime: `/opt/gmail-agent/current`
 - env: `/etc/topinstal/gmail-agent.env` (`600 root:root`)
 - persistent volume: `gmail-agent-mailbox-memory-pgdata`
 - production `gmail-agent` revision:
-  `8e713ecc32007512f866aa335e069ba15d1c97d9`
+  `6f59ab773fc68a163955008d3bec672c23e48868`
 - production `cieplo-orchestrator` revision:
   `964e784460261e7c3adf61d2aa51ca8ccef52e21`
 
@@ -47,6 +48,48 @@ version `1.3.4` was deployed and activated at `/daszek/`. Fresh Hostido
 read-only proof via production `daszek_node_b_get_json('/cases/.../offers/latest')`
 returned the same real offer with `trust_status=INCOMPLETE`,
 `final_price_pln.provenance_quality=INFERRED`, and `conflicts=[]`.
+
+**`NODE_B_PUBLIC_EDGE_SECURITY_01` (2026-08-30): CLOSED / PASS.**
+The previously transparent Caddy proxy
+`https://converter.topinstal.com.pl/nodeb/* -> 127.0.0.1:8765` has been
+hardened to public-edge deny-by-default. Caddy now exposes only the bounded
+Node B paths required by Hostido/Daszek, injects `X-Node-B-Public-Edge: 1`, and
+returns `404` for non-allowlisted `/nodeb/*` routes. Node B enforces a second
+application-layer public-edge guard: public reads require a valid registry
+bearer; public mutations require a valid service bearer in
+`X-Node-B-Service-Authorization` and still require the existing mutation
+principal in `Authorization`. Service bearer alone does not satisfy mutation
+principal.
+
+Fresh production proof:
+
+- unauthenticated public `GET /nodeb/cases/case_6c7972a708d8/offers/latest`:
+  `401`;
+- wrong bearer for the same public read: `401`;
+- unauthenticated public `GET /nodeb/cases/case_6c7972a708d8/engagement`:
+  `401`;
+- unauthenticated public attachment download route: `401`;
+- public `/nodeb/docs`, `/nodeb/redoc`, `/nodeb/openapi.json`,
+  `/nodeb/internal/os-events`, `/nodeb/system/trace`: `404`;
+- valid bearer public latest-offer read from `aios1`: `200`;
+- Hostido server-side `daszek_node_b_get_json('/cases/.../offers/latest')`:
+  `200`, real offer
+  `cieplo:1ff01a40-c642-4abd-b8b7-a1a0b6369c32`, model `KIT-WC09K3E8`,
+  price `36856`, document URL present, status `done`,
+  `trust_status=INCOMPLETE`;
+- public mutation route with service bearer only: `401`;
+- public mutation route with mutation bearer only: `401`;
+- public mutation route with both headers and intentionally invalid empty
+  payload reached application validation: `400` with no resolution write;
+- Node B API and Postgres remain loopback-only
+  (`127.0.0.1:8765`, `127.0.0.1:54129`);
+- `/etc/topinstal/gmail-agent.env` remains `600 root:root`;
+- converter production smoke via `https://converter.topinstal.com.pl`:
+  health `200`, missing/wrong converter token `403`, real DOCX -> PDF PASS.
+
+Production `daszek` revision deployed for this edge change:
+`9604b306e7f1a2e2c5600530e2c2809ca6a3d0a8`; plugin version remains `1.3.4`.
+Customer side effects: `0`.
 
 Lokalny baseline stabilizacji AI-OS TOP-INSTAL ma status **PASS**. Faza 0 (Final Foundation Closeout) zamknięta 2026-07-15 z werdyktem `PASS — FOUNDATION CLOSED` (`knowledge/memory/OPERATOR_DECISIONS.md`); general stabilization jako program jest zamknięty, następny kierunek to Intelligence Evolution — obecnie w toku (`A1 → X1 v0 → EVAL-1 → Roadmap Checkpoint 1 → DELIVERY-1 → EVAL-1.1 rerun → Checkpoint 1.1 → Clean EVAL Rerun → EVAL-RECOVERY-1`).
 
